@@ -173,6 +173,7 @@ kbd {
 .btn.primary:hover:not(:disabled) { background: #85b8ff; }
 .btn.danger { color: var(--fault); border-color: rgba(240, 87, 110, 0.4); background: transparent; }
 .btn.danger:hover:not(:disabled) { background: var(--fault-bg); }
+.btn.icon { width: 34px; padding: 0; }
 .btn.ghost { background: transparent; border-color: transparent; color: var(--text-2); }
 .btn.ghost:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
 .btn.small { height: 28px; padding: 0 10px; font-size: 12px; }

@@ -1,4 +1,5 @@
 import { api } from "../core/api.js";
+import { wireClear } from "../core/clear.js";
 import { clear, h, plate } from "../core/dom.js";
 import { detailList, openDrawer } from "../core/drawer.js";
 import { dateTime, money } from "../core/format.js";
@@ -172,5 +173,6 @@ form.addEventListener("submit", (event) => { event.preventDefault(); page = 1; l
 form.addEventListener("reset", () => setTimeout(() => { status = ""; refreshChips(); page = 1; load(); }));
 prev.addEventListener("click", () => { page -= 1; load(); });
 next.addEventListener("click", () => { page += 1; load(); });
+wireClear("clear-data", "history", "history", () => { page = 1; return load(); });
 
 load();

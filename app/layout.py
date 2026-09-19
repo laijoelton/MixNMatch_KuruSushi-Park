@@ -180,10 +180,20 @@ def detect_level(names: Iterable[str]) -> Optional[str]:
     return best if best_score >= MATCH_THRESHOLD else None
 
 
+_announced_level: Optional[str] = None
+
+
+def announce_level(level: Optional[str]) -> None:
+    """The level the simulator console says it just loaded, before any bays sync."""
+    global _announced_level
+    _announced_level = level
+
+
 def running_level() -> Optional[str]:
-    """Level of the live park (from synced spot names), else the configured seed level."""
+    """Level of the live park (from synced spot names), else the level the
+    simulator announced loading, else the configured seed level."""
     from app.state import state  # local import: layout must not depend on state at import time
-    return detect_level(list(state.spots.keys())) or (settings.seed_from_level or None)
+    return detect_level(list(state.spots.keys())) or _announced_level or (settings.seed_from_level or None)
 
 
 def current_geometry() -> dict[str, Any]:

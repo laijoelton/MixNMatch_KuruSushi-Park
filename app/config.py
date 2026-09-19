@@ -99,6 +99,21 @@ class Settings:
     billing_rounding: str
     billing_basis: str
     exit_charge_delay_s: float
+    # Gates: every gate starts closed and zone gates open per car. The main
+    # gate is left to the operator. Exit gates close this long after the car
+    # leaves the exit sensor, since no sensor reports it clearing the gate.
+    main_gate: str
+    gate_close_delay_s: float
+    # Send a car to its zone's entry sensor first and open that zone's gate
+    # only when it is waiting there, instead of opening it at ENTRY1.
+    zone_gate_at_sensor: bool
+    # A zone entry gate closes this long after its car leaves the sensor box in
+    # front of it: the sensor sits ~140 px before the gate, and cars were seen
+    # covering 230-870 px/s, so ~0.6 s at worst plus margin.
+    entry_gate_close_delay_s: float
+    # The simulator console, tee'd to a file by START.bat; its "Load Game"
+    # line is our only signal that a level was (re)loaded. Empty disables it.
+    simulator_log: str
     # Dashboard: how often the operator HUD is pushed over the WebSocket.
     broadcast_interval_s: float
     webhook_debug: bool
@@ -218,6 +233,11 @@ class Settings:
             # waiting at the exit" -- while still returning 201, so the failure
             # is invisible to us. Wait for the car to settle first.
             exit_charge_delay_s=_env_float("EXIT_CHARGE_DELAY_S", 2.0),
+            main_gate=os.environ.get("MAIN_GATE", "gate7").strip(),
+            gate_close_delay_s=_env_float("GATE_CLOSE_DELAY_S", 3.0),
+            zone_gate_at_sensor=_env_bool("ZONE_GATE_AT_SENSOR", True),
+            entry_gate_close_delay_s=_env_float("ENTRY_GATE_CLOSE_DELAY_S", 1.5),
+            simulator_log=os.environ.get("SIMULATOR_LOG", "data/simulator.log").strip(),
 
             broadcast_interval_s=_env_float("BROADCAST_INTERVAL_S", 1.0),
             webhook_debug=_env_bool("WEBHOOK_DEBUG", False),

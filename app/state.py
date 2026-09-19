@@ -146,6 +146,9 @@ class VehicleSession:
     charge_attempted: bool = False
     zone: str = ""
     entry_departed: bool = False
+    # The zone's own entry sensor the car was sent to first (ENTRY3 for a
+    # ZONE3 bay); its gate opens only once the car is waiting there.
+    staged_via: Optional[str] = None
     exit_confirmed: bool = False
     released: bool = False
     payment_suspect: bool = False
@@ -741,6 +744,29 @@ class ParkingState:
                 "component": component_name, "at": time.time(),
             })
 
+    def clear_penalties(self) -> None:
+        """Forget recorded fines; paired with an admin clearing the penalties table."""
+        with self._lock:
+            self.penalty_count = 0
+            self.total_fines = 0.0
+            self.penalty_log.clear()
+
+    def reset_for_new_level(self) -> int:
+        """Forget the previous level's live park: cars, bays, gates and repair
+        bookkeeping. Returns how many vehicle sessions were dropped. Penalties
+        and the activity feed are kept - they are the run's record."""
+        with self._lock:
+            dropped = len(self.sessions)
+            for table in (self.sessions, self.active_dispatches, self.spots, self.barriers, self.zones,
+                          self.fans, self.lights, self.pending_repairs, self.deferred_repairs):
+                table.clear()
+            self.neglected_vehicles.clear()
+            return dropped
+
+    def clear_neglected(self) -> None:
+        with self._lock:
+            self.neglected_vehicles.clear()
+
     def log_activity(self, message: str, level: str = "info", capability: str = "logs:view_ops") -> None:
         with self._lock:
             self.activity_log.appendleft({"message": message, "level": level, "at": time.time(), "capability": capability})
@@ -798,6 +824,7 @@ class ParkingState:
                     {"name": b.name, "state": b.state.value, "broken": b.broken,
                      "under_maintenance": b.under_maintenance, "zone": b.zone_parent,
                      "repair_pending": b.name in self.pending_repairs,
+                     "main_gate": b.name == settings.main_gate,
                      "operator_override": b.operator_override,
                      "hold_reason": "Held closed by operator" if b.operator_override else
                                     "Vehicle awaiting clearance" if b.held_vehicles else ""}

@@ -536,6 +536,21 @@ def save_active_session(session) -> None:
             (session.plate, session.session_id, json.dumps(asdict(session)), int(session.charge_attempted)))
 
 
+def reset_live_level() -> None:
+    """A new level: drop unfinished sessions, operator holds and ghost-car holds
+    from the previous one. Completed history, payments and penalties stay.
+
+    Holds are cleared by key pattern, not by the gates currently in memory: a
+    dispatcher started before the level was clicked has no gates loaded yet.
+    """
+    with _lock, _conn:
+        _conn.execute("DELETE FROM active_sessions")
+        _conn.execute("UPDATE ghost_car_events SET resolved = 1, resolved_by = 'level reload', resolved_at = ? "
+                      "WHERE resolved = 0", (_utcnow(),))
+        _conn.execute("UPDATE meta SET value = '0' WHERE key LIKE 'gate\\_override:%' ESCAPE '\\'")
+        _conn.execute("UPDATE meta SET value = '[]' WHERE key LIKE 'gate\\_holds:%' ESCAPE '\\'")
+
+
 def delete_active_session(session_id: str) -> None:
     with _lock, _conn:
         _conn.execute("DELETE FROM active_sessions WHERE session_id = ?", (session_id,))

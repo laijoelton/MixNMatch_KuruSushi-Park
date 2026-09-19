@@ -57,6 +57,8 @@ the specification. The ones that bite in practice:
 | `app/signature.py` | Strict MD5 webhook signature verification |
 | `app/client.py` | REST client for the simulator |
 | `app/routing.py` | Spot selection |
+| `app/zones.py` | Zone ratio, zone choice, zone entry-gate lookup (pure functions) |
+| `app/simlog.py` | Follows the simulator console log for `Load Game` lines (level-load detection) |
 | `app/seed.py` | Offline fallback: load the park from `lvl1.json` |
 | `app/queue_worker.py` | Background maintenance queue |
 | `app/ws_manager.py` | WebSocket fan-out to the dashboard |
@@ -96,14 +98,21 @@ Memory is the hot path. SQLite is the truth we can still read after a crash.
 ARRIVED → ASSIGNED → PARKED → LEAVING → AT_EXIT → CHARGED → PAID → RELEASED → GONE
 ```
 
-1. `car_spot_action` / `EntrySpot` / `CarIn` — pick a spot, **reserve it**, open
-   the gate, `goto <spot>`
+1. `car_spot_action` / `EntrySpot` / `CarIn` — pick the lowest-ratio zone and a
+   spot in it, **reserve it**. A ZONE1 car: open gate1, wait for `Open`, `goto <spot>`.
+   A ZONE2/3 car: `goto ENTRY2/ENTRY3` first; when it is waiting there, open that
+   zone's gate, wait for `Open`, `goto <spot>` (4.20)
+   The zone gate closes `ENTRY_GATE_CLOSE_DELAY_S` after the car leaves the sensor
+   box in front of it, unless the next car already holds it (4.21)
 2. `Park` / `CarIn` — spot becomes occupied, **billing clock starts here**
 3. `Park` / `CarOut` — billing clock stops, spot released
 4. `ExitSpot` / `CarIn` — compute the charge, `POST /charge`
 5. `payment_made` — validate against our own figure
-6. only if valid → `goto leavepark`
-7. `ExitSpot` / `CarOut` — session archived to SQLite
+6. only if valid → open the exit gate, wait for `Open`, `goto leavepark` (4.20)
+7. `ExitSpot` / `CarOut` — session archived to SQLite; the exit gate closes
+   `GATE_CLOSE_DELAY_S` later
+
+Gates start closed at level start. The main gate (gate7) is opened by staff only (4.18).
 
 **Spots are reserved at assignment, not on arrival.** Two cars can arrive back
 to back, and the sensor confirming the first lands well after we must answer the
@@ -439,6 +448,226 @@ simulator URL and a disposable Level 2 database. It confirmed 90 parking bays,
 webhook alert, repair-cost net revenue (20.00 - 7.50 = 12.50), and distinct actual
 4.3-minute versus booked 10-minute history values. Browser console errors: none.
 
+### 4.18 Every Level 2 car opened gate1, and gates were never closed (19 September 2026)
+
+**Symptoms:** gates stayed open for the rest of a run after the first car. A car
+bound for ZONE3 still caused `open gate1`, and staff holding gate1 closed stopped
+*all* dispatch, not just ZONE1 (the "stuck at ENTRY1, no bay yet" incident).
+
+**Root cause:** Level 2 has one road in, behind the operator's main gate (gate7).
+Every car trips ENTRY1, then ENTRY2/ENTRY3 on its way down to its zone. Each zone
+has its own entry gate (gate1/3/5, left side) and exit gate (gate2/4/6, right
+side). The dispatcher mapped the *first sensor* to the nearest gate (ENTRY1 →
+gate1) and opened that for every car, whatever zone the car was going to. It only
+worked because nothing ever closed a gate. The only automatic closes were exit
+holds for suspect payments and unknown cars.
+
+**Fix** (`app/zones.py`, `app/main.py`):
+- **Level start:** on the first sync that finds live bays, every gate is closed,
+  main gate included, once per level (`_close_gates_for_level_start`). A level
+  load seen in the simulator console resets this (4.19).
+  This is a plain close, not the persisted operator hold, so it cannot block
+  dispatch the way a stale hold did.
+- **Zone choice:** the car goes to the zone with the lowest
+  `(occupied + reserved + broken + under repair) / bays` ratio, counting each bay
+  once. A tie goes to the nearer zone. Within that zone it takes the nearest
+  suitable bay, ranked as before. Only zones with a suitable bay *and* a usable
+  entry gate take part, so a held zone gate diverts the car to another zone.
+- **Entry gates:** the gate opened is the target zone's entry gate: the
+  zone-tagged barrier nearest an entry sensor. Level 1 falls back to the old
+  nearest-gate rule. *Superseded in part by 4.20:* the gate now opens only when
+  the car is waiting at the zone's own sensor. It closes on `Park/CarIn` once no other car is still heading
+  to that zone, and also when a reservation expires.
+- **Exit gates:** still opened only after a verified payment. They close
+  `GATE_CLOSE_DELAY_S` after `ExitSpot/CarOut`, because no sensor reports the car
+  clearing the gate. They stay open while another paid car is waiting there.
+- **Main gate** (`MAIN_GATE`, default `gate7`): never operated automatically.
+  Staff open it from the dashboard. While it is shut, Live shows a red alert,
+  because cars queued in front of it send no event.
+
+**Verification:** `tests/test_zone_gates.py`, 10 cases written before the code:
+ratio counting, tie-break, entry-gate lookup, emptiest-zone dispatch through
+gate5, held-gate diversion, all-held waits rather than turning the car away,
+close-after-last-park, idle close skips the main gate and unavailable gates,
+exit gate held for a paid car, and a once-only level-start close. Full suite:
+**203 passed**. Dry-run server seeded with Level 2: the snapshot flags gate7 as
+the main gate, and an empty-lot dispatch picks ZONE1/S1 on the tie-break. Not
+yet exercised against the live simulator.
+
+**Watch on the first live run:**
+- Gates now cost two cycles per car, so they reach the 85% preventive-repair
+  point about twice as fast.
+- A restart of the dispatcher, or a new level load, closes gate7 again.
+- It is unknown whether the simulator fines cars queued behind a closed main
+  gate for neglect.
+
+### 4.19 Recycled plates and level reloads: no invoice, never dispatched, ghost cars (20 September 2026)
+
+**Symptoms:**
+- Cars left without paying.
+- Some arrivals sat at ENTRY1 and were never sent to a bay.
+- Repeat plates showed as "Paid".
+- gate2 and gate7 were open when Level 2 was clicked.
+- The dashboard showed a Level 1 map until the first car arrived.
+- 23 sessions sat "charged" at exits. Six of them (FLL 178, FKX 546, BXT 906,
+  QNL 430, CLK 433, TRB 130) had no events at all in the current run.
+
+**Root causes:**
+1. **Plates are recycled.** The simulator draws plates from a fixed list
+   (`settings/plates.txt`), so every level load replays the same plates.
+   `start_session` reused the in-memory session of a returning plate, so the new
+   car inherited `charged`/`paid` and its old bay. The entrance short-circuit
+   (`active_dispatches`) then skipped dispatch: VBK 204, LMD 406 and FRA 222 were
+   never sent. The exit handler's `if session.charged: return` skipped the invoice:
+   KTR 684 and WRW 914 got none and would escape.
+2. **Nothing marked a level reload.** Loading a level sends no webhook; the first
+   event is the first car (seq 22195). The previous level's sessions stayed in
+   memory. Sessions already at an exit are exempt from the orphan sweep, so they
+   stayed forever, kept exit gates "in use" (gate4/gate6 never closed), and drew
+   `[ERROR] Car not found` from the simulator.
+3. **Stale holds.** gate2 was open at load. An operator pressed Close, which is a
+   *persistent hold*, and every paid release at EXIT_EXIT was blocked from then on
+   (RKP 735, KRK 711 and TQM 683 paid and sat there).
+4. `SEED_FROM_LEVEL=lvl1` made `running_level()` report Level 1 whenever no bays
+   were loaded.
+
+**Fix:**
+- **One session per visit** (`_retire_previous_visit`). An EntrySpot `CarIn` for a
+  plate whose session already parked, reached an exit, or was billed archives that
+  visit and starts a fresh one. A car still driving to its bay keeps its session
+  across ENTRY2/ENTRY3, as in 4.12.
+- **Level-load detection from the simulator console** (`app/simlog.py`). The
+  simulator is a console program (PE subsystem 3). START.bat now launches it through
+  PowerShell `Tee-Object`, so its window still shows output and `data/simulator.log`
+  receives a copy (UTF-16LE with BOM, decoded incrementally). The dispatcher follows
+  that file. On `Load Game./settings/lvlN.json` it:
+  - drops the previous level's live sessions (memory and `active_sessions`),
+    operator holds and ghost holds (held by key pattern since 4.20 - the first
+    version keyed them on in-memory gate names and missed them);
+  - clears the gate/bay model;
+  - announces the level so the map appears at once;
+  - syncs, retrying for up to 15 s while the simulator loads. That is one sync per
+    level load, as the docs require.
+
+  The sync closes every gate, gate7 included. Reading a local file is not an API
+  call, so the docs' "list-* ONLY once per level loading" rule holds. Content
+  already in the file at dispatcher start is skipped, and a shrunken file (a
+  relaunched simulator) is read from the top. If the captured launch dies within
+  4 s, START.bat relaunches the simulator plainly; level loads are then noticed
+  only at the first car.
+- `SEED_FROM_LEVEL` is empty in `.env`/`.env.example`, so the map is blank until a
+  level is known. The Live alert now reads "No level running".
+
+**Verification:** `tests/test_level_reload.py`, 5 cases written before the code:
+- a returning plate gets a fresh session and a goto, and the old visit is archived;
+- a car still in flight keeps its session at ENTRY2;
+- UTF-16 decoding across a split write, skipping pre-existing lines;
+- re-reading after the simulator relaunches;
+- level load clears sessions, holds and DB rows, and closes gate2 and gate7.
+
+Full suite: **208 passed**.
+- **Pipeline check:** a stand-in console command piped through the same
+  `Tee-Object` line produced a UTF-16 file from which the follower read `lvl2`.
+- **Dry-run server:** `/api/twin` was empty before, and showed 101 bays, 7 gates
+  and 3 zones about 1 s after a `Load Game` line was appended.
+
+**Live-verified on 20 September:** the real simulator ran normally under `Tee-Object`, and its
+`Load Game./settings/lvl2.json` line triggered the reset, sync and gate closes (4.20).
+
+### 4.20 Goto sent through a closed gate: paid cars stuck at exits, zone gate open too early (20 September 2026)
+
+**Symptoms:**
+- Paid cars sat at exits.
+- A car heading for ZONE3 had gate5 opened while it was still at ENTRY1, far
+  from the gate.
+- gate2 was still on hold after a level load, so AVF 707 paid at EXIT_EXIT and was
+  never released.
+
+**Evidence:** the simulator console, now captured to `data/simulator.log`.
+- `POST barrier-gates/gate4/open`, then `POST car/RAK 680/goto/leavepark` 10 ms
+  later, then `[ERROR] No valid escape spot found for car: RAK 680`. The same
+  happened for AKC 169; gate6 reported `Open` only after the goto. RAK 680 then
+  "is bored" and left a minute later.
+- `open gate3`, then `goto bay60`, then `Paths found: 0`; gate3 `Open` came
+  afterwards (WRC 747).
+- `[ERROR] Won't spawn car No path from A to P2` while gate7 was closed.
+- `[ERROR] Car (X) is not waiting at the entrance or exit`, 24 times: every one a
+  *resent* goto after the first had been accepted. This is noise, but it shows the
+  simulator only accepts a goto from a car waiting at an entry or exit sensor.
+- `gate_override:gate2 = 1` survived the level load. The dispatcher started before
+  Level 2 was clicked, so no gates were in memory, and 4.19's reset looped over
+  in-memory gate names.
+
+**Root causes:**
+- The simulator plans the route *at goto time* and treats a closed or rising
+  barrier as a wall. `_wait_for_barrier_open` existed but was no longer called
+  anywhere, so both entry and exit sent the goto while the gate was still rising.
+- The level reset cleared holds by gate name instead of by key.
+
+**Fix:**
+- `_open_gate_and_wait` precedes every entry goto, and `_send_paid_release` waits
+  for `Open` before `leavepark`.
+- **Two-hop entry** (`ZONE_GATE_AT_SENSOR`, default on). A car whose zone gate is
+  not in front of its current sensor is first sent to that zone's own sensor
+  (`_zone_sensor`: ENTRY3 for gate5), with the gate still closed. Its EntrySpot
+  `CarIn` there (`staged_via`) starts leg 2: open the gate, wait for `Open`, goto
+  the bay. Each leg stops itself once the car waits at another sensor
+  (`_waiting_at`), so the ENTRY1 leg cannot keep resending in parallel.
+- If the car is still at ENTRY1 after `HOP_ATTEMPTS` (5) hop sends, the simulator
+  is taken to have refused an entry sensor as a destination. The zone gate is then
+  opened from ENTRY1, as before. Cars were seen to leave ENTRY1 1.1-2.9 s after an
+  accepted goto, so 5 sends at 1 s cover it.
+- `db.reset_live_level()` clears every `gate_override:%` / `gate_holds:%` key.
+
+**Verification:** 6 tests written first:
+- ZONE1 goto only after gate1 `Open`;
+- ZONE3 car sent to ENTRY3 with no gate opened, gate5 opened on arrival, and the
+  bay goto made with gate5 `Open`; exactly one hop, and the ENTRY1 leg ends;
+- a refused hop falls back to opening gate5;
+- `leavepark` only after gate6 `Open`;
+- holds cleared with no gates in memory.
+
+The ENTRY3 test caught a real race: leg 1 kept sending in parallel with leg 2.
+That is what `_waiting_at` fixes. Full suite: **213 passed**.
+
+**Not yet verified live:**
+- whether the simulator accepts `goto ENTRY3`. If it does not, cars wait about 5 s
+  at ENTRY1 and then enter the old way; set `ZONE_GATE_AT_SENSOR=false` to skip
+  the wait.
+- whether a car waiting at ENTRY3 blocks the road for cars behind it bound for
+  other zones.
+
+### 4.21 Zone gate stayed open until the car parked (20 September 2026)
+
+**Symptom:** a zone entry gate opened for a car and stayed open for the car's
+whole drive to its bay. It closed only on `Park/CarIn`.
+
+**Root cause:** 4.18 counted an entry gate "in use" for any car that was assigned
+but not yet parked.
+
+**Fix:** a gate is held *per car*, from the moment it is opened for that car
+(`_holding_gate`). The car releases it when it leaves the sensor box in front of
+that gate: an EntrySpot `CarOut` at the sensor whose nearest barrier is the held
+gate. `_close_idle_gates` then runs `ENTRY_GATE_CLOSE_DELAY_S` (1.5 simulated s)
+later and closes the gate unless the next car already holds it. The next car
+repeats the same cycle.
+
+A ZONE3 car leaving ENTRY1 does not release gate5 (fallback mode opens gate5
+from ENTRY1). Only leaving ENTRY3 does. `Park/CarIn` still releases the hold as a
+backstop.
+
+The 1.5 s delay covers the ~140 px from the sensor centre to the gate. Cars were
+measured at 230-870 px/s (ENTRY1-out to ENTRY2-in: 1.5-5.6 s over about 1,300 px).
+
+**Verification:** 3 tests written first:
+- gate5 closes after its car leaves ENTRY3, not before the delay and before the
+  car parks;
+- a second car holding the gate keeps it open, and exactly one close follows the
+  second car;
+- leaving ENTRY1 does not close gate5, and leaving ENTRY3 does.
+
+Full suite: **215 passed**.
+
 ---
 
 ## 5. Edge cases and how they are handled
@@ -460,6 +689,11 @@ webhook alert, repair-cost net revenue (20.00 - 7.50 = 12.50), and distinct actu
 | Simulator returns an unexpected shape | `detectedCars` accepts list or int |
 | Handler throws | Caught and retained as unprocessed; returns `500` so a signed redelivery retries the same durable EventId |
 | Dry-run must not mutate state | Reservation rolled back when no command was sent |
+| A zone's entry gate is held, broken or under repair | That zone is skipped and the car goes to the next-lowest-ratio zone. If every suitable zone is blocked, the car waits (`Held closed by operator` / `Barrier unavailable`) and is not turned away (4.18) |
+| A plate returns (plates are recycled from `settings/plates.txt`) | EntrySpot `CarIn` for a session that already parked/exited/was billed archives it and starts a fresh visit; a car still driving to its bay keeps its session (4.19) |
+| A level is (re)loaded in the simulator | Console `Load Game` line → previous level's live sessions, holds and model dropped, one sync, all gates closed (4.19) |
+| Staff open a zone gate by hand | It is closed again at the next idle check (a car parks, leaves, or a reservation expires). Only `MAIN_GATE` is manual (4.18) |
+| Admin clears a page's records (red dustbin on History / Payments / Penalties) | `DELETE /api/admin/data/{history,payments,penalties}`, gated by the admin-only `admin:reset` capability (other roles get `403`; the icon is hidden via `data-cap`). History deletes `sessions` + `neglected_vehicles`; Payments deletes `payments`; Penalties deletes `penalties` and zeroes the in-memory fine counters. `active_sessions`/live sessions are never touched — clearing them mid-run would lose billing state and cause `CarEscapedWithoutPaying`. `events` is never touched — it is the `EventId` de-duplication record. Every clear is written to the audit log with the row count |
 
 ---
 
@@ -477,7 +711,12 @@ Everything lives in `.env` (see `.env.example`). The ones that matter:
 | `ELECTRIC_SPLIT_CHARGING` | `true` | Split the 2× across both fields |
 | `RESERVATION_TTL_S` | `120` | Expire promises to no-show cars |
 | `UNKNOWN_CAR_MINUTES` | `3.0` | Estimate for adopted cars |
-| `SEED_FROM_LEVEL` | `lvl1` | **Set empty for a scored run** |
+| `SEED_FROM_LEVEL` | `lvl1` in code, empty in `.env`/`.env.example` | **Keep empty.** When set, the dashboard shows that level's map while no level is running, which is how a Level 1 map appeared before Level 2 was clicked (4.19) |
+| `ENTRY_GATE_CLOSE_DELAY_S` | `1.5` | Simulated seconds after a car leaves its zone sensor before the zone gate closes behind it (4.21) |
+| `ZONE_GATE_AT_SENSOR` | `true` | Send ZONE2/3 cars to their zone sensor first and open the zone gate only there (4.20) |
+| `SIMULATOR_LOG` | `data/simulator.log` | Simulator console captured by START.bat; its `Load Game` line triggers the level reset (4.19). Empty disables it |
+| `MAIN_GATE` | `gate7` | Operator-only gate; never opened or closed automatically (4.18) |
+| `GATE_CLOSE_DELAY_S` | `3.0` | Simulated seconds after `ExitSpot/CarOut` before the exit gate closes (4.18) |
 
 Two traps worth knowing:
 

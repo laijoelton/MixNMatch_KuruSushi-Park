@@ -32,10 +32,10 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
-from app import auth, dashboard_api, db, tariffs
+from app import auth, dashboard_api, db, simlog, tariffs, zones
 from app.client import client
 from app.config import settings
-from app.layout import load_layout, running_level
+from app.layout import announce_level, load_layout, running_level
 from app.queue_worker import maintenance_queue, schedule_lights
 from app.routing import load_distance_table, rank_spots, ring
 from app.seed import load_level
@@ -158,6 +158,8 @@ async def _sync_if_no_live_bays() -> None:
 GATE_OPEN_WAIT_S = 5.0
 ENTRY_RETRY_S = 8.0
 _left_entry: set[str] = set()   # plates seen driving off their entry spot
+_waiting_at: dict[str, str] = {}  # plate -> zone sensor it has reached (two-hop leg 2)
+_holding_gate: dict[str, str] = {}  # plate -> zone entry gate opened for it, until it drives through
 _entry_watchers: set[asyncio.Task] = set()
 _dispatch_tasks: dict[str, asyncio.Task] = {}
 _webhook_events_in_progress: set[str] = set()
@@ -192,6 +194,115 @@ def _barrier_for_sensor(sensor: str) -> Optional[str]:
     return next(iter(state.barriers)) if len(state.barriers) == 1 else None
 
 
+# --------------------------------------------------------------------------- #
+# Zone gates: closed by default, opened per car, closed once it has passed.
+# On Level 2 every car crosses ENTRY1 (and then ENTRY2/3 on its way down the
+# road), so the gate to open is the *target zone's* entry gate - not the one
+# nearest the sensor the car first tripped. The main gate is operator-only.
+# --------------------------------------------------------------------------- #
+_gates_closed_for_level = False
+
+
+def _zone_entry_gate(zone: str, sensor: str) -> Optional[str]:
+    layout = load_layout(running_level() or "lvl1")
+    positions = {n: (g["x"], g["y"]) for n, g in layout.get("gates", {}).items()}
+    entries = [(s["x"], s["y"]) for s in layout.get("spots", {}).values() if s.get("purpose") == "EntrySpot"]
+    gate = zones.entry_gate_for_zone(zone, state.barriers.values(), positions, entries,
+                                     exclude={settings.main_gate})
+    return gate or _barrier_for_sensor(sensor)
+
+
+def _entry_gate_for_session(session) -> Optional[str]:
+    spot = state.spots.get(session.assigned_spot or "")
+    return _zone_entry_gate(spot.zone_parent if spot else "", session.entry_gate)
+
+
+def _gate_usable(name: Optional[str]) -> bool:
+    barrier = state.barriers.get(name or "")
+    return barrier is None or not (barrier.operator_override or barrier.held_vehicles or barrier.broken
+                                   or barrier.under_maintenance or barrier.name in state.pending_repairs)
+
+
+def _gates_in_use() -> set[str]:
+    """Gates a car still has to drive through: its zone entry gate until it
+    parks, and its exit gate from payment until it has left the facility."""
+    used: set[Optional[str]] = set(_holding_gate.values())
+    for session in list(state.sessions.values()):
+        if session.paid and session.exit_gate:
+            used.add(_barrier_for_sensor(session.exit_gate))
+    return {name for name in used if name}
+
+
+async def _close_idle_gates(*, include_main: bool = False) -> None:
+    in_use = _gates_in_use()
+    for name, barrier in list(state.barriers.items()):
+        if (name in in_use or (name == settings.main_gate and not include_main)
+                or barrier.state not in (BarrierPosition.OPEN, BarrierPosition.OPENING)
+                or barrier.broken or barrier.under_maintenance or name in state.pending_repairs):
+            continue
+        if await act(f"close idle gate {name}", lambda n=name: client.barrier_close(n)):
+            state.update_barrier_state(name, "Closing")
+            db.sync_component_wear(name, "BarrierGate", state.record_barrier_cycle(name), 0)
+
+
+async def _close_idle_gates_later(delay_s: Optional[float] = None) -> None:
+    delay_s = settings.gate_close_delay_s if delay_s is None else delay_s
+    await asyncio.sleep(delay_s / max(settings.game_speed, 0.1))
+    await _close_idle_gates()
+
+
+async def _close_gates_for_level_start() -> None:
+    """Every gate, main gate included, starts closed - once per running level,
+    so a later manual sync never shuts the main gate on the operator."""
+    global _gates_closed_for_level
+    if _gates_closed_for_level:
+        return
+    _gates_closed_for_level = True
+    await _close_idle_gates(include_main=True)
+    state.log_activity("Level start: all gates closed; open the main gate to admit cars")
+
+
+# The simulator needs a moment after "Load Game" before list-* return the new
+# bays. Loading is real time, not simulated time, so this does not scale with
+# game speed; the retries stop at the first sync that sees bays.
+LEVEL_SYNC_RETRY_S = 1.0
+LEVEL_SYNC_ATTEMPTS = 15
+
+
+async def _on_level_loaded(level: str) -> None:
+    """The simulator console printed ``Load Game./settings/<level>.json``.
+
+    Everything live from the previous level is gone in the simulator, so drop
+    it here too: unfinished sessions (they would otherwise sit "charged at the
+    exit" forever and keep exit gates in use), operator and ghost holds, and
+    the gate/bay model. Then sync once - the docs' "once per level loading" -
+    which closes every gate, main gate included.
+    """
+    global _live_bays_synced, _gates_closed_for_level
+    for task in list(_entry_watchers):
+        task.cancel()
+    _dispatch_tasks.clear()
+    _left_entry.clear()
+    _waiting_at.clear()
+    _holding_gate.clear()
+    db.reset_live_level()
+    dropped = state.reset_for_new_level()
+    announce_level(level)
+    _live_bays_synced = False
+    _gates_closed_for_level = False
+    state.log_activity(f"Simulator loaded {level}: previous level cleared "
+                       f"({dropped} unfinished vehicle{'s' if dropped != 1 else ''} dropped, gate holds released)")
+    for _ in range(LEVEL_SYNC_ATTEMPTS):
+        await asyncio.sleep(LEVEL_SYNC_RETRY_S)
+        try:
+            await sync_from_simulator()
+        except Exception as exc:  # noqa: BLE001 - the simulator may still be loading
+            log.warning("sync after %s load failed: %s", level, exc)
+        if _live_bays_synced:
+            return
+    state.log_activity(f"{level} loaded but no bays were returned yet; the first car will sync it", level="warn")
+
+
 def _spawn(coro) -> asyncio.Task:
     task = asyncio.create_task(coro)
     _entry_watchers.add(task)
@@ -199,11 +310,13 @@ def _spawn(coro) -> asyncio.Task:
     return task
 
 
-def _start_dispatch_retry(plate: str, spot: str) -> None:
+def _start_dispatch_retry(plate: str, spot: str, sensor: Optional[str] = None) -> None:
     existing = _dispatch_tasks.get(plate)
     if existing and not existing.done():
-        return
-    task = _spawn(_resend_if_still_at_entry(plate, spot, initial=True))
+        if sensor is None:
+            return
+        existing.cancel()   # the car moved on to its zone sensor: that leg is over
+    task = _spawn(_resend_if_still_at_entry(plate, spot, initial=True, sensor=sensor))
     _dispatch_tasks[plate] = task
     def finished(completed):
         if _dispatch_tasks.get(plate) is completed:
@@ -211,36 +324,86 @@ def _start_dispatch_retry(plate: str, spot: str) -> None:
     task.add_done_callback(finished)
 
 
-async def _resend_if_still_at_entry(plate: str, spot: str, *, initial: bool = False) -> None:
+def _zone_sensor(gate: Optional[str]) -> Optional[str]:
+    """The entry sensor standing in front of ``gate`` (ENTRY3 for gate5)."""
+    if not gate:
+        return None
+    layout = load_layout(running_level() or "lvl1")
+    for name, spot in layout.get("spots", {}).items():
+        if spot.get("purpose") == "EntrySpot" and _barrier_for_sensor(name) == gate:
+            return name
+    return None
+
+
+async def _open_gate_and_wait(gate_name: str, why: str) -> None:
+    """Open ``gate_name`` and wait for its Open report. The simulator plans a
+    route when the goto arrives and treats a closed or rising gate as a wall:
+    "Paths found: 0" at an entrance, "No valid escape spot found" at an exit."""
+    barrier = state.barriers.get(gate_name)
+    if barrier is None:
+        return
+    if barrier.state not in (BarrierPosition.OPEN, BarrierPosition.OPENING):
+        if await act(f"open {gate_name} {why}", lambda: client.barrier_open(gate_name)):
+            state.update_barrier_state(gate_name, "Opening")
+            db.sync_component_wear(gate_name, "BarrierGate", state.record_barrier_cycle(gate_name), 0)
+    await _wait_for_barrier_open(gate_name)
+
+
+# A car sent to its zone's sensor normally pulls off ENTRY1 within ~3 s (seen
+# 1.1-2.9 s live). Resend the hop this many times before concluding the
+# simulator refused it and falling back to opening the zone gate at ENTRY1.
+HOP_ATTEMPTS = 5
+
+
+async def _resend_if_still_at_entry(plate: str, spot: str, *, initial: bool = False,
+                                    sensor: Optional[str] = None) -> None:
+    """Get a car from the entry sensor it is waiting at (``sensor``, default
+    its first one) to ``spot``, resending while it has not driven off.
+
+    The simulator only accepts a goto from a car waiting at an entry or exit
+    sensor. If the zone's gate is not in front of this sensor (a ZONE3 car at
+    ENTRY1), the car is first sent to the zone's own sensor with the gate still
+    closed; ``_handle_car_spot_action`` resumes it from there.
+    """
     session = state.get_session(plate)
     if session is None:
         return
     identity = session.session_id
+    here = sensor or session.entry_gate
+    gate_name = _entry_gate_for_session(session)
+    via = _zone_sensor(gate_name) if gate_name in state.barriers else None
+    hop = bool(settings.zone_gate_at_sensor and via and via != here and _barrier_for_sensor(here) != gate_name)
+    plan = ["hop"] * HOP_ATTEMPTS + ["direct"] * settings.entry_max_attempts if hop \
+        else ["direct"] * settings.entry_max_attempts
     delay_s = max(0.4, 1.0 / max(settings.game_speed, 1.0))
-    for attempt in range(settings.entry_max_attempts):
+    for attempt, how in enumerate(plan):
         if attempt or not initial:
             await asyncio.sleep(delay_s)
         session = state.get_session(plate)
         if (session is None or session.session_id != identity or session.entry_departed
                 or plate in _left_entry or session.phase != SessionPhase.ASSIGNED
-                or session.assigned_spot != spot):
-            return
+                or session.assigned_spot != spot or _waiting_at.get(plate, session.entry_gate) != here):
+            return   # gone, or now waiting at another sensor that has its own leg
         target = state.spots.get(spot)
         if (target is None or target.status != SpotStatus.RESERVED or target.occupant_plate != plate
                 or target.broken or target.under_maintenance or spot in state.pending_repairs):
             state.log_activity(f"Dispatch paused for {plate}: bay {spot} is no longer safely reserved", level="warn")
             return
-        gate_name = _barrier_for_sensor(session.entry_gate)
-        barrier = state.barriers.get(gate_name)
-        if barrier:
-            if barrier.operator_override or barrier.held_vehicles or barrier.broken or barrier.under_maintenance or gate_name in state.pending_repairs:
-                return
-            if barrier.state not in (BarrierPosition.OPEN, BarrierPosition.OPENING):
-                if await act(f"open {gate_name} for {plate}", lambda n=gate_name: client.barrier_open(n)):
-                    state.update_barrier_state(gate_name, "Opening")
-                    db.sync_component_wear(gate_name, "BarrierGate", state.record_barrier_cycle(gate_name), 0)
+        if not _gate_usable(gate_name):
+            return
+        if how == "hop":
+            session.staged_via = via
+            await act(f"car {plate} -> {via} on the way to {spot} (attempt {attempt + 1})",
+                      lambda: client.car_goto(plate, via))
+            continue
+        if session.staged_via and session.staged_via != here:
+            session.staged_via = None
+            state.log_activity(f"{plate} would not drive to {via}; opening {gate_name} from {here} instead", level="warn")
+        if gate_name:
+            _holding_gate[plate] = gate_name
+        await _open_gate_and_wait(gate_name, f"for {plate}")
         await act(f"car {plate} -> {spot} (attempt {attempt + 1})", lambda: client.car_goto(plate, spot))
-    state.log_activity(f"{plate} still at entrance after {settings.entry_max_attempts} attempts", level="warn")
+    state.log_activity(f"{plate} still at {here} after {len(plan)} attempts", level="warn")
 
 
 def _persist(plate: str) -> None:
@@ -295,6 +458,7 @@ def restore_operational_observability() -> None:
 
 async def reap_orphans() -> None:
     now = time.monotonic()
+    expired = False
     for plate, session in list(state.sessions.items()):
         if (session.left_spot_at is not None and not session.exit_confirmed
                 and now - session.left_spot_at > settings.orphan_timeout_s / settings.game_speed):
@@ -308,6 +472,9 @@ async def reap_orphans() -> None:
             if session.assigned_spot:
                 state.release_reservation(session.assigned_spot, plate)
             _archive(plate)
+            expired = True
+    if expired:
+        await _close_idle_gates()   # nobody is coming through that zone gate any more
 
 
 async def sync_from_simulator() -> dict[str, int]:
@@ -364,6 +531,8 @@ async def sync_from_simulator() -> dict[str, int]:
               "zones": len(state.zones), "fans": len(state.fans)}
     state.log_activity(f"Manual sync: {counts['spots']} spots, {counts['barriers']} barriers, "
                        f"{counts['zones']} zones, {counts['fans']} fans")
+    if _live_bays_synced:
+        await _close_gates_for_level_start()
     await _ensure_barriers_open()
     return counts
 
@@ -476,6 +645,9 @@ async def lifespan(app: FastAPI):
     wear_checker = asyncio.create_task(_wear_check_loop(), name="dispatcher-wear-check")
     environment = asyncio.create_task(_environment_loop(), name="dispatcher-environment")
     background_tasks = (broadcaster, wear_checker, environment)
+    if settings.simulator_log:
+        background_tasks += (asyncio.create_task(simlog.follow(settings.simulator_log, _on_level_loaded),
+                                                 name="dispatcher-level-watch"),)
     try:
         yield
     finally:
@@ -513,9 +685,29 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR)) if TEMPLATES_DIR.exist
 # --------------------------------------------------------------------------- #
 # Dispatch core (shared by the real webhook path and the manual/dry-run path)
 # --------------------------------------------------------------------------- #
+def _retire_previous_visit(plate: str) -> None:
+    """A plate at the entrance whose session already parked, reached an exit or
+    was billed is a *new* visit - the simulator recycles plates from a fixed
+    list. Reusing the old session made the new car inherit ``charged``/``paid``
+    (no invoice at the exit, so it escaped) and its old bay (so the entrance
+    short-circuit never dispatched it). A car still driving to its bay keeps
+    its session: it trips ENTRY2/ENTRY3 on the way down the road.
+    """
+    session = state.get_session(plate)
+    if session is None or not (session.parked_at is not None or session.exit_confirmed
+                               or session.charge_attempted or session.paid):
+        return
+    if session.assigned_spot:
+        state.release_reservation(session.assigned_spot, plate)
+    state.log_activity(f"{plate} is back at the entrance: previous visit closed, new visit started")
+    _archive(plate)
+
+
 async def dispatch_entry(plate: str, gate_name: str, car_type: str = "Normal",
                          dry_run: bool = False, planned_minutes: float = 0.0,
                          target_spot: Optional[str] = None) -> dict[str, Any]:
+    if not dry_run:
+        _retire_previous_visit(plate)
     assigned = state.active_dispatches.get(plate)
     if assigned:
         log.info("idempotent dispatch short-circuit: %s already assigned %s", plate, assigned)
@@ -525,10 +717,6 @@ async def dispatch_entry(plate: str, gate_name: str, car_type: str = "Normal",
         session = state.start_session(plate, gate=gate_name, car_type=car_type,
                                       planned_minutes=planned_minutes)
         _persist(plate)
-    barrier = state.barriers.get(_barrier_for_sensor(gate_name))
-    if barrier and (barrier.operator_override or barrier.held_vehicles or barrier.broken or barrier.under_maintenance or barrier.name in state.pending_repairs):
-        return {"plate": plate, "gate": gate_name, "target": None, "dispatched": False,
-                "reason": "Held closed by operator" if barrier.operator_override else "Barrier unavailable"}
     await reap_orphans()
     kind = normalize_car_type(car_type)
     candidate_type = "Electric" if kind == "ev" else "Accessible" if kind == "accessible" else "Any"
@@ -536,8 +724,19 @@ async def dispatch_entry(plate: str, gate_name: str, car_type: str = "Normal",
     if kind == "accessible":
         accessible = [n for n in candidates if state.spots[n].is_accessible]
         candidates = accessible or candidates
-    ranked = rank_spots(gate_name, candidates)
-    target = target_spot if target_spot in candidates else (ranked[0][0] if ranked and not target_spot else None)
+    # A zone whose entry gate is held, broken or under repair cannot take the car.
+    zone_gate = {z: _zone_entry_gate(z, gate_name) for z in {state.spots[n].zone_parent for n in candidates}}
+    reachable = [n for n in candidates if _gate_usable(zone_gate[state.spots[n].zone_parent])]
+    if candidates and not reachable:
+        held = any(state.barriers[g].operator_override for g in zone_gate.values() if g in state.barriers)
+        return {"plate": plate, "gate": gate_name, "target": None, "dispatched": False,
+                "reason": "Held closed by operator" if held else "Barrier unavailable"}
+    # Balance load: the zone with the lowest (occupied + reserved + broken +
+    # under repair) / bays ratio, then the nearest suitable bay inside it.
+    ratios = zones.zone_ratios(state.spots.values(), state.pending_repairs)
+    zone = zones.pick_zone({state.spots[n].zone_parent for n in reachable}, ratios)
+    ranked = rank_spots(gate_name, [n for n in reachable if state.spots[n].zone_parent == zone])
+    target = target_spot if target_spot in reachable else (ranked[0][0] if ranked and not target_spot else None)
     result = {"plate": plate, "gate": gate_name, "target": target, "dispatched": False}
     if dry_run:
         return {**result, "ranked_candidates": ranked[:10]}
@@ -557,9 +756,13 @@ async def dispatch_entry(plate: str, gate_name: str, car_type: str = "Normal",
                                       planned_minutes=planned_minutes)
     state.assign_spot(plate, target)
     _left_entry.discard(plate)
+    _waiting_at.pop(plate, None)
+    _holding_gate.pop(plate, None)
     _persist(plate)
     _start_dispatch_retry(plate, target)
-    state.log_activity(f"Dispatched {plate} from {gate_name} to {target}")
+    zone = state.spots[target].zone_parent
+    note = f" ({zone} was {ratios.get(zone, 0):.0%} full)" if zone else ""
+    state.log_activity(f"Dispatched {plate} from {gate_name} to {target}{note}")
     return {**result, "dispatched": True}
 
 
@@ -1201,7 +1404,19 @@ async def _handle_car_spot_action(payload: dict[str, Any]) -> None:
     spot_type = payload.get("SpotType", "")
     direction = payload.get("Direction", "")
 
+    if spot_type == "EntrySpot" and direction == "CarIn":
+        _retire_previous_visit(plate)
     if spot_type == "EntrySpot" and direction == "CarIn" and plate in state.active_dispatches:
+        session = state.get_session(plate)
+        if session is not None and session.staged_via == spot_name and session.phase == SessionPhase.ASSIGNED:
+            # The car has reached its zone's own sensor and is waiting at the
+            # closed zone gate: open it now and send the car on to its bay.
+            _waiting_at[plate] = spot_name
+            _left_entry.discard(plate)
+            session.entry_departed = False
+            _persist(plate)
+            _start_dispatch_retry(plate, session.assigned_spot, sensor=spot_name)
+            return
         log.info("idempotent entrance short-circuit for %s (%s)", plate, state.active_dispatches[plate])
         return
     await _sync_if_no_live_bays()
@@ -1215,6 +1430,11 @@ async def _handle_car_spot_action(payload: dict[str, Any]) -> None:
             _left_entry.add(plate)
             session.entry_departed = True
             _persist(plate)
+            if _holding_gate.get(plate) and _holding_gate[plate] == _barrier_for_sensor(spot_name):
+                # Out of the box in front of its gate: the car is going through.
+                # Close behind it unless the next car already holds the gate.
+                _holding_gate.pop(plate, None)
+                _spawn(_close_idle_gates_later(settings.entry_gate_close_delay_s))
         return
 
     if spot_type == "EntrySpot" and direction == "CarIn":
@@ -1235,6 +1455,8 @@ async def _handle_car_spot_action(payload: dict[str, Any]) -> None:
         state.mark_parked(plate, spot_name)
         _persist(plate)
         state.log_activity(f"{plate} parked at {spot_name}")
+        _holding_gate.pop(plate, None)   # backstop if the sensor exit was missed
+        await _close_idle_gates()
         return
 
     if spot_type == "Park" and direction == "CarOut":
@@ -1274,6 +1496,7 @@ async def _handle_car_spot_action(payload: dict[str, Any]) -> None:
         _archive(plate)
         state.log_activity(f"{plate} left the facility via {spot_name}")
         log.info("%s left the facility via %s", plate, spot_name)
+        _spawn(_close_idle_gates_later())   # no sensor past the exit gate: give the car time to clear it
         return
 
 
@@ -1307,6 +1530,8 @@ def _archive(plate: str) -> None:
     })
     state.complete_session(plate)
     _left_entry.discard(plate)
+    _waiting_at.pop(plate, None)
+    _holding_gate.pop(plate, None)
 
 
 def _record_neglect_and_discard(plate: str, reason: str) -> None:
@@ -1320,6 +1545,8 @@ def _record_neglect_and_discard(plate: str, reason: str) -> None:
     state.complete_session(plate)
     db.delete_active_session(session.session_id)
     _left_entry.discard(plate)
+    _waiting_at.pop(plate, None)
+    _holding_gate.pop(plate, None)
 
 
 async def _charge_at_exit(plate: str, spot_name: str) -> None:
@@ -1602,6 +1829,9 @@ async def _send_paid_release(session) -> None:
                 return
             state.update_barrier_state(gate, "Opening")
             db.sync_component_wear(gate, "BarrierGate", state.record_barrier_cycle(gate), 0)
+        # leavepark is routed at once; sent while the gate is still rising the
+        # simulator finds "No valid escape spot" and the paid car sits there.
+        await _wait_for_barrier_open(gate)
     if await act(f"car {plate} -> leavepark", lambda: client.car_goto(plate, "leavepark")):
         session.released = True
         _persist(plate)

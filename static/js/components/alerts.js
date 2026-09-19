@@ -12,6 +12,11 @@ export function deriveAlerts(snapshot, stats, { isAdmin } = {}) {
   const add = (key, sev, title, detail, target) => alerts.push({ key, sev, title, detail, target });
 
   for (const gate of snapshot.barriers || []) {
+    // The main gate is operator-only and there is no sensor in front of it:
+    // while it is shut, cars queue outside and the dispatcher never hears of them.
+    if (gate.main_gate && gate.state !== "Open" && gate.state !== "Opening") {
+      add(`main-gate-${gate.name}`, "bad", `Main gate (${gate.name}) is closed — no cars can enter`, "Open it from the gate panel to admit cars", { kind: "gate", name: gate.name });
+    }
     if (gate.broken) add(`gate-broken-${gate.name}`, "bad", `Gate ${gate.name} is broken`, "Repair it — it cannot open or close", { kind: "gate", name: gate.name });
     else if (gate.under_maintenance) add(`gate-maint-${gate.name}`, "warn", `Gate ${gate.name} under repair`, "Do not operate until fixed", { kind: "gate", name: gate.name });
     else if (gate.repair_pending) add(`gate-pending-${gate.name}`, "warn", `Gate ${gate.name} repair queued`, "Excluded from operation until the repair starts", { kind: "gate", name: gate.name });
@@ -50,8 +55,8 @@ export function deriveAlerts(snapshot, stats, { isAdmin } = {}) {
   // running then, it holds zero bays and treats every arrival as "lot full".
   if (!park.length) {
     const waiting = (snapshot.sessions || []).length;
-    add("no-bays", "bad", "No bays loaded from the simulator",
-      `${waiting ? `${waiting} car${waiting > 1 ? "s" : ""} waiting. ` : ""}Start a level in the simulator, then run a manual sync.`,
+    add("no-bays", "bad", "No level running",
+      `${waiting ? `${waiting} car${waiting > 1 ? "s" : ""} waiting. ` : ""}Start a level in the simulator — the dashboard loads it automatically.`,
       isAdmin ? { kind: "page", href: "/admin" } : null);
   }
   if (park.length && park.every((sp) => spotState(sp) !== "free")) {
