@@ -367,3 +367,17 @@ def test_a_zone_lights_up_only_once_its_car_reaches_that_zones_sensor(sim, monke
     asyncio.run(main._handle_car_spot_action(sensor("ENTRY3", "CarIn")))
     asyncio.run(main._refresh_lights(NIGHT))
     assert _on() == ["ZONE3-L0", "ZONE3-L1"]
+
+
+def test_staff_open_on_the_ringed_gate_lets_the_ghost_car_out(ghost):
+    ghost_id = _arrive_ghost("GHO 110")
+    gate6 = next(b for b in state.snapshot()["barriers"] if b["name"] == "gate6")
+    assert gate6["held_plates"] == ["GHO 110"], "the map rings gate6 orange for this car"
+
+    async def open_it():
+        asyncio.get_running_loop().call_later(0.02, state.update_barrier_state, "gate6", "Open")
+        return await main.manual_barrier_open("gate6", {"username": "admin", "role": "admin"})
+    result = asyncio.run(open_it())
+    assert result["released"] == ["GHO 110"]
+    assert ("car_goto", "GHO 110", "leavepark") in ghost
+    assert db.query("SELECT resolved FROM ghost_car_events WHERE id = ?", (ghost_id,))[0]["resolved"] == 1

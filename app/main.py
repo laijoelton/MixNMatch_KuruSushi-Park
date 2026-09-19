@@ -40,7 +40,7 @@ from app.queue_worker import maintenance_queue, schedule_lights
 from app.routing import load_distance_table, rank_spots, ring
 from app.seed import load_level
 from app.signature import verify as verify_signature_recipes
-from app.state import BarrierPosition, SessionPhase, VehicleSession, SpotStatus, normalize_car_type, state
+from app.state import Barrier, BarrierPosition, SessionPhase, VehicleSession, SpotStatus, normalize_car_type, state
 from app.policy import has, project_snapshot, project_events, redact
 from app.ws_manager import manager
 
@@ -231,6 +231,12 @@ def _zone_gates(zone: str) -> tuple[Optional[str], Optional[str]]:
     return entry, exit_gate
 
 
+def _all_zones() -> list[str]:
+    layout = load_layout(running_level() or "lvl1")
+    names = {s.get("zone") for s in layout.get("spots", {}).values() if s.get("zone")}
+    return sorted((z for z in names if any(g in state.barriers for g in _zone_gates(z))), key=zones._natural)
+
+
 def _zone_of_gate(gate: str) -> Optional[str]:
     if gate == settings.main_gate:
         return None
@@ -257,6 +263,8 @@ def _gates_in_use() -> set[str]:
     parks, and its exit gate from payment until it has left the facility."""
     used: set[Optional[str]] = set(_holding_gate.values())
     for session in list(state.sessions.values()):
+        if session.phase == SessionPhase.ASSIGNED and session.parked_at is None and not session.passed_zone_gate:
+            used.add(_entry_gate_for_session(session))   # a stream keeps its gate open (4.32)
         if session.paid and session.exit_gate:
             used.add(_barrier_for_sensor(session.exit_gate))
     return {name for name in used if name}
@@ -265,7 +273,7 @@ def _gates_in_use() -> set[str]:
 async def _close_idle_gates(*, include_main: bool = False) -> None:
     in_use = _gates_in_use()
     for name, barrier in list(state.barriers.items()):
-        if (name in in_use or (name == settings.main_gate and not include_main)
+        if (name in in_use or (name == settings.main_gate and not include_main) or barrier.operator_open
                 or barrier.state not in (BarrierPosition.OPEN, BarrierPosition.OPENING)
                 or barrier.broken or barrier.under_maintenance or name in state.pending_repairs):
             continue
@@ -283,14 +291,19 @@ async def _close_idle_gates(*, include_main: bool = False) -> None:
 # their booked stay. A broken gate is repaired at once. The zone reopens only
 # when both gates are fixed, so the entry stays shut until then.
 # --------------------------------------------------------------------------- #
+_maintenance_rotation: list[str] = []   # zones in the order maintenance started them
+
+
 def _start_zone_maintenance(zone: str, trigger: str) -> None:
     if zone in state.zone_maintenance:
         return
+    _maintenance_rotation.append(zone)
+    del _maintenance_rotation[:-10]
     entry, exit_gate = _zone_gates(zone)
     state.zone_maintenance[zone] = {"entry": entry, "exit": exit_gate, "trigger": trigger,
                                     "todo": {g for g in (entry, exit_gate) if g}}
-    state.log_activity(f"{zone} closed for maintenance: {trigger} needs repair. New cars go to other "
-                       f"zones; {exit_gate or 'the exit gate'} is repaired once the zone is empty",
+    state.log_activity(f"{zone} closed for maintenance ({trigger}). New cars go to the other zones; "
+                       f"{entry or 'the entry gate'} then {exit_gate or 'the exit gate'} are repaired, one at a time",
                        level="warn", capability="logs:view_maint")
 
 
@@ -304,23 +317,16 @@ def _zone_inbound_clear(zone: str, entry: Optional[str]) -> bool:
     return True
 
 
-def _zone_empty(zone: str) -> bool:
-    if any(s.zone_parent == zone and s.status in (SpotStatus.OCCUPIED, SpotStatus.RESERVED)
-           for s in state.spots.values()):
-        return False
-    for session in list(state.sessions.values()):
-        spot = state.spots.get(session.assigned_spot or "")
-        if session.zone == zone or (spot and spot.zone_parent == zone):
-            return False   # parked there, or still on its way out
-    return True
-
 
 async def _advance_zone_maintenance() -> None:
     for zone, info in list(state.zone_maintenance.items()):
         entry, exit_gate = info["entry"], info["exit"]
         if entry in info["todo"] and _zone_inbound_clear(zone, entry):
             await _queue_repair("BarrierGate", entry, via_zone=True)
-        if exit_gate in info["todo"] and _zone_empty(zone):
+        # 4.32: the exit gate follows the entry gate straight away rather than
+        # waiting for the zone to empty; only a car being let out holds it back.
+        if (exit_gate in info["todo"] and (entry not in info["todo"] or not entry)
+                and exit_gate not in _gates_in_use()):
             await _queue_repair("BarrierGate", exit_gate, via_zone=True)
 
 
@@ -351,13 +357,30 @@ async def _schedule_gate_repairs() -> None:
     await _advance_zone_maintenance()
     if _gate_repair_slot_holder() or state.zone_maintenance:
         return   # one zone at a time; its next gate goes when it is ready
+    # 4.32: zones take turns (ZONE1 -> ZONE2 -> ZONE3 -> ...), so one zone is
+    # always being maintained while the other two take the cars. A zone whose
+    # gates are untouched since their last repair is skipped.
+    zones_in_order = _all_zones()
+    if zones_in_order:
+        last = _maintenance_rotation[-1] if _maintenance_rotation else None
+        start = zones_in_order.index(last) + 1 if last in zones_in_order else 0
+        for zone in zones_in_order[start:] + zones_in_order[:start]:
+            gates = [g for g in _zone_gates(zone) if g in state.barriers]
+            if any(state.barriers[g].operator_open or state.barriers[g].operator_override for g in gates):
+                continue   # staff are holding one of its gates (4.33)
+            if any(state.barriers[g].opens_since_repair >= settings.gate_repair_min_opens for g in gates):
+                _start_zone_maintenance(zone, "scheduled rotation")
+                await _advance_zone_maintenance()
+                return
+    # Gates outside any zone (not the main gate): most worn first.
     worn = sorted((b for b in state.barriers.values()
                    if b.name != settings.main_gate and not b.broken and not b.under_maintenance
+                   and _zone_of_gate(b.name) is None
                    and b.opens_since_repair >= settings.gate_repair_min_opens),
                   key=lambda b: (-b.opens_since_repair, b.name))
     if worn:
-        state.log_activity(f"Preventive maintenance: {worn[0].name} is the most worn gate "
-                           f"({worn[0].opens_since_repair} opens since repair)", capability="logs:view_maint")
+        state.log_activity(f"Preventive maintenance: {worn[0].name} ({worn[0].opens_since_repair} opens "
+                           f"since repair)", capability="logs:view_maint")
         await _queue_repair("BarrierGate", worn[0].name)
 
 
@@ -635,6 +658,7 @@ async def sync_from_simulator() -> dict[str, int]:
             db.set_meta(f"pending_proactive_repair:{row['name']}", "0")
     for barrier in state.barriers.values():
         barrier.operator_override = db.get_meta(f"gate_override:{barrier.name}") == "1"
+        barrier.operator_open = db.get_meta(f"gate_open:{barrier.name}") == "1"
         barrier.held_vehicles = set(json.loads(db.get_meta(f"gate_holds:{barrier.name}", "[]")))
     for row in db.query("SELECT plate, gate FROM ghost_car_events WHERE resolved = 0"):
         gate = _barrier_for_sensor(row["gate"] or "")
@@ -1093,43 +1117,70 @@ async def manual_arrival(body: ManualArrivalIn) -> dict[str, Any]:
     return await dispatch_entry(body.plate, body.gate, body.car_type, body.dry_run)
 
 
-@app.post("/api/barriers/{name}/open")
-@app.post("/api/manual/barrier/{name}/open")
-async def manual_barrier_open(name: str, user: dict = Depends(auth.require_capability("ops:control_gates"))) -> dict[str, Any]:
+def _staff_takes_gate(name: str) -> Barrier:
+    """Staff commands beat the automation (4.33). Only a gate that is broken
+    or actually being repaired refuses: operating it is penalised. A repair
+    that is merely queued is cancelled - the rotation comes back to it later."""
     barrier = state.barriers.get(name)
     if barrier is None:
         raise HTTPException(404, "unknown barrier")
-    if barrier.broken or barrier.under_maintenance or barrier.held_vehicles or name in state.pending_repairs:
-        raise HTTPException(409, "Barrier unavailable or vehicle awaiting clearance")
-    before = barrier.operator_override
-    barrier.operator_override = False
-    db.set_meta(f"gate_override:{name}", "0")
+    if barrier.broken or barrier.under_maintenance:
+        raise HTTPException(409, "Gate is broken or under repair; operating it is penalised")
+    if state.pending_repairs.pop(name, None):
+        db.set_meta(f"pending_proactive_repair:{name}", "0")
+        state.log_activity(f"Queued repair of {name} cancelled: staff took control of the gate",
+                           capability="logs:view_maint")
+    return barrier
+
+
+def _set_staff_mode(barrier: Barrier, *, held_open: bool, held_closed: bool) -> None:
+    barrier.operator_open, barrier.operator_override = held_open, held_closed
+    db.set_meta(f"gate_open:{barrier.name}", "1" if held_open else "0")
+    db.set_meta(f"gate_override:{barrier.name}", "1" if held_closed else "0")
+
+
+@app.post("/api/barriers/{name}/open")
+@app.post("/api/manual/barrier/{name}/open")
+async def manual_barrier_open(name: str, user: dict = Depends(auth.require_capability("ops:control_gates"))) -> dict[str, Any]:
+    """Hold the gate open until staff press Hold closed or Automatic. Cars
+    held at it (a ghost car, a suspect payment) are let out."""
+    barrier = _staff_takes_gate(name)
+    before = {"operator_open": barrier.operator_open, "operator_override": barrier.operator_override}
+    _set_staff_mode(barrier, held_open=True, held_closed=False)
+    released = sorted(barrier.held_vehicles)
+    barrier.held_vehicles.clear()
+    db.set_meta(f"gate_holds:{name}", "[]")
     sent = False
-    if barrier.state != BarrierPosition.OPEN:
+    if barrier.state not in (BarrierPosition.OPEN, BarrierPosition.OPENING):
         sent = await act(f"operator opens {name}", lambda: client.barrier_open(name))
         if sent:
             state.update_barrier_state(name, "Opening")
             db.sync_component_wear(name, "BarrierGate", state.record_barrier_cycle(name), 0)
+    for plate in released:
+        session = state.get_session(plate)
+        if session is not None:
+            session.release_authorized = True
+            _persist(plate)
+            await _send_paid_release(session)
+        ghost = db.query("SELECT id FROM ghost_car_events WHERE plate = ? AND resolved = 0", (plate,))
+        if ghost:
+            db.resolve_ghost_car(ghost[0]["id"], user["username"])
     auth.record_audit(user["username"], "POST", f"/api/barriers/{name}/open", 200, name,
-                      {"before": {"operator_override": before}, "after": {"operator_override": False}})
+                      {"before": before, "after": {"operator_open": True, "released": released}})
     await _ensure_barriers_open()
     for session in list(state.sessions.values()):
         if session.paid and not session.released:
             await _release_paid(session)
-    return {"ok": True, "name": name, "sent": sent, "operator_override": False}
+    return {"ok": True, "name": name, "sent": sent, "operator_open": True, "released": released}
 
 
 @app.post("/api/barriers/{name}/close")
 @app.post("/api/manual/barrier/{name}/close")
 async def manual_barrier_close(name: str, user: dict = Depends(auth.require_capability("ops:control_gates"))) -> dict[str, Any]:
-    barrier = state.barriers.get(name)
-    if barrier is None:
-        raise HTTPException(404, "unknown barrier")
-    if barrier.broken or barrier.under_maintenance or name in state.pending_repairs:
-        raise HTTPException(409, "Barrier unavailable")
-    before = barrier.operator_override
-    barrier.operator_override = True
-    db.set_meta(f"gate_override:{name}", "1")
+    """Hold the gate closed until staff press Open or Automatic."""
+    barrier = _staff_takes_gate(name)
+    before = {"operator_open": barrier.operator_open, "operator_override": barrier.operator_override}
+    _set_staff_mode(barrier, held_open=False, held_closed=True)
     sent = False
     if barrier.state not in (BarrierPosition.CLOSED, BarrierPosition.CLOSING):
         sent = await act(f"operator holds {name} closed", lambda: client.barrier_close(name))
@@ -1137,8 +1188,26 @@ async def manual_barrier_close(name: str, user: dict = Depends(auth.require_capa
             state.update_barrier_state(name, "Closing")
             db.sync_component_wear(name, "BarrierGate", state.record_barrier_cycle(name), 0)
     auth.record_audit(user["username"], "POST", f"/api/barriers/{name}/close", 200, name,
-                      {"before": {"operator_override": before}, "after": {"operator_override": True}})
+                      {"before": before, "after": {"operator_override": True}})
     return {"ok": True, "name": name, "sent": sent, "operator_override": True}
+
+
+@app.post("/api/barriers/{name}/auto")
+@app.post("/api/manual/barrier/{name}/auto")
+async def manual_barrier_auto(name: str, user: dict = Depends(auth.require_capability("ops:control_gates"))) -> dict[str, Any]:
+    """Hand the gate back to the automation."""
+    barrier = state.barriers.get(name)
+    if barrier is None:
+        raise HTTPException(404, "unknown barrier")
+    before = {"operator_open": barrier.operator_open, "operator_override": barrier.operator_override}
+    _set_staff_mode(barrier, held_open=False, held_closed=False)
+    auth.record_audit(user["username"], "POST", f"/api/barriers/{name}/auto", 200, name,
+                      {"before": before, "after": {"automatic": True}})
+    state.log_activity(f"{name} handed back to automatic control")
+    await _close_idle_gates()
+    await _ensure_barriers_open()
+    await _schedule_gate_repairs()
+    return {"ok": True, "name": name, "automatic": True}
 
 
 @app.post("/api/manual/repair/{name}")
@@ -1554,10 +1623,16 @@ async def _queue_repair(component_type: str, name: str, *, via_zone: bool = Fals
         if zone:
             # 4.26: a zone gate is repaired as part of closing the whole zone.
             # A broken gate goes now; a healthy one waits for its turn.
-            _start_zone_maintenance(zone, name)
+            # Only one zone in maintenance at a time (4.32). A gate breaking in
+            # another zone is repaired on its own, first in the queue.
+            if not any(z != zone for z in state.zone_maintenance):
+                _start_zone_maintenance(zone, name)
             if not (component and component.broken):
                 await _schedule_gate_repairs()
                 return
+    if component_type == "BarrierGate" and component and not component.broken and (
+            component.operator_open or component.operator_override):
+        return   # staff are holding this gate; the rotation returns to it later (4.33)
     if component_type == "BarrierGate":
         holder = _gate_repair_slot_holder()
         if holder and holder != name:
@@ -1606,7 +1681,7 @@ async def _queue_repair(component_type: str, name: str, *, via_zone: bool = Fals
         if component_type == "BarrierGate" and component and not component.broken:
             if component.state in (BarrierPosition.OPENING, BarrierPosition.CLOSING):
                 raise RuntimeError("wait for gate movement to finish before repair")
-            if component.operator_override or component.held_vehicles:
+            if component.operator_override or component.operator_open or component.held_vehicles:
                 raise RuntimeError("gate is in operational use; postpone preventive repair")
         if component_type == "ExhaustFan" and component and component.is_on and not component.broken:
             zone = state.zones.get(component.zone_parent)
@@ -1674,9 +1749,14 @@ async def _handle_car_spot_action(payload: dict[str, Any]) -> None:
             _left_entry.add(plate)
             session.entry_departed = True
             _persist(plate)
-            if _holding_gate.get(plate) and _holding_gate[plate] == _barrier_for_sensor(spot_name):
-                # Out of the box in front of its gate: the car is going through.
-                # Close behind it unless the next car already holds the gate.
+            if _barrier_for_sensor(spot_name) == _entry_gate_for_session(session):
+                # Out of the box in front of its zone gate: the car is going
+                # through. Close behind it unless another car is still heading
+                # into this zone - then a steady stream keeps it open (4.32).
+                session.passed_zone_gate = True
+                _holding_gate.pop(plate, None)
+                _spawn(_close_idle_gates_later(settings.entry_gate_close_delay_s))
+            elif _holding_gate.get(plate) and _holding_gate[plate] == _barrier_for_sensor(spot_name):
                 _holding_gate.pop(plate, None)
                 _spawn(_close_idle_gates_later(settings.entry_gate_close_delay_s))
         return
@@ -1833,6 +1913,9 @@ async def _hold_exit(plate: str, sensor: str) -> None:
         state.log_activity(f"Unable to map exit sensor {sensor} to a barrier; review {plate}", level="error")
         return
     barrier = state.barriers[name]
+    if barrier.operator_open:
+        state.log_activity(f"{plate} would be held at {name}, but staff are holding it open", level="warn")
+        return
     barrier.held_vehicles.add(plate)
     db.set_meta(f"gate_holds:{name}", json.dumps(sorted(barrier.held_vehicles)))
     if (not barrier.broken and not barrier.under_maintenance and name not in state.pending_repairs

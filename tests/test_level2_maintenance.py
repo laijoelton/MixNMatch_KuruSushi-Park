@@ -151,10 +151,16 @@ def test_light_fault_is_visible_and_not_operated(maintenance):
 
 
 def test_queued_gate_cannot_be_opened_during_repair(maintenance):
+    # 4.33: a merely *queued* repair gives way to staff; a gate actually under
+    # repair still refuses, because operating it is penalised.
     from fastapi import HTTPException
     state.barriers["G"] = Barrier("G")
     async def scenario():
-        await main._queue_repair("BarrierGate", "G")
+        state.pending_repairs["G"] = "BarrierGate"
+        await main.manual_barrier_open("G", {"username": "admin", "role": "admin"})
+        assert "G" not in state.pending_repairs
+        state.barriers["G"].under_maintenance = True
+        main.client.barrier_open.reset_mock()
         with pytest.raises(HTTPException) as exc:
             await main.manual_barrier_open("G", {"username": "admin", "role": "admin"})
         assert exc.value.status_code == 409

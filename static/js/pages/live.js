@@ -5,7 +5,7 @@ import { GATE_STATE_LABEL, PHASE_LABEL, SPOT_STATE_LABEL, TYPE_GLYPH, gateState,
 import { connect, onConnection, snapshot as currentSnapshot, subscribe } from "../core/live.js";
 import { configurePalette } from "../core/palette.js";
 import { initShell, setBanner, setLevelPill } from "../core/shell.js";
-import { confirmAction, toast } from "../core/toast.js";
+import { toast } from "../core/toast.js";
 import { createAlerts, deriveAlerts } from "../components/alerts.js";
 import { createFeed } from "../components/feed.js";
 import { createKpis } from "../components/kpis.js";
@@ -189,14 +189,22 @@ function gateView(snap, name) {
   const gate = (snap.barriers || []).find((x) => x.name === name);
   if (!gate) return null;
   const state = gateState(gate);
-  const out = state === "fault";
-  const reason = out ? (gate.repair_pending ? "This gate is unavailable while its repair is queued." : "Operating a gate that is broken or under repair is penalised.") : null;
+  // 4.33: staff commands win. Only a broken gate or one actually under repair
+  // refuses (operating it is penalised); a merely queued repair is cancelled.
+  const out = gate.broken || gate.under_maintenance;
+  const reason = out ? "Operating a gate that is broken or under repair is penalised." : null;
   const call = (verb) => api(`/api/manual/barrier/${encodeURIComponent(name)}/${verb}`, { method: "POST" });
+  const waiting = gate.held_plates || [];
 
-  const openBtn = h("button", { class: "btn", type: "button", text: "Open / release hold", disabled: out || (gate.state === "Open" && !gate.operator_override),
+  const openBtn = h("button", { class: `btn${waiting.length ? " primary" : ""}`, type: "button",
+    text: waiting.length ? `Open & let ${waiting.join(", ")} out` : "Open (hold open)",
+    disabled: out || (gate.operator_open && !waiting.length),
     onclick: () => runAction(openBtn, () => call("open"), `Opening ${name}`) });
-  const closeBtn = h("button", { class: "btn", type: "button", text: "Hold closed", disabled: out || (gate.state === "Closed" && gate.operator_override),
+  const closeBtn = h("button", { class: "btn", type: "button", text: "Hold closed", disabled: out || gate.operator_override,
     onclick: () => runAction(closeBtn, () => call("close"), `Closing ${name}`) });
+  const autoBtn = h("button", { class: "btn ghost", type: "button", text: "Automatic",
+    disabled: !(gate.operator_open || gate.operator_override),
+    onclick: () => runAction(autoBtn, () => call("auto"), `${name} back on automatic`) });
   const repairBtn = h("button", { class: `btn ${gate.broken ? "primary" : "ghost"}`, type: "button", text: "Repair",
     disabled: gate.under_maintenance || gate.repair_pending,
     onclick: () => runAction(repairBtn, () => api(`/api/manual/repair/${encodeURIComponent(name)}`, { method: "POST" }), `Repair queued for ${name}`) });
@@ -212,7 +220,7 @@ function gateView(snap, name) {
       ["Zone", gate.zone || "Perimeter"],
       ["Service state", gate.hold_reason || GATE_STATE_LABEL[state]],
     ]),
-    actions: [...(canGate ? [openBtn, closeBtn] : []), ...(canRepair ? [repairBtn] : []), reasonLine(reason)],
+    actions: [...(canGate ? [openBtn, closeBtn, autoBtn] : []), ...(canRepair ? [repairBtn] : []), reasonLine(reason)],
   };
 }
 
@@ -241,55 +249,5 @@ document.addEventListener("keydown", (event) => {
 });
 window.addEventListener("beforeunload", closeDrawer);
 
-// Ghost cars (engineering log 4.25): never scanned at an entrance, billed
-// automatically at the exit and held there until staff release them. The
-// banner has no timeout; the close button hides it in this browser.
-const GHOST_DISMISSED = "ghost-dismissed";
-function dismissedGhosts() {
-  try { return new Set(JSON.parse(localStorage.getItem(GHOST_DISMISSED) || "[]")); } catch { return new Set(); }
-}
-function dismissGhost(id) {
-  try {
-    const ids = dismissedGhosts();
-    ids.add(id);
-    localStorage.setItem(GHOST_DISMISSED, JSON.stringify([...ids].slice(-200)));
-  } catch { /* storage unavailable: the banner just returns on reload */ }
-}
-
-window.addEventListener("park-alert", event => {
-  const alert = event.detail;
-  const key = `ghost-${alert.ghost_id}`;
-  if (alert.alert_type === "GHOST_CAR_RESOLVED") { setBanner(key, null); return; }
-  if (alert.alert_type !== "UNREGISTERED_VEHICLE_EXIT" || dismissedGhosts().has(alert.ghost_id)) return;
-  const bill = alert.payment_received ? "paid ✓" : alert.invoiced ? "invoiced, awaiting payment" : "sending invoice…";
-  const content = [h("b", { text: `Ghost car ${alert.plate} at ${alert.gate}` }),
-    ` — never scanned at an entrance. Bill: ${bill}. `];
-  if (canGate) {
-    const release = h("button", { class: "btn small", type: "button",
-      text: alert.payment_received ? "Open gate & release" : "Release unpaid…", onclick: async () => {
-        let confirmUnpaid = false;
-        if (!alert.payment_received) {
-          const ok = await confirmAction({
-            title: `Release ${alert.plate} without payment?`,
-            message: "No payment has arrived. Releasing now lets the car leave unpaid, and the simulator fines CarEscapedWithoutPaying.",
-            confirmLabel: "Release unpaid", danger: true,
-          });
-          if (!ok) return;
-          confirmUnpaid = true;
-        }
-        const result = await runAction(release, () => api(`/api/ghost-cars/${alert.ghost_id}/release`,
-          { method: "POST", body: { confirm_unpaid: confirmUnpaid } }), `${alert.plate} released`);
-        if (result) setBanner(key, null);
-      } });
-    content.push(release, " ");
-  }
-  content.push(h("button", { class: "btn ghost small", type: "button", text: "✕",
-    "aria-label": `Close the notice for ${alert.plate}`,
-    onclick: () => { dismissGhost(alert.ghost_id); setBanner(key, null); } }));
-  setBanner(key, { kind: "bad", text: content });
-});
-const ghosts = await api("/api/ghost-cars?resolved=false");
-for (const ghost of ghosts) window.dispatchEvent(new CustomEvent("park-alert", { detail: {
-  type: "alert", alert_type: "UNREGISTERED_VEHICLE_EXIT", plate: ghost.plate, gate: ghost.gate, ghost_id: ghost.id,
-  invoiced: ghost.invoiced, payment_received: ghost.payment_received,
-} }));
+// Ghost cars and held vehicles: the gate is ringed orange on the map and listed
+// under Needs attention; staff open it from the gate drawer (4.33).

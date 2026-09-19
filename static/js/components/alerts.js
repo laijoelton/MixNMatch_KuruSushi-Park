@@ -19,7 +19,7 @@ export function deriveAlerts(snapshot, stats, { isAdmin } = {}) {
     }
     if (gate.broken) add(`gate-broken-${gate.name}`, "bad", `Gate ${gate.name} is broken`, "Repair it — it cannot open or close", { kind: "gate", name: gate.name });
     else if (gate.under_maintenance) add(`gate-maint-${gate.name}`, "warn", `Gate ${gate.name} under repair`, "Do not operate until fixed", { kind: "gate", name: gate.name });
-    else if (gate.repair_pending) add(`gate-pending-${gate.name}`, "warn", `Gate ${gate.name} repair queued`, "Excluded from operation until the repair starts", { kind: "gate", name: gate.name });
+    else if (gate.repair_pending) add(`gate-pending-${gate.name}`, "warn", `Gate ${gate.name} repair queued`, "Starts when the rotation reaches it; staff commands cancel it", { kind: "gate", name: gate.name });
   }
   for (const spot of snapshot.spots || []) {
     if (spot.purpose !== "Park") continue;
@@ -55,7 +55,12 @@ export function deriveAlerts(snapshot, stats, { isAdmin } = {}) {
     add(`neglect-${row.plate}`, "warn", `Vehicle ${row.plate} never reached a bay`, row.reason, null);
   }
   for (const gate of snapshot.barriers || []) {
-    if (gate.hold_reason) add(`hold-${gate.name}`, "warn", `${gate.name}: ${gate.hold_reason}`, "Review the vehicle or gate hold", { kind: "gate", name: gate.name });
+    if (gate.held_plates?.length) {
+      add(`hold-${gate.name}`, "warn", `${gate.held_plates.join(", ")} waiting at ${gate.name}`,
+        "Open the gate to let the car out", { kind: "gate", name: gate.name });
+    } else if (gate.hold_reason) {
+      add(`hold-${gate.name}`, "warn", `${gate.name}: ${gate.hold_reason}`, "Press Automatic to hand it back", { kind: "gate", name: gate.name });
+    }
   }
   const park = (snapshot.spots || []).filter((sp) => sp.purpose === "Park");
   // The dispatcher syncs bays once at startup; if the simulator had no level

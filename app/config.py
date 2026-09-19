@@ -129,8 +129,9 @@ class Settings:
     # A bay is repaired preventively after this many parks since its last
     # repair (4.24). Bays were seen to break after 13-19 parks.
     spot_preventive_parks: int
-    # Gates (4.28): one gate in repair at a time; the most-worn idle gate is
-    # repaired once it has at least this many opens since its last repair.
+    # Gates (4.28, 4.32): one gate in repair at a time; zones are maintained in
+    # rotation, skipping a zone whose gates have fewer opens than this since
+    # their last repair (1 = skip only untouched zones).
     gate_repair_min_opens: int
     # The ML repair sweep (4.22) stays off: its model predicted ~99% failure for
     # every component and queued every bay and fan at once (4.31).
@@ -258,7 +259,7 @@ class Settings:
 
             wear_cycle_threshold=_env_int("WEAR_CYCLE_THRESHOLD", 500),
             spot_preventive_parks=_env_int("SPOT_PREVENTIVE_PARKS", 9),
-            gate_repair_min_opens=_env_int("GATE_REPAIR_MIN_OPENS", 5),
+            gate_repair_min_opens=_env_int("GATE_REPAIR_MIN_OPENS", 1),
             ml_predictive_repairs=_env_bool("ML_PREDICTIVE_REPAIRS", False),
             light_hold_s=_env_float("LIGHT_HOLD_S", 0.0),
             wear_runtime_threshold_s=_env_float("WEAR_RUNTIME_THRESHOLD_S", 36000.0),

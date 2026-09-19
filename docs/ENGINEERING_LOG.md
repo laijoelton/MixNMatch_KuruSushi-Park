@@ -847,6 +847,8 @@ was previously "adopted" and billed like a normal car.
   **Open gate & release** (or **Release unpaid…** with a confirmation) and **✕**.
   There is no timeout. ✕ hides the banner in that browser only (localStorage),
   and a release removes it everywhere.
+  *Superseded by 4.33: no banner. The gate holding the car is ringed orange on
+  the map and listed under Needs attention, and staff press Open on the gate.*
 
 **Verification:** tests cover:
 - automatic invoice and hold for an unknown car, and for a car that appeared in a bay;
@@ -883,6 +885,8 @@ until both gates are fixed.
   done, so the entry gate stays shut in between.
 - *Since 4.28 the two gates are repaired one after the other, never together:
   only one gate in the park may be in repair at a time.*
+- *Since 4.32 the exit gate no longer waits for the zone to empty. It is
+  repaired straight after the entry gate, and zones take turns in a rotation.*
 - The main gate never triggers zone maintenance.
 - Progress is re-checked on park, on exit, on repair completion and on every
   wear sweep. Level load clears it.
@@ -1081,6 +1085,112 @@ suite: **246 passed**.
 bays it queued, and `check_wear` skips flagged components. A level load clears
 them (4.24).
 
+### 4.32 Maintenance rotation; zone "stuck" after its gate repair; gates held open for a stream (20 September 2026)
+
+**Symptoms:**
+- Automatic opening and closing seemed to break after a gate repair.
+- Gate repairs did not alternate between zones.
+- In a steady stream of cars, a zone gate opened and closed for every car.
+
+**Evidence (20 September, 19:10–19:16):**
+- gate1 was repaired at 19:14:12. The simulator log shows no gate1 open request
+  afterwards, and **none of the next 30 arrivals went to ZONE1**: 19 went to ZONE3
+  and 5 to ZONE2.
+- ZONE1 was still in zone maintenance (4.26). Its exit gate gate2 was only to be
+  repaired once ZONE1 had emptied, and 4 cars were parked there for up to 5 min.
+- Meanwhile gate3 and gate6 broke. Each started its own zone maintenance, so two
+  zones were closed at once.
+
+**Fix:**
+- **Exit gate straight after the entry gate.** It no longer waits for the zone to
+  empty; it waits only for a paid car currently being let out. A zone's
+  maintenance is therefore about two repairs long, roughly 2 min. (`_zone_empty`
+  removed.)
+- **Rotation.** When no zone is in maintenance and the slot is free,
+  `_schedule_gate_repairs` starts the next zone after the last one
+  (`_maintenance_rotation`): ZONE1 → ZONE2 → ZONE3 → …. A zone whose gates have
+  fewer than `GATE_REPAIR_MIN_OPENS` (now **1**) opens since repair is skipped.
+  One zone is always in maintenance while the other two take the cars. Gates
+  outside any zone keep most-worn-first.
+- **One zone at a time, breakdowns included.** A gate breaking in another zone is
+  repaired first, as a single gate, and does not start a second zone
+  maintenance. Dispatch already avoids a zone whose entry gate is broken.
+- **Stream keeps the gate open.** An entry gate counts as in use while any car
+  assigned to that zone has not yet driven out of the zone's sensor box
+  (`VehicleSession.passed_zone_gate`). It closes `ENTRY_GATE_CLOSE_DELAY_S` after
+  the last car of the stream passes (refines 4.21).
+
+**Verification:** tests cover:
+- entry then exit repaired straight away with a car still parked, then reopen;
+- rotation visits ZONE1, ZONE2, ZONE3 in order;
+- a zone with unused gates is skipped;
+- two breakdowns: the first zone's gate, then the other broken gate, then the
+  first zone's exit;
+- a two-car stream closes the gate once, after the second car.
+
+Three older tests encoded the replaced rules (most-worn first, drain before exit,
+threshold 5) and were rewritten. Full suite: **247 passed**.
+
+**Cost:** rotation repairs every zone that has been used, continuously, so
+preventive repairs are frequent. That is the intent: one zone always in repair.
+
+### 4.33 Staff gate commands lose to the automation; ghost-car banner replaced (20 September 2026)
+
+**Symptoms:**
+- Staff pressed a gate button and the automation undid it.
+- The ghost-car banner was in the way.
+- A zone gate (gate3) seemed to open momentarily as a ZONE3 car passed ENTRY2.
+
+**Evidence:**
+- The audit log shows **Open pressed on gate4 four times in 12 s** (19:29:27–39).
+  The simulator log shows `open`, then `close` a moment later, each time. The
+  4.18 idle close re-shut any zone gate no car needed, including one staff had
+  just opened.
+- `manual_barrier_close` answered **409 "Barrier unavailable"** whenever the gate
+  was in `pending_repairs`. With the 4.32 rotation some gate is nearly always
+  queued, so Hold closed often failed.
+- **gate3 / ENTRY2:** every gate3 open near an ENTRY2 pass was for a *different*,
+  ZONE2-bound car dispatched at ENTRY1. Examples: VAW 991 → bay59 while RVB 299
+  → P73 was passing ENTRY2; CRA 313 → bay63; CQP 508 → bay64. The zone gate must
+  be open when the goto is sent, because the route is planned then (4.20, 4.27).
+  So it opens at dispatch, not when a car reaches ENTRY2. **Not changed:** it is
+  another car's gate, not a stray open.
+
+**Fix:**
+- `Barrier.operator_open` joins `operator_override`. Staff **Open** = held open;
+  **Hold closed** = held closed; the new **Automatic**
+  (`POST /api/barriers/{name}/auto`, `ops:control_gates`) hands the gate back and
+  runs the idle close, releases and scheduler.
+- Held state persists in `meta` (`gate_open:*`, `gate_override:*`) and is cleared
+  on level load.
+- `_staff_takes_gate`: only a broken gate or one `under_maintenance` refuses. A
+  merely queued repair is cancelled, and the rotation skips a zone with a
+  staff-held gate. `_queue_repair` will not queue a staff-held healthy gate, and
+  the worker guard also checks `operator_open`.
+- `_close_idle_gates` skips held-open gates, and `_hold_exit` does not shut a gate
+  staff hold open.
+- **Ghost cars / held vehicles:** the snapshot lists `held_plates` per gate.
+  - The map rings that gate orange (`.tw-gate.needs-attention`, pulsing unless
+    reduced motion).
+  - Needs attention says "X waiting at gate6 — open the gate to let the car out".
+  - The drawer's Open button reads "Open & let X out".
+  - Staff **Open** releases the held cars (gate open, `leavepark`) and resolves
+    their ghost events.
+  - The red banner is removed. Automatic invoicing (4.25) is unchanged.
+
+**Verification:** tests cover:
+- a staff-opened gate survives the idle close and shows "Held open by operator";
+- Hold closed works on a queued-for-repair gate and cancels the queued repair;
+- a gate under repair still refuses;
+- the rotation skips a zone with a held gate;
+- Automatic hands the gate back and it closes when idle;
+- the route is staff-only;
+- the ringed gate lists the ghost plate, and Open lets it out and resolves it.
+
+Two older tests encoded "queued repair refuses staff" and "worker raises for a
+held gate". They were updated to the new rule, with the same outcome: a held
+gate is never repaired. Full suite: **254 passed**.
+
 ---
 
 ## 5. Edge cases and how they are handled
@@ -1105,9 +1215,9 @@ them (4.24).
 | A zone's entry gate is held, broken or under repair | That zone is skipped and the car goes to the next-lowest-ratio zone. If every suitable zone is blocked, the car waits (`Held closed by operator` / `Barrier unavailable`) and is not turned away (4.18) |
 | A plate returns (plates are recycled from `settings/plates.txt`) | EntrySpot `CarIn` for a session that already parked/exited/was billed archives it and starts a fresh visit; a car still driving to its bay keeps its session (4.19) |
 | A level is (re)loaded in the simulator | Console `Load Game` line → previous level's live sessions, holds and model dropped, one sync, all gates closed (4.19) |
-| A zone gate needs repair (broken or preventive) | Zone closed to new cars; broken gate repaired now, entry gate when nobody is driving in, exit gate when the zone is empty; reopens when both are fixed (4.26) |
-| A car reaches an exit without an entry scan (unknown, or appeared in a bay) | Ghost car: exit held, billed automatically with the ML fee, released only by operator/admin from the banner (4.25) |
-| Staff open a zone gate by hand | It is closed again at the next idle check (a car parks, leaves, or a reservation expires). Only `MAIN_GATE` is manual (4.18) |
+| A zone gate needs repair (broken or preventive) | One zone in maintenance at a time, in rotation: closed to new cars, entry gate repaired once nobody is driving in, then the exit gate straight away; reopens when both are fixed. A gate breaking in another zone is repaired first but does not close its zone (4.26, 4.32) |
+| A car reaches an exit without an entry scan (unknown, or appeared in a bay) | Ghost car: exit held, billed automatically with the ML fee; the gate is ringed orange and staff press Open on it to let the car out (4.25, 4.33) |
+| Staff open or close a gate from the dashboard | Staff win: the gate is held open or held closed until staff press Automatic. The automation (idle close, rotation, exit holds) never moves it, and a queued repair is cancelled. Only a broken gate or one under repair refuses (4.33) |
 | Admin clears a page's records (red dustbin on History / Payments / Penalties) | `DELETE /api/admin/data/{history,payments,penalties}`, gated by the admin-only `admin:reset` capability (other roles get `403`; the icon is hidden via `data-cap`). History deletes `sessions` + `neglected_vehicles`; Payments deletes `payments`; Penalties deletes `penalties` and zeroes the in-memory fine counters. `active_sessions`/live sessions are never touched — clearing them mid-run would lose billing state and cause `CarEscapedWithoutPaying`. `events` is never touched — it is the `EventId` de-duplication record. Every clear is written to the audit log with the row count |
 | `numpy`/`scikit-learn` missing or import fails | Every `app/ml_agent.py` function falls back to its documented deterministic rule instead of raising (4.22) |
 | Ghost car fee imputation | Estimates the invoice shown to staff only; the exit barrier still requires operator override, never auto-released (4.22) |
@@ -1132,7 +1242,7 @@ Everything lives in `.env` (see `.env.example`). The ones that matter:
 | `ENTRY_GATE_CLOSE_DELAY_S` | `1.5` | Simulated seconds after a car leaves its zone sensor before the zone gate closes behind it (4.21) |
 | `CO_FAN_OFF_THRESHOLD` | `15` | Fans run from above `CO_FAN_ON_THRESHOLD` (50) until below this (4.23) |
 | `ML_PREDICTIVE_REPAIRS` | `false` | **Keep false.** The ML repair sweep predicted ~99% failure for everything and queued every bay and fan (4.31) |
-| `GATE_REPAIR_MIN_OPENS` | `5` | One gate in repair at a time; the most-worn idle gate goes once it reaches this many opens since repair (4.28) |
+| `GATE_REPAIR_MIN_OPENS` | `1` | Zones are maintained in rotation, one at a time; a zone whose gates have fewer opens than this since repair is skipped (4.28, 4.32) |
 | `LIGHT_HOLD_S` | `0` | At night a zone stays lit this many simulated seconds after its last moving car; 0 = dark as soon as it parks (4.29, 4.30) |
 | `SPOT_PREVENTIVE_PARKS` | `9` | Preventive bay repair after this many parks since the last repair; bays broke after 13-19 (4.24) |
 | `ZONE_GATE_AT_SENSOR` | `false` | **Keep false.** When true, ZONE2/3 cars are sent to their zone sensor first, which the simulator treats as parking there (4.20, 4.27) |

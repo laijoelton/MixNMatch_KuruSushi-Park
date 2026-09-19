@@ -549,6 +549,7 @@ def reset_live_level() -> None:
                       "WHERE resolved = 0", (_utcnow(),))
         _conn.execute("UPDATE meta SET value = '0' WHERE key LIKE 'gate\\_override:%' ESCAPE '\\'")
         _conn.execute("UPDATE meta SET value = '[]' WHERE key LIKE 'gate\\_holds:%' ESCAPE '\\'")
+        _conn.execute("UPDATE meta SET value = '0' WHERE key LIKE 'gate\\_open:%' ESCAPE '\\'")
         # The simulator starts every level with fresh usage counters. Keeping
         # ours would make every bay/gate used last level look worn at once.
         _conn.execute("UPDATE component_wear SET cycle_count = 0, runtime_seconds = 0")

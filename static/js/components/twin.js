@@ -225,8 +225,9 @@ export function createTwin(panel, { onSelect } = {}) {
     for (const { el, gate, title } of gates) {
       const live = barrierByName.get(gate.name);
       const next = live ? gateState(live) : "closed";
-      el.setAttribute("class", `tw-gate ${next}${isSelected("gate", gate.name) ? " is-selected" : ""}`);
-      title.textContent = `${gate.name} · ${GATE_STATE_LABEL[next]}`;
+      const waiting = live?.held_plates?.length ? live.held_plates : null;
+      el.setAttribute("class", `tw-gate ${next}${waiting ? " needs-attention" : ""}${isSelected("gate", gate.name) ? " is-selected" : ""}`);
+      title.textContent = `${gate.name} · ${GATE_STATE_LABEL[next]}${waiting ? ` · waiting: ${waiting.join(", ")} — open to let out` : ""}`;
     }
 
     const fanByName = new Map((snapshot.fans || []).map((f) => [f.name, f]));

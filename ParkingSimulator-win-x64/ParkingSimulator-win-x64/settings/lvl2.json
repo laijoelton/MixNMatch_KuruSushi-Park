@@ -4104,13 +4104,13 @@
       "X": 322,
       "Y": 954,
       "UsageCounter": 0,
-      "IsRepairRequested": false,
-      "RepairProgress": 0
+      "IsRepairRequested": true,
+      "RepairProgress": 221.0491158
     },
     {
       "Name": "gate2",
       "ZoneParent": "",
-      "State": "Open",
+      "State": "Closed",
       "Rotation": 3.1436338,
       "X": 2634,
       "Y": 981,
@@ -4143,7 +4143,7 @@
     {
       "Name": "gate6",
       "ZoneParent": "ZONE3",
-      "State": "Closed",
+      "State": "Open",
       "Rotation": 3.1484265,
       "X": 2608,
       "Y": 3979,
@@ -4154,7 +4154,7 @@
     {
       "Name": "gate7",
       "ZoneParent": "",
-      "State": "Open",
+      "State": "Closed",
       "Rotation": 1.5695446,
       "X": 165,
       "Y": 283,
@@ -4175,7 +4175,7 @@
       "Rotation": 0,
       "Scale": 0.27648804,
       "Intensity": 0.5,
-      "IsOn": true,
+      "IsOn": false,
       "colorR": 255,
       "colorG": 255,
       "colorB": 255
@@ -4190,7 +4190,7 @@
       "Rotation": 0,
       "Scale": 0.24522252,
       "Intensity": 0.5,
-      "IsOn": true,
+      "IsOn": false,
       "colorR": 255,
       "colorG": 255,
       "colorB": 255
@@ -4205,7 +4205,7 @@
       "Rotation": 0,
       "Scale": 0.47549248,
       "Intensity": 0.5,
-      "IsOn": true,
+      "IsOn": false,
       "colorR": 255,
       "colorG": 255,
       "colorB": 255
@@ -4220,7 +4220,7 @@
       "Rotation": 0,
       "Scale": 0.25039858,
       "Intensity": 0.5,
-      "IsOn": true,
+      "IsOn": false,
       "colorR": 255,
       "colorG": 255,
       "colorB": 255
@@ -4235,7 +4235,7 @@
       "Rotation": 0,
       "Scale": 0.28647307,
       "Intensity": 0.5,
-      "IsOn": true,
+      "IsOn": false,
       "colorR": 255,
       "colorG": 255,
       "colorB": 255
@@ -4250,7 +4250,7 @@
       "Rotation": 0,
       "Scale": 0.47549248,
       "Intensity": 0.5,
-      "IsOn": true,
+      "IsOn": false,
       "colorR": 255,
       "colorG": 255,
       "colorB": 255
@@ -4265,7 +4265,7 @@
       "Rotation": 0,
       "Scale": 0.47549248,
       "Intensity": 0.5,
-      "IsOn": true,
+      "IsOn": false,
       "colorR": 255,
       "colorG": 255,
       "colorB": 255
@@ -4280,7 +4280,7 @@
       "Rotation": 3.1426182,
       "Scale": 0.47549248,
       "Intensity": 0.5,
-      "IsOn": true,
+      "IsOn": false,
       "colorR": 255,
       "colorG": 255,
       "colorB": 255
@@ -4295,7 +4295,7 @@
       "Rotation": 3.1426182,
       "Scale": 0.47549248,
       "Intensity": 0.5,
-      "IsOn": true,
+      "IsOn": false,
       "colorR": 255,
       "colorG": 255,
       "colorB": 255
@@ -4310,7 +4310,7 @@
       "Rotation": 3.1426182,
       "Scale": 0.47549248,
       "Intensity": 0.5,
-      "IsOn": true,
+      "IsOn": false,
       "colorR": 255,
       "colorG": 255,
       "colorB": 255
@@ -4325,7 +4325,7 @@
       "Rotation": 0,
       "Scale": 0.2,
       "Intensity": 0.5,
-      "IsOn": true,
+      "IsOn": false,
       "colorR": 255,
       "colorG": 255,
       "colorB": 255
@@ -4340,7 +4340,7 @@
       "Rotation": 3.1426182,
       "Scale": 0.47549248,
       "Intensity": 0.5,
-      "IsOn": true,
+      "IsOn": false,
       "colorR": 255,
       "colorG": 255,
       "colorB": 255
@@ -4355,7 +4355,7 @@
       "Rotation": 3.1426182,
       "Scale": 0.47549248,
       "Intensity": 0.5,
-      "IsOn": true,
+      "IsOn": false,
       "colorR": 255,
       "colorG": 255,
       "colorB": 255
@@ -4370,7 +4370,7 @@
       "Rotation": 3.1426182,
       "Scale": 0.47549248,
       "Intensity": 0.5,
-      "IsOn": true,
+      "IsOn": false,
       "colorR": 255,
       "colorG": 255,
       "colorB": 255
@@ -4385,7 +4385,7 @@
       "Rotation": 0,
       "Scale": 0.47549248,
       "Intensity": 0.5,
-      "IsOn": true,
+      "IsOn": false,
       "colorR": 255,
       "colorG": 255,
       "colorB": 255
@@ -4400,7 +4400,7 @@
       "Rotation": 0,
       "Scale": 0.47549248,
       "Intensity": 0.5,
-      "IsOn": true,
+      "IsOn": false,
       "colorR": 255,
       "colorG": 255,
       "colorB": 255
@@ -4415,7 +4415,7 @@
       "Rotation": 0,
       "Scale": 0.47549248,
       "Intensity": 0.5,
-      "IsOn": true,
+      "IsOn": false,
       "colorR": 255,
       "colorG": 255,
       "colorB": 255
@@ -4430,7 +4430,7 @@
       "Rotation": 0,
       "Scale": 0.25039858,
       "Intensity": 0.5,
-      "IsOn": true,
+      "IsOn": false,
       "colorR": 255,
       "colorG": 255,
       "colorB": 255
@@ -4445,7 +4445,7 @@
       "Rotation": 0,
       "Scale": 0.25039858,
       "Intensity": 0.5,
-      "IsOn": true,
+      "IsOn": false,
       "colorR": 255,
       "colorG": 255,
       "colorB": 255
@@ -4460,7 +4460,7 @@
       "Rotation": 0,
       "Scale": 0.25039858,
       "Intensity": 0.5,
-      "IsOn": true,
+      "IsOn": false,
       "colorR": 255,
       "colorG": 255,
       "colorB": 255
@@ -4475,7 +4475,7 @@
       "Rotation": 3.1304202,
       "Scale": 0.42575553,
       "Intensity": 0.5,
-      "IsOn": true,
+      "IsOn": false,
       "colorR": 255,
       "colorG": 255,
       "colorB": 255
@@ -4490,7 +4490,7 @@
       "Rotation": 0,
       "Scale": 0.42575553,
       "Intensity": 0.5,
-      "IsOn": true,
+      "IsOn": false,
       "colorR": 255,
       "colorG": 255,
       "colorB": 255
@@ -4505,7 +4505,7 @@
       "Rotation": 0,
       "Scale": 0.42575553,
       "Intensity": 0.5,
-      "IsOn": true,
+      "IsOn": false,
       "colorR": 255,
       "colorG": 255,
       "colorB": 255
@@ -4520,7 +4520,7 @@
       "Rotation": 0,
       "Scale": 0.42575553,
       "Intensity": 0.5,
-      "IsOn": true,
+      "IsOn": false,
       "colorR": 255,
       "colorG": 255,
       "colorB": 255
@@ -4535,7 +4535,7 @@
       "Rotation": 3.1369057,
       "Scale": 0.42575553,
       "Intensity": 0.5,
-      "IsOn": true,
+      "IsOn": false,
       "colorR": 255,
       "colorG": 255,
       "colorB": 255
@@ -4550,7 +4550,7 @@
       "Rotation": 3.1304202,
       "Scale": 0.42575553,
       "Intensity": 0.5,
-      "IsOn": true,
+      "IsOn": false,
       "colorR": 255,
       "colorG": 255,
       "colorB": 255
@@ -4565,7 +4565,7 @@
       "Rotation": 0,
       "Scale": 0.19000074,
       "Intensity": 0.5,
-      "IsOn": true,
+      "IsOn": false,
       "colorR": 255,
       "colorG": 255,
       "colorB": 255
@@ -4580,7 +4580,7 @@
       "Rotation": 0,
       "Scale": 0.18523178,
       "Intensity": 0.5,
-      "IsOn": true,
+      "IsOn": false,
       "colorR": 255,
       "colorG": 255,
       "colorB": 255
@@ -4595,7 +4595,7 @@
       "Rotation": 0,
       "Scale": 0.19000074,
       "Intensity": 0.5,
-      "IsOn": true,
+      "IsOn": false,
       "colorR": 255,
       "colorG": 255,
       "colorB": 255
@@ -4610,7 +4610,7 @@
       "Rotation": 0,
       "Scale": 0.18523178,
       "Intensity": 0.5,
-      "IsOn": true,
+      "IsOn": false,
       "colorR": 255,
       "colorG": 255,
       "colorB": 255
@@ -4781,7 +4781,7 @@
   ],
   "Tiles": [
     {
-      "Name": "tile10",
+      "Name": "tile60",
       "ResourceName": "map1",
       "X": 1500,
       "Y": 1130,
@@ -4789,7 +4789,7 @@
       "Scale": 1
     },
     {
-      "Name": "tile11",
+      "Name": "tile61",
       "ResourceName": "map1",
       "X": 1501,
       "Y": 4125,
@@ -4797,7 +4797,7 @@
       "Scale": 1
     },
     {
-      "Name": "tile12",
+      "Name": "tile62",
       "ResourceName": "map1",
       "X": 1500,
       "Y": 2628,
@@ -4807,8 +4807,8 @@
   ],
   "GameTexts": [],
   "camera": {
-    "X": -3409.0278,
-    "Y": -211.43481,
-    "Zoom": 0.25
+    "X": -1234.1406,
+    "Y": -591.5823,
+    "Zoom": 0.24999985
   }
 }

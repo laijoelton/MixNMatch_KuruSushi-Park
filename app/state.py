@@ -98,6 +98,8 @@ class Barrier:
     held_vehicles: set[str] = field(default_factory=set)
     # Opens since the last repair: what the balanced repair schedule ranks by (4.28).
     opens_since_repair: int = 0
+    # Staff pressed Open: held open, the automation leaves it alone (4.33).
+    operator_open: bool = False
 
 
 @dataclass
@@ -161,6 +163,9 @@ class VehicleSession:
     # The car has reached its own zone's entry sensor (ENTRY3 for ZONE3):
     # only then does that zone light up for it (4.31).
     reached_zone: bool = False
+    # Has driven out of the sensor box in front of its zone gate, i.e. is
+    # through it: it no longer needs that gate held open (4.32).
+    passed_zone_gate: bool = False
     release_authorized: bool = False
     exit_confirmed: bool = False
     released: bool = False
@@ -867,7 +872,10 @@ class ParkingState:
                      "main_gate": b.name == settings.main_gate,
                      "opens_since_repair": b.opens_since_repair,
                      "operator_override": b.operator_override,
+                     "operator_open": b.operator_open,
+                     "held_plates": sorted(b.held_vehicles),
                      "hold_reason": "Held closed by operator" if b.operator_override else
+                                    "Held open by operator" if b.operator_open else
                                     "Vehicle awaiting clearance" if b.held_vehicles else ""}
                     for b in self.barriers.values()
                 ],
