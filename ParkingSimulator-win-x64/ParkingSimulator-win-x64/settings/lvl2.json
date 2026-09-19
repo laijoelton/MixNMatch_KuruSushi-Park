@@ -1,0 +1,4814 @@
+{
+  "Paths": [
+    {
+      "Name": "",
+      "Head": "A",
+      "Current": "A",
+      "Points": [
+        {
+          "Name": "A",
+          "X": 238.11142,
+          "Y": 45.555435,
+          "DrainPaused": false,
+          "IsCarEmitter": true,
+          "IsDrain": false,
+          "TargetPointName": "P2",
+          "EmitterPeriod": 7000
+        },
+        {
+          "Name": "P2",
+          "X": 230.25659,
+          "Y": 949.16705,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "P3",
+          "X": 557.06445,
+          "Y": 1127.781,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "P5",
+          "X": 561.45215,
+          "Y": 797.5104,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "P6",
+          "X": 652.06445,
+          "Y": 1130.281,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "P8",
+          "X": 655.98694,
+          "Y": 797.7018,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "P9",
+          "X": 749.69794,
+          "Y": 1129.1632,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "P10",
+          "X": 750.98193,
+          "Y": 803.718,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "P11",
+          "X": 835.3977,
+          "Y": 1131.1143,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "P12",
+          "X": 937.3606,
+          "Y": 1130.624,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "P13",
+          "X": 936.8168,
+          "Y": 796.2376,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "P14",
+          "X": 840.39954,
+          "Y": 796.4577,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "P15",
+          "X": 1311.8235,
+          "Y": 1125.7744,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "P16",
+          "X": 1403.3507,
+          "Y": 1127.7256,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "P17",
+          "X": 1497.7096,
+          "Y": 1124.1357,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "P18",
+          "X": 1594.6327,
+          "Y": 1124.1357,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "P19",
+          "X": 1682.1265,
+          "Y": 1124.73,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "P21",
+          "X": 1312.5815,
+          "Y": 804.6488,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "P23",
+          "X": 1403.3507,
+          "Y": 802.59753,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "P25",
+          "X": 1495.6584,
+          "Y": 804.136,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "P27",
+          "X": 1594.1199,
+          "Y": 806.18726,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "P29",
+          "X": 1679.3123,
+          "Y": 806.1314,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "P30",
+          "X": 2569.6543,
+          "Y": 1130.2832,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "P33",
+          "X": 337.94885,
+          "Y": 1124.5515,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "P34",
+          "X": 230.77441,
+          "Y": 1582.1411,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "P35",
+          "X": -146.62335,
+          "Y": 1573.5194,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": true,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "P36",
+          "X": 229.20398,
+          "Y": 800.26044,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "350",
+          "X": 653.7725,
+          "Y": 1472.997,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "61",
+          "X": 2056.4856,
+          "Y": 1124.3636,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "62",
+          "X": 2764.0002,
+          "Y": 1131.0002,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "63",
+          "X": 560,
+          "Y": 1473,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "64",
+          "X": 745.43475,
+          "Y": 1473.1897,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "65",
+          "X": 837.7425,
+          "Y": 1471.6512,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "66",
+          "X": 936.20404,
+          "Y": 1471.6512,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "563",
+          "X": 1309.5026,
+          "Y": 1479.5186,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "564",
+          "X": 1403.9026,
+          "Y": 1476.3186,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "565",
+          "X": 1498.3025,
+          "Y": 1476.3186,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "566",
+          "X": 1594.3025,
+          "Y": 1477.1185,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "567",
+          "X": 1682.3025,
+          "Y": 1475.5186,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "568",
+          "X": 2062.086,
+          "Y": 802.76355,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "569",
+          "X": 2154.8855,
+          "Y": 1125.1637,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "570",
+          "X": 2243.5532,
+          "Y": 1125.8231,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "571",
+          "X": 2338.7913,
+          "Y": 1129.6327,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "572",
+          "X": 2435.934,
+          "Y": 1131.5375,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "573",
+          "X": 2434.086,
+          "Y": 799.5636,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "574",
+          "X": 2342.886,
+          "Y": 804.3636,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "575",
+          "X": 2248.4858,
+          "Y": 805.96356,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "576",
+          "X": 2154.886,
+          "Y": 808.3636,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "577",
+          "X": 2060.4854,
+          "Y": 1460.3638,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "578",
+          "X": 2157.2854,
+          "Y": 1459.5637,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "579",
+          "X": 2249.2854,
+          "Y": 1459.5637,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "580",
+          "X": 2342.0854,
+          "Y": 1457.9639,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "581",
+          "X": 2438.0854,
+          "Y": 1457.9639,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "73",
+          "X": 1228.3328,
+          "Y": 1127.6667,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "85",
+          "X": 1928.623,
+          "Y": 1126.9333,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "86",
+          "X": 1309.2692,
+          "Y": 1060.436,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "173",
+          "X": 2760.089,
+          "Y": 5342.9106,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": true,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "88",
+          "X": 230.25659,
+          "Y": 1119.9362,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "75",
+          "X": 232.79407,
+          "Y": 2437.397,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "76",
+          "X": 234.07501,
+          "Y": 2621.8433,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "77",
+          "X": 560.7411,
+          "Y": 2620.9456,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "78",
+          "X": 562.9633,
+          "Y": 2288.353,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "79",
+          "X": 560.5337,
+          "Y": 2953.8164,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "80",
+          "X": 222.91663,
+          "Y": 5355.6055,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": true,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "445",
+          "X": 654.33887,
+          "Y": 2620.51,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "446",
+          "X": 655.22473,
+          "Y": 2293.0693,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "447",
+          "X": 656.91956,
+          "Y": 2955.3494,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "448",
+          "X": 751.1131,
+          "Y": 2622.4456,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "449",
+          "X": 842.1825,
+          "Y": 2623.904,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "450",
+          "X": 938.85504,
+          "Y": 2624.381,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "451",
+          "X": 751.35,
+          "Y": 2290.8062,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "452",
+          "X": 747.24207,
+          "Y": 2951.4785,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "453",
+          "X": 842.6543,
+          "Y": 2291.6755,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "454",
+          "X": 842.72595,
+          "Y": 2952.7688,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "455",
+          "X": 935.6979,
+          "Y": 2293.4148,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "456",
+          "X": 939.5001,
+          "Y": 2955.3494,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "457",
+          "X": 1307.7437,
+          "Y": 2623.536,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "458",
+          "X": 1404.1539,
+          "Y": 2624.0486,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "459",
+          "X": 1494.4104,
+          "Y": 2623.536,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "460",
+          "X": 1586.718,
+          "Y": 2623.023,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "461",
+          "X": 1687.7437,
+          "Y": 2623.536,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "462",
+          "X": 1688.3108,
+          "Y": 2954.855,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "463",
+          "X": 1686.1328,
+          "Y": 2293.4155,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "464",
+          "X": 1590.4805,
+          "Y": 2294.2852,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "465",
+          "X": 1588.3108,
+          "Y": 2952.9502,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "466",
+          "X": 1498.3066,
+          "Y": 2293.4155,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "467",
+          "X": 1497.4872,
+          "Y": 2952.7666,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "468",
+          "X": 1403.524,
+          "Y": 2293.4155,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "469",
+          "X": 1404.1538,
+          "Y": 2954.3052,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "470",
+          "X": 1307.8718,
+          "Y": 2292.546,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "471",
+          "X": 1311.3334,
+          "Y": 2955.3308,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "472",
+          "X": 2058.61,
+          "Y": 2623.3428,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "473",
+          "X": 2056.5676,
+          "Y": 2291.6768,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "474",
+          "X": 2059.3572,
+          "Y": 2957.0337,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "475",
+          "X": 2153.449,
+          "Y": 2624.6333,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "476",
+          "X": 2153.959,
+          "Y": 2291.6768,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "477",
+          "X": 2153.0415,
+          "Y": 2959.139,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "478",
+          "X": 2245.707,
+          "Y": 2624.6333,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "479",
+          "X": 2246.1328,
+          "Y": 2294.2854,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "480",
+          "X": 2245.673,
+          "Y": 2958.0864,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "481",
+          "X": 2339.2554,
+          "Y": 2624.6333,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "482",
+          "X": 2436.0295,
+          "Y": 2623.988,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "483",
+          "X": 2343.5242,
+          "Y": 2290.8071,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "484",
+          "X": 2339.3572,
+          "Y": 2957.0337,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "485",
+          "X": 2521.7825,
+          "Y": 2622.9375,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "601",
+          "X": 2434.8286,
+          "Y": 2292.5464,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "602",
+          "X": 2435.1467,
+          "Y": 2962.2969,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "603",
+          "X": 2761.6465,
+          "Y": 2624.2903,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "118",
+          "X": 1132.0488,
+          "Y": 2622.8428,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "1228",
+          "X": 230.94531,
+          "Y": 2900.6924,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "1229",
+          "X": -92.69116,
+          "Y": 2895.238,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": true,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "486",
+          "X": 1589.6487,
+          "Y": 2532.8145,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "183",
+          "X": 228.2721,
+          "Y": 3955.7354,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "184",
+          "X": 227.24713,
+          "Y": 4128.6846,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "185",
+          "X": 562.9337,
+          "Y": 4126.396,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "186",
+          "X": 565.6471,
+          "Y": 3799.085,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "187",
+          "X": 564.5337,
+          "Y": 4458.396,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "188",
+          "X": 656.84705,
+          "Y": 4129.4844,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "189",
+          "X": 658.447,
+          "Y": 3797.4844,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "190",
+          "X": 655.73364,
+          "Y": 4459.996,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "191",
+          "X": 750.5244,
+          "Y": 4129.1543,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "192",
+          "X": 752.047,
+          "Y": 3802.2842,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "193",
+          "X": 746.9337,
+          "Y": 4459.196,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "194",
+          "X": 841.0006,
+          "Y": 4128.2017,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "195",
+          "X": 842.447,
+          "Y": 3802.2842,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "196",
+          "X": 839.73364,
+          "Y": 4459.996,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "197",
+          "X": 935.69824,
+          "Y": 4128.6147,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "198",
+          "X": 934.447,
+          "Y": 3803.8843,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "199",
+          "X": 934.13367,
+          "Y": 4460.796,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "200",
+          "X": 1312.0469,
+          "Y": 4131.885,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "201",
+          "X": 1312.0469,
+          "Y": 3799.8848,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "202",
+          "X": 1311.247,
+          "Y": 4470.2847,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "203",
+          "X": 1403.0957,
+          "Y": 4131.4053,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "204",
+          "X": 1408.0469,
+          "Y": 3805.4849,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "205",
+          "X": 1404.8469,
+          "Y": 4468.6846,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "206",
+          "X": 1500.4869,
+          "Y": 4129.666,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "207",
+          "X": 1500.8469,
+          "Y": 3805.4849,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "208",
+          "X": 1500.0469,
+          "Y": 4467.885,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "209",
+          "X": 1597.2784,
+          "Y": 4132.4253,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "210",
+          "X": 1594.4469,
+          "Y": 3811.0842,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "211",
+          "X": 1596.0469,
+          "Y": 4471.084,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "212",
+          "X": 1687.6233,
+          "Y": 4129.667,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "213",
+          "X": 1685.6469,
+          "Y": 3805.4841,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "214",
+          "X": 1685.6469,
+          "Y": 4471.8843,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "215",
+          "X": 2062.106,
+          "Y": 4128.977,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "216",
+          "X": 2060.847,
+          "Y": 3802.284,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "217",
+          "X": 2061.6467,
+          "Y": 4477.484,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "218",
+          "X": 2153.6467,
+          "Y": 4128.684,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "219",
+          "X": 2155.2468,
+          "Y": 3804.6838,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "220",
+          "X": 2155.2468,
+          "Y": 4474.2837,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "221",
+          "X": 2250.3818,
+          "Y": 4129.6665,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "222",
+          "X": 2253.6467,
+          "Y": 3794.284,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "223",
+          "X": 2250.4468,
+          "Y": 4477.484,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "224",
+          "X": 2339.3472,
+          "Y": 4131.7354,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "225",
+          "X": 2341.6467,
+          "Y": 3799.084,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "226",
+          "X": 2340.847,
+          "Y": 4477.484,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "227",
+          "X": 2432.047,
+          "Y": 4131.884,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "228",
+          "X": 2438.4473,
+          "Y": 3800.6838,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "229",
+          "X": 2434.4473,
+          "Y": 4478.2837,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "230",
+          "X": 2536.047,
+          "Y": 4131.084,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "231",
+          "X": 2706.0403,
+          "Y": 4131.418,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "232",
+          "X": 2760.7246,
+          "Y": 4130.1123,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        },
+        {
+          "Name": "233",
+          "X": 2337.5017,
+          "Y": 4082.353,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        }
+      ],
+      "Connections": [
+        {
+          "From": "P3",
+          "To": "P6",
+          "Direction": 0
+        },
+        {
+          "From": "P6",
+          "To": "P9",
+          "Direction": 0
+        },
+        {
+          "From": "P9",
+          "To": "P10",
+          "Direction": 2
+        },
+        {
+          "From": "P9",
+          "To": "P11",
+          "Direction": 0
+        },
+        {
+          "From": "P11",
+          "To": "P12",
+          "Direction": 0
+        },
+        {
+          "From": "P12",
+          "To": "P13",
+          "Direction": 2
+        },
+        {
+          "From": "P11",
+          "To": "P14",
+          "Direction": 2
+        },
+        {
+          "From": "P15",
+          "To": "P16",
+          "Direction": 0
+        },
+        {
+          "From": "P16",
+          "To": "P17",
+          "Direction": 0
+        },
+        {
+          "From": "P17",
+          "To": "P18",
+          "Direction": 0
+        },
+        {
+          "From": "P18",
+          "To": "P19",
+          "Direction": 0
+        },
+        {
+          "From": "P33",
+          "To": "P3",
+          "Direction": 0
+        },
+        {
+          "From": "P34",
+          "To": "P35",
+          "Direction": 2
+        },
+        {
+          "From": "A",
+          "To": "P36",
+          "Direction": 0
+        },
+        {
+          "From": "P36",
+          "To": "P2",
+          "Direction": 0
+        },
+        {
+          "From": "P30",
+          "To": "62",
+          "Direction": 0
+        },
+        {
+          "From": "P3",
+          "To": "63",
+          "Direction": 2
+        },
+        {
+          "From": "P9",
+          "To": "64",
+          "Direction": 2
+        },
+        {
+          "From": "P11",
+          "To": "65",
+          "Direction": 2
+        },
+        {
+          "From": "P12",
+          "To": "66",
+          "Direction": 2
+        },
+        {
+          "From": "P6",
+          "To": "350",
+          "Direction": 2
+        },
+        {
+          "From": "P19",
+          "To": "P29",
+          "Direction": 2
+        },
+        {
+          "From": "P18",
+          "To": "P27",
+          "Direction": 2
+        },
+        {
+          "From": "P17",
+          "To": "P25",
+          "Direction": 2
+        },
+        {
+          "From": "P16",
+          "To": "P23",
+          "Direction": 2
+        },
+        {
+          "From": "P15",
+          "To": "563",
+          "Direction": 2
+        },
+        {
+          "From": "P16",
+          "To": "564",
+          "Direction": 2
+        },
+        {
+          "From": "P17",
+          "To": "565",
+          "Direction": 2
+        },
+        {
+          "From": "P18",
+          "To": "566",
+          "Direction": 2
+        },
+        {
+          "From": "P19",
+          "To": "567",
+          "Direction": 2
+        },
+        {
+          "From": "61",
+          "To": "568",
+          "Direction": 2
+        },
+        {
+          "From": "61",
+          "To": "569",
+          "Direction": 0
+        },
+        {
+          "From": "569",
+          "To": "570",
+          "Direction": 0
+        },
+        {
+          "From": "570",
+          "To": "571",
+          "Direction": 0
+        },
+        {
+          "From": "571",
+          "To": "572",
+          "Direction": 0
+        },
+        {
+          "From": "572",
+          "To": "P30",
+          "Direction": 0
+        },
+        {
+          "From": "572",
+          "To": "573",
+          "Direction": 2
+        },
+        {
+          "From": "571",
+          "To": "574",
+          "Direction": 2
+        },
+        {
+          "From": "570",
+          "To": "575",
+          "Direction": 2
+        },
+        {
+          "From": "569",
+          "To": "576",
+          "Direction": 2
+        },
+        {
+          "From": "61",
+          "To": "577",
+          "Direction": 2
+        },
+        {
+          "From": "569",
+          "To": "578",
+          "Direction": 2
+        },
+        {
+          "From": "570",
+          "To": "579",
+          "Direction": 2
+        },
+        {
+          "From": "571",
+          "To": "580",
+          "Direction": 2
+        },
+        {
+          "From": "572",
+          "To": "581",
+          "Direction": 2
+        },
+        {
+          "From": "P3",
+          "To": "P5",
+          "Direction": 2
+        },
+        {
+          "From": "P6",
+          "To": "P8",
+          "Direction": 2
+        },
+        {
+          "From": "P12",
+          "To": "73",
+          "Direction": 0
+        },
+        {
+          "From": "73",
+          "To": "P15",
+          "Direction": 0
+        },
+        {
+          "From": "P19",
+          "To": "85",
+          "Direction": 0
+        },
+        {
+          "From": "85",
+          "To": "61",
+          "Direction": 0
+        },
+        {
+          "From": "P15",
+          "To": "86",
+          "Direction": 2
+        },
+        {
+          "From": "86",
+          "To": "P21",
+          "Direction": 2
+        },
+        {
+          "From": "P2",
+          "To": "88",
+          "Direction": 2
+        },
+        {
+          "From": "88",
+          "To": "P34",
+          "Direction": 2
+        },
+        {
+          "From": "P33",
+          "To": "88",
+          "Direction": 1
+        },
+        {
+          "From": "P34",
+          "To": "75",
+          "Direction": 0
+        },
+        {
+          "From": "75",
+          "To": "76",
+          "Direction": 0
+        },
+        {
+          "From": "76",
+          "To": "77",
+          "Direction": 0
+        },
+        {
+          "From": "77",
+          "To": "78",
+          "Direction": 2
+        },
+        {
+          "From": "77",
+          "To": "79",
+          "Direction": 2
+        },
+        {
+          "From": "77",
+          "To": "445",
+          "Direction": 0
+        },
+        {
+          "From": "445",
+          "To": "446",
+          "Direction": 2
+        },
+        {
+          "From": "445",
+          "To": "447",
+          "Direction": 2
+        },
+        {
+          "From": "445",
+          "To": "448",
+          "Direction": 0
+        },
+        {
+          "From": "449",
+          "To": "450",
+          "Direction": 0
+        },
+        {
+          "From": "448",
+          "To": "451",
+          "Direction": 2
+        },
+        {
+          "From": "448",
+          "To": "452",
+          "Direction": 2
+        },
+        {
+          "From": "449",
+          "To": "453",
+          "Direction": 2
+        },
+        {
+          "From": "449",
+          "To": "454",
+          "Direction": 2
+        },
+        {
+          "From": "450",
+          "To": "455",
+          "Direction": 2
+        },
+        {
+          "From": "450",
+          "To": "456",
+          "Direction": 2
+        },
+        {
+          "From": "457",
+          "To": "458",
+          "Direction": 0
+        },
+        {
+          "From": "458",
+          "To": "459",
+          "Direction": 0
+        },
+        {
+          "From": "459",
+          "To": "460",
+          "Direction": 0
+        },
+        {
+          "From": "460",
+          "To": "461",
+          "Direction": 0
+        },
+        {
+          "From": "461",
+          "To": "462",
+          "Direction": 2
+        },
+        {
+          "From": "461",
+          "To": "463",
+          "Direction": 2
+        },
+        {
+          "From": "460",
+          "To": "465",
+          "Direction": 2
+        },
+        {
+          "From": "459",
+          "To": "466",
+          "Direction": 2
+        },
+        {
+          "From": "459",
+          "To": "467",
+          "Direction": 2
+        },
+        {
+          "From": "458",
+          "To": "468",
+          "Direction": 2
+        },
+        {
+          "From": "458",
+          "To": "469",
+          "Direction": 2
+        },
+        {
+          "From": "457",
+          "To": "470",
+          "Direction": 2
+        },
+        {
+          "From": "457",
+          "To": "471",
+          "Direction": 2
+        },
+        {
+          "From": "461",
+          "To": "472",
+          "Direction": 0
+        },
+        {
+          "From": "472",
+          "To": "473",
+          "Direction": 2
+        },
+        {
+          "From": "472",
+          "To": "474",
+          "Direction": 2
+        },
+        {
+          "From": "472",
+          "To": "475",
+          "Direction": 0
+        },
+        {
+          "From": "475",
+          "To": "476",
+          "Direction": 2
+        },
+        {
+          "From": "475",
+          "To": "477",
+          "Direction": 2
+        },
+        {
+          "From": "475",
+          "To": "478",
+          "Direction": 0
+        },
+        {
+          "From": "478",
+          "To": "479",
+          "Direction": 2
+        },
+        {
+          "From": "478",
+          "To": "480",
+          "Direction": 2
+        },
+        {
+          "From": "478",
+          "To": "481",
+          "Direction": 0
+        },
+        {
+          "From": "481",
+          "To": "482",
+          "Direction": 0
+        },
+        {
+          "From": "481",
+          "To": "483",
+          "Direction": 2
+        },
+        {
+          "From": "481",
+          "To": "484",
+          "Direction": 2
+        },
+        {
+          "From": "482",
+          "To": "485",
+          "Direction": 0
+        },
+        {
+          "From": "482",
+          "To": "601",
+          "Direction": 2
+        },
+        {
+          "From": "482",
+          "To": "602",
+          "Direction": 2
+        },
+        {
+          "From": "62",
+          "To": "603",
+          "Direction": 0
+        },
+        {
+          "From": "485",
+          "To": "603",
+          "Direction": 0
+        },
+        {
+          "From": "450",
+          "To": "118",
+          "Direction": 0
+        },
+        {
+          "From": "118",
+          "To": "457",
+          "Direction": 0
+        },
+        {
+          "From": "76",
+          "To": "1228",
+          "Direction": 0
+        },
+        {
+          "From": "1228",
+          "To": "1229",
+          "Direction": 0
+        },
+        {
+          "From": "460",
+          "To": "486",
+          "Direction": 2
+        },
+        {
+          "From": "486",
+          "To": "464",
+          "Direction": 2
+        },
+        {
+          "From": "1228",
+          "To": "183",
+          "Direction": 0
+        },
+        {
+          "From": "183",
+          "To": "184",
+          "Direction": 0
+        },
+        {
+          "From": "184",
+          "To": "80",
+          "Direction": 0
+        },
+        {
+          "From": "184",
+          "To": "185",
+          "Direction": 0
+        },
+        {
+          "From": "185",
+          "To": "186",
+          "Direction": 2
+        },
+        {
+          "From": "185",
+          "To": "187",
+          "Direction": 2
+        },
+        {
+          "From": "185",
+          "To": "188",
+          "Direction": 0
+        },
+        {
+          "From": "188",
+          "To": "189",
+          "Direction": 2
+        },
+        {
+          "From": "188",
+          "To": "190",
+          "Direction": 2
+        },
+        {
+          "From": "188",
+          "To": "191",
+          "Direction": 0
+        },
+        {
+          "From": "191",
+          "To": "192",
+          "Direction": 2
+        },
+        {
+          "From": "191",
+          "To": "193",
+          "Direction": 2
+        },
+        {
+          "From": "191",
+          "To": "194",
+          "Direction": 0
+        },
+        {
+          "From": "194",
+          "To": "195",
+          "Direction": 2
+        },
+        {
+          "From": "194",
+          "To": "196",
+          "Direction": 2
+        },
+        {
+          "From": "194",
+          "To": "197",
+          "Direction": 0
+        },
+        {
+          "From": "197",
+          "To": "198",
+          "Direction": 2
+        },
+        {
+          "From": "197",
+          "To": "199",
+          "Direction": 2
+        },
+        {
+          "From": "197",
+          "To": "200",
+          "Direction": 0
+        },
+        {
+          "From": "200",
+          "To": "201",
+          "Direction": 2
+        },
+        {
+          "From": "200",
+          "To": "202",
+          "Direction": 2
+        },
+        {
+          "From": "200",
+          "To": "203",
+          "Direction": 0
+        },
+        {
+          "From": "203",
+          "To": "204",
+          "Direction": 2
+        },
+        {
+          "From": "203",
+          "To": "205",
+          "Direction": 2
+        },
+        {
+          "From": "203",
+          "To": "206",
+          "Direction": 0
+        },
+        {
+          "From": "206",
+          "To": "207",
+          "Direction": 2
+        },
+        {
+          "From": "206",
+          "To": "208",
+          "Direction": 2
+        },
+        {
+          "From": "206",
+          "To": "209",
+          "Direction": 0
+        },
+        {
+          "From": "209",
+          "To": "210",
+          "Direction": 2
+        },
+        {
+          "From": "209",
+          "To": "211",
+          "Direction": 2
+        },
+        {
+          "From": "209",
+          "To": "212",
+          "Direction": 0
+        },
+        {
+          "From": "212",
+          "To": "213",
+          "Direction": 2
+        },
+        {
+          "From": "212",
+          "To": "214",
+          "Direction": 2
+        },
+        {
+          "From": "212",
+          "To": "215",
+          "Direction": 0
+        },
+        {
+          "From": "215",
+          "To": "216",
+          "Direction": 2
+        },
+        {
+          "From": "215",
+          "To": "217",
+          "Direction": 2
+        },
+        {
+          "From": "215",
+          "To": "218",
+          "Direction": 0
+        },
+        {
+          "From": "218",
+          "To": "219",
+          "Direction": 2
+        },
+        {
+          "From": "218",
+          "To": "220",
+          "Direction": 2
+        },
+        {
+          "From": "218",
+          "To": "221",
+          "Direction": 0
+        },
+        {
+          "From": "221",
+          "To": "222",
+          "Direction": 2
+        },
+        {
+          "From": "221",
+          "To": "223",
+          "Direction": 2
+        },
+        {
+          "From": "221",
+          "To": "224",
+          "Direction": 0
+        },
+        {
+          "From": "224",
+          "To": "226",
+          "Direction": 2
+        },
+        {
+          "From": "224",
+          "To": "227",
+          "Direction": 0
+        },
+        {
+          "From": "227",
+          "To": "228",
+          "Direction": 2
+        },
+        {
+          "From": "227",
+          "To": "229",
+          "Direction": 2
+        },
+        {
+          "From": "227",
+          "To": "230",
+          "Direction": 0
+        },
+        {
+          "From": "230",
+          "To": "231",
+          "Direction": 0
+        },
+        {
+          "From": "603",
+          "To": "232",
+          "Direction": 0
+        },
+        {
+          "From": "232",
+          "To": "173",
+          "Direction": 0
+        },
+        {
+          "From": "231",
+          "To": "232",
+          "Direction": 0
+        },
+        {
+          "From": "448",
+          "To": "449",
+          "Direction": 0
+        },
+        {
+          "From": "224",
+          "To": "233",
+          "Direction": 2
+        },
+        {
+          "From": "233",
+          "To": "225",
+          "Direction": 2
+        }
+      ]
+    },
+    {
+      "Name": "",
+      "Head": "39",
+      "Current": "39",
+      "Points": [
+        {
+          "Name": "39",
+          "X": 2862.3115,
+          "Y": 5336.244,
+          "DrainPaused": true,
+          "IsCarEmitter": true,
+          "IsDrain": false,
+          "TargetPointName": "45",
+          "EmitterPeriod": 2000
+        },
+        {
+          "Name": "45",
+          "X": 2868.3333,
+          "Y": -67.21373,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": true,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        },
+        {
+          "Name": "P7",
+          "X": 2862.619,
+          "Y": 1132.7864,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        }
+      ],
+      "Connections": [
+        {
+          "From": "P7",
+          "To": "45",
+          "Direction": 0
+        },
+        {
+          "From": "39",
+          "To": "P7",
+          "Direction": 0
+        }
+      ]
+    },
+    {
+      "Name": "",
+      "Head": "46",
+      "Current": "46",
+      "Points": [
+        {
+          "Name": "46",
+          "X": 2521.889,
+          "Y": -41.571487,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        }
+      ],
+      "Connections": []
+    },
+    {
+      "Name": "",
+      "Head": "53",
+      "Current": "53",
+      "Points": [
+        {
+          "Name": "53",
+          "X": 2461.889,
+          "Y": -43.000046,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 5000
+        }
+      ],
+      "Connections": []
+    },
+    {
+      "Name": "",
+      "Head": "74",
+      "Current": "74",
+      "Points": [
+        {
+          "Name": "74",
+          "X": 2404.1755,
+          "Y": -33.356934,
+          "DrainPaused": false,
+          "IsCarEmitter": false,
+          "IsDrain": false,
+          "TargetPointName": null,
+          "EmitterPeriod": 8000
+        }
+      ],
+      "Connections": []
+    }
+  ],
+  "ParkingSpots": [
+    {
+      "Name": "S3",
+      "ZoneParent": "ZONE1",
+      "Rotation": 0,
+      "X": 711,
+      "Y": 714,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "S4",
+      "ZoneParent": "ZONE1",
+      "Rotation": 0,
+      "X": 803,
+      "Y": 714,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "S1",
+      "ZoneParent": "ZONE1",
+      "Rotation": 0.0032894611,
+      "X": 522,
+      "Y": 714,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "S2",
+      "ZoneParent": "ZONE1",
+      "Rotation": -0.001880765,
+      "X": 617,
+      "Y": 715,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "S5",
+      "ZoneParent": "ZONE1",
+      "Rotation": -0.00038933754,
+      "X": 899,
+      "Y": 716,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Electric",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "S28",
+      "ZoneParent": "ZONE1",
+      "Rotation": 0,
+      "X": 2210,
+      "Y": 1371,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "S30",
+      "ZoneParent": "ZONE1",
+      "Rotation": 0,
+      "X": 2397,
+      "Y": 1371,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "S27",
+      "ZoneParent": "ZONE1",
+      "Rotation": 0,
+      "X": 2116,
+      "Y": 1371,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "S29",
+      "ZoneParent": "ZONE1",
+      "Rotation": 0,
+      "X": 2304,
+      "Y": 1371,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "S25",
+      "ZoneParent": "ZONE1",
+      "Rotation": 0,
+      "X": 1647,
+      "Y": 1372,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Electric",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "S24",
+      "ZoneParent": "ZONE1",
+      "Rotation": 0,
+      "X": 1554,
+      "Y": 1371,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "S23",
+      "ZoneParent": "ZONE1",
+      "Rotation": 0,
+      "X": 1460,
+      "Y": 1371,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "S22",
+      "ZoneParent": "ZONE1",
+      "Rotation": 0,
+      "X": 1365,
+      "Y": 1371,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "S21",
+      "ZoneParent": "ZONE1",
+      "Rotation": 0,
+      "X": 1273,
+      "Y": 1372,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Electric",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "S11",
+      "ZoneParent": "ZONE1",
+      "Rotation": 0,
+      "X": 2023,
+      "Y": 715,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Electric",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "S12",
+      "ZoneParent": "ZONE1",
+      "Rotation": 0,
+      "X": 2116,
+      "Y": 715,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "S13",
+      "ZoneParent": "ZONE1",
+      "Rotation": 0,
+      "X": 2210,
+      "Y": 715,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "S14",
+      "ZoneParent": "ZONE1",
+      "Rotation": 0,
+      "X": 2304,
+      "Y": 715,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "S15",
+      "ZoneParent": "ZONE1",
+      "Rotation": 0,
+      "X": 2398,
+      "Y": 715,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "S20",
+      "ZoneParent": "ZONE1",
+      "Rotation": 0,
+      "X": 897,
+      "Y": 1372,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Electric",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "S19",
+      "ZoneParent": "ZONE1",
+      "Rotation": 0,
+      "X": 804,
+      "Y": 1374,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "S18",
+      "ZoneParent": "ZONE1",
+      "Rotation": 0,
+      "X": 710,
+      "Y": 1373,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "S17",
+      "ZoneParent": "ZONE1",
+      "Rotation": -0.002136767,
+      "X": 617,
+      "Y": 1373,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "S16",
+      "ZoneParent": "ZONE1",
+      "Rotation": 0,
+      "X": 521,
+      "Y": 1374,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "S26",
+      "ZoneParent": "ZONE1",
+      "Rotation": 0,
+      "X": 2023,
+      "Y": 1371,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Electric",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "S6",
+      "ZoneParent": "ZONE1",
+      "Rotation": -0.006140828,
+      "X": 1271,
+      "Y": 715,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Electric",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "S8",
+      "ZoneParent": "ZONE1",
+      "Rotation": -0.0009690523,
+      "X": 1459,
+      "Y": 714,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Accessible",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "S7",
+      "ZoneParent": "ZONE1",
+      "Rotation": -0.0058101416,
+      "X": 1367,
+      "Y": 716,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Accessible",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "S9",
+      "ZoneParent": "ZONE1",
+      "Rotation": -0.00474751,
+      "X": 1555,
+      "Y": 716,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Accessible",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "S10",
+      "ZoneParent": "ZONE1",
+      "Rotation": -0.002213955,
+      "X": 1649,
+      "Y": 715,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Electric",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "ENTRY1",
+      "ZoneParent": "",
+      "Rotation": 0,
+      "X": 189,
+      "Y": 866,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "EntrySpot",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "EXIT_EXIT",
+      "ZoneParent": "ZONE1",
+      "Rotation": 0,
+      "X": 2532,
+      "Y": 1043,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "ExitSpot",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "ESCAPE1",
+      "ZoneParent": "",
+      "Rotation": 1.5805757,
+      "X": -180,
+      "Y": 1483,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "LeaveParking",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null,
+      "CanSendActions": false
+    },
+    {
+      "Name": "ESCAPE2",
+      "ZoneParent": "",
+      "Rotation": 0,
+      "X": 2724,
+      "Y": 5264,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "LeaveParking",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "ESCAPE10",
+      "ZoneParent": "",
+      "Rotation": 0,
+      "X": 2827,
+      "Y": -155,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "LeaveParking",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null,
+      "CanSendActions": false
+    },
+    {
+      "Name": "ENTRY2",
+      "ZoneParent": "",
+      "Rotation": 0,
+      "X": 192,
+      "Y": 2350,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "EntrySpot",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "bay36",
+      "ZoneParent": "ZONE2",
+      "Rotation": 0,
+      "X": 522,
+      "Y": 2208,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "bay37",
+      "ZoneParent": "ZONE2",
+      "Rotation": 0,
+      "X": 522,
+      "Y": 2865,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "ESCAPE4",
+      "ZoneParent": "",
+      "Rotation": 0,
+      "X": 184,
+      "Y": 5266,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "LeaveParking",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null,
+      "CanSendActions": false
+    },
+    {
+      "Name": "bay39",
+      "ZoneParent": "ZONE2",
+      "Rotation": 0,
+      "X": 617,
+      "Y": 2208,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "bay40",
+      "ZoneParent": "ZONE2",
+      "Rotation": 0,
+      "X": 711,
+      "Y": 2208,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "bay41",
+      "ZoneParent": "ZONE2",
+      "Rotation": 0,
+      "X": 803,
+      "Y": 2208,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "bay42",
+      "ZoneParent": "ZONE2",
+      "Rotation": 0,
+      "X": 898,
+      "Y": 2210,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Electric",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "bay43",
+      "ZoneParent": "ZONE2",
+      "Rotation": 0,
+      "X": 1273,
+      "Y": 2212,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Electric",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "bay44",
+      "ZoneParent": "ZONE2",
+      "Rotation": 0,
+      "X": 1367,
+      "Y": 2210,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "bay45",
+      "ZoneParent": "ZONE2",
+      "Rotation": 0,
+      "X": 1460,
+      "Y": 2210,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "bay46",
+      "ZoneParent": "ZONE2",
+      "Rotation": 0,
+      "X": 1554,
+      "Y": 2209,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "bay47",
+      "ZoneParent": "ZONE2",
+      "Rotation": 0,
+      "X": 1647,
+      "Y": 2209,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Electric",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "bay48",
+      "ZoneParent": "ZONE2",
+      "Rotation": 0,
+      "X": 2021,
+      "Y": 2212,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Electric",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "bay49",
+      "ZoneParent": "ZONE2",
+      "Rotation": 0,
+      "X": 2118,
+      "Y": 2211,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "bay50",
+      "ZoneParent": "ZONE2",
+      "Rotation": 0,
+      "X": 2212,
+      "Y": 2211,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "bay51",
+      "ZoneParent": "ZONE2",
+      "Rotation": 0,
+      "X": 2303,
+      "Y": 2211,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "bay52",
+      "ZoneParent": "ZONE2",
+      "Rotation": 0,
+      "X": 2398,
+      "Y": 2209,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "bay53",
+      "ZoneParent": "ZONE2",
+      "Rotation": 0,
+      "X": 617,
+      "Y": 2865,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "bay54",
+      "ZoneParent": "ZONE2",
+      "Rotation": 0,
+      "X": 712,
+      "Y": 2869,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "bay55",
+      "ZoneParent": "ZONE2",
+      "Rotation": 0,
+      "X": 806,
+      "Y": 2866,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "bay56",
+      "ZoneParent": "ZONE2",
+      "Rotation": 0,
+      "X": 896,
+      "Y": 2866,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Electric",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "bay57",
+      "ZoneParent": "ZONE2",
+      "Rotation": 0,
+      "X": 1272,
+      "Y": 2867,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Electric",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "bay58",
+      "ZoneParent": "ZONE2",
+      "Rotation": 0,
+      "X": 1368,
+      "Y": 2867,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Accessible",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "bay59",
+      "ZoneParent": "ZONE2",
+      "Rotation": 0,
+      "X": 1461,
+      "Y": 2867,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Accessible",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "bay60",
+      "ZoneParent": "ZONE2",
+      "Rotation": 0,
+      "X": 1552,
+      "Y": 2866,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Accessible",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "bay61",
+      "ZoneParent": "ZONE2",
+      "Rotation": 0,
+      "X": 1647,
+      "Y": 2865,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Electric",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "bay62",
+      "ZoneParent": "ZONE2",
+      "Rotation": 0,
+      "X": 2022,
+      "Y": 2867,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Electric",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "bay63",
+      "ZoneParent": "ZONE2",
+      "Rotation": 0,
+      "X": 2118,
+      "Y": 2866,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "bay64",
+      "ZoneParent": "ZONE2",
+      "Rotation": 0,
+      "X": 2212,
+      "Y": 2866,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "bay65",
+      "ZoneParent": "ZONE2",
+      "Rotation": 0,
+      "X": 2302,
+      "Y": 2867,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "bay66",
+      "ZoneParent": "ZONE2",
+      "Rotation": 0,
+      "X": 2396,
+      "Y": 2867,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "Exit67",
+      "ZoneParent": "ZONE2",
+      "Rotation": 0,
+      "X": 2499,
+      "Y": 2528,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "ExitSpot",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "Escape68",
+      "ZoneParent": "",
+      "Rotation": 1.5805757,
+      "X": -173,
+      "Y": 2809,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "LeaveParking",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null,
+      "CanSendActions": false
+    },
+    {
+      "Name": "P69",
+      "ZoneParent": "ZONE3",
+      "Rotation": 0,
+      "X": 522,
+      "Y": 3713,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "P70",
+      "ZoneParent": "ZONE3",
+      "Rotation": 0,
+      "X": 618,
+      "Y": 3714,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "P71",
+      "ZoneParent": "ZONE3",
+      "Rotation": 0,
+      "X": 712,
+      "Y": 3713,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "P72",
+      "ZoneParent": "ZONE3",
+      "Rotation": 0,
+      "X": 805,
+      "Y": 3715,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "P73",
+      "ZoneParent": "ZONE3",
+      "Rotation": 0,
+      "X": 899,
+      "Y": 3712,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "P74",
+      "ZoneParent": "ZONE3",
+      "Rotation": 0,
+      "X": 1274,
+      "Y": 3715,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Electric",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "P75",
+      "ZoneParent": "ZONE3",
+      "Rotation": 0,
+      "X": 1370,
+      "Y": 3715,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Electric",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "P76",
+      "ZoneParent": "ZONE3",
+      "Rotation": 0,
+      "X": 1462,
+      "Y": 3716,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Electric",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "P77",
+      "ZoneParent": "ZONE3",
+      "Rotation": 0,
+      "X": 1555,
+      "Y": 3715,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Electric",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "P78",
+      "ZoneParent": "ZONE3",
+      "Rotation": 0,
+      "X": 1649,
+      "Y": 3714,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Electric",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "P79",
+      "ZoneParent": "ZONE3",
+      "Rotation": 0,
+      "X": 2023,
+      "Y": 3714,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Accessible",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "P80",
+      "ZoneParent": "ZONE3",
+      "Rotation": 0,
+      "X": 2118,
+      "Y": 3713,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Accessible",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "P81",
+      "ZoneParent": "ZONE3",
+      "Rotation": 0,
+      "X": 2213,
+      "Y": 3713,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Accessible",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "P82",
+      "ZoneParent": "ZONE3",
+      "Rotation": 0,
+      "X": 2307,
+      "Y": 3713,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "P83",
+      "ZoneParent": "ZONE3",
+      "Rotation": 0,
+      "X": 2400,
+      "Y": 3712,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "P84",
+      "ZoneParent": "ZONE3",
+      "Rotation": 0.0029782057,
+      "X": 525,
+      "Y": 4372,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "P85",
+      "ZoneParent": "ZONE3",
+      "Rotation": 0.0029782057,
+      "X": 617,
+      "Y": 4371,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "P86",
+      "ZoneParent": "ZONE3",
+      "Rotation": 0.0029782057,
+      "X": 710,
+      "Y": 4372,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "P87",
+      "ZoneParent": "ZONE3",
+      "Rotation": 0.0029782057,
+      "X": 803,
+      "Y": 4371,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "P88",
+      "ZoneParent": "ZONE3",
+      "Rotation": 0.0029782057,
+      "X": 897,
+      "Y": 4371,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "P89",
+      "ZoneParent": "ZONE3",
+      "Rotation": 0.0029782057,
+      "X": 1274,
+      "Y": 4370,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "P90",
+      "ZoneParent": "ZONE3",
+      "Rotation": 0.0029782057,
+      "X": 1367,
+      "Y": 4372,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "P91",
+      "ZoneParent": "ZONE3",
+      "Rotation": 0.0029782057,
+      "X": 1462,
+      "Y": 4371,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "P92",
+      "ZoneParent": "ZONE3",
+      "Rotation": 0.0029782057,
+      "X": 1556,
+      "Y": 4372,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "P93",
+      "ZoneParent": "ZONE3",
+      "Rotation": 0.0029782057,
+      "X": 1648,
+      "Y": 4370,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "P94",
+      "ZoneParent": "ZONE3",
+      "Rotation": 0.0029782057,
+      "X": 2023,
+      "Y": 4371,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "P95",
+      "ZoneParent": "ZONE3",
+      "Rotation": 0.0029782057,
+      "X": 2116,
+      "Y": 4371,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "P96",
+      "ZoneParent": "ZONE3",
+      "Rotation": 0.0029782057,
+      "X": 2210,
+      "Y": 4372,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "P97",
+      "ZoneParent": "ZONE3",
+      "Rotation": 0.0029782057,
+      "X": 2303,
+      "Y": 4371,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "P98",
+      "ZoneParent": "ZONE3",
+      "Rotation": 0.0029782057,
+      "X": 2397,
+      "Y": 4372,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "Park",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "ENTRY3",
+      "ZoneParent": "",
+      "Rotation": 0,
+      "X": 183,
+      "Y": 3854,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "EntrySpot",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    },
+    {
+      "Name": "Exit100",
+      "ZoneParent": "ZONE3",
+      "Rotation": 0,
+      "X": 2509,
+      "Y": 4044,
+      "Width": 80,
+      "Height": 170,
+      "Purpose": "ExitSpot",
+      "UsageCounter": 0,
+      "CarType": "Any",
+      "IsRepairRequested": false,
+      "RepairProgress": 0,
+      "lastCarPlate": null
+    }
+  ],
+  "Gates": [
+    {
+      "Name": "gate4",
+      "ZoneParent": "ZONE2",
+      "State": "Closed",
+      "Rotation": -3.1470678,
+      "X": 2592,
+      "Y": 2495,
+      "UsageCounter": 0,
+      "IsRepairRequested": false,
+      "RepairProgress": 0
+    },
+    {
+      "Name": "gate1",
+      "ZoneParent": "ZONE1",
+      "State": "Closed",
+      "Rotation": 0,
+      "X": 322,
+      "Y": 954,
+      "UsageCounter": 0,
+      "IsRepairRequested": false,
+      "RepairProgress": 0
+    },
+    {
+      "Name": "gate2",
+      "ZoneParent": "",
+      "State": "Open",
+      "Rotation": 3.1436338,
+      "X": 2634,
+      "Y": 981,
+      "UsageCounter": 0,
+      "IsRepairRequested": false,
+      "RepairProgress": 0
+    },
+    {
+      "Name": "gate3",
+      "ZoneParent": "ZONE2",
+      "State": "Closed",
+      "Rotation": 0,
+      "X": 333,
+      "Y": 2448,
+      "UsageCounter": 0,
+      "IsRepairRequested": false,
+      "RepairProgress": 0
+    },
+    {
+      "Name": "gate5",
+      "ZoneParent": "ZONE3",
+      "State": "Closed",
+      "Rotation": 0,
+      "X": 324,
+      "Y": 3954,
+      "UsageCounter": 0,
+      "IsRepairRequested": false,
+      "RepairProgress": 0
+    },
+    {
+      "Name": "gate6",
+      "ZoneParent": "ZONE3",
+      "State": "Closed",
+      "Rotation": 3.1484265,
+      "X": 2608,
+      "Y": 3979,
+      "UsageCounter": 0,
+      "IsRepairRequested": false,
+      "RepairProgress": 0
+    },
+    {
+      "Name": "gate7",
+      "ZoneParent": "",
+      "State": "Open",
+      "Rotation": 1.5695446,
+      "X": 165,
+      "Y": 283,
+      "UsageCounter": 0,
+      "IsRepairRequested": false,
+      "RepairProgress": 0
+    }
+  ],
+  "Cars": [],
+  "Lights": [
+    {
+      "Name": "t_0",
+      "ZoneParent": "ZONE1",
+      "LightType": "Spot",
+      "Group": "G1",
+      "X": 1870,
+      "Y": 1018,
+      "Rotation": 0,
+      "Scale": 0.27648804,
+      "Intensity": 0.5,
+      "IsOn": true,
+      "colorR": 255,
+      "colorG": 255,
+      "colorB": 255
+    },
+    {
+      "Name": "t_1",
+      "ZoneParent": "ZONE1",
+      "LightType": "Spot",
+      "Group": "G1",
+      "X": 1102,
+      "Y": 1000,
+      "Rotation": 0,
+      "Scale": 0.24522252,
+      "Intensity": 0.5,
+      "IsOn": true,
+      "colorR": 255,
+      "colorG": 255,
+      "colorB": 255
+    },
+    {
+      "Name": "t_2",
+      "ZoneParent": "ZONE1",
+      "LightType": "Wall",
+      "Group": "G1",
+      "X": 736,
+      "Y": 731,
+      "Rotation": 0,
+      "Scale": 0.47549248,
+      "Intensity": 0.5,
+      "IsOn": true,
+      "colorR": 255,
+      "colorG": 255,
+      "colorB": 255
+    },
+    {
+      "Name": "t_3",
+      "ZoneParent": "ZONE2",
+      "LightType": "Spot",
+      "Group": "G2",
+      "X": 1125,
+      "Y": 2617,
+      "Rotation": 0,
+      "Scale": 0.25039858,
+      "Intensity": 0.5,
+      "IsOn": true,
+      "colorR": 255,
+      "colorG": 255,
+      "colorB": 255
+    },
+    {
+      "Name": "t_4",
+      "ZoneParent": "ZONE1",
+      "LightType": "Spot",
+      "Group": "G1",
+      "X": 1110,
+      "Y": 1244,
+      "Rotation": 0,
+      "Scale": 0.28647307,
+      "Intensity": 0.5,
+      "IsOn": true,
+      "colorR": 255,
+      "colorG": 255,
+      "colorB": 255
+    },
+    {
+      "Name": "t_6",
+      "ZoneParent": "ZONE2",
+      "LightType": "Wall",
+      "Group": "G2",
+      "X": 733,
+      "Y": 2220,
+      "Rotation": 0,
+      "Scale": 0.47549248,
+      "Intensity": 0.5,
+      "IsOn": true,
+      "colorR": 255,
+      "colorG": 255,
+      "colorB": 255
+    },
+    {
+      "Name": "t_8",
+      "ZoneParent": "ZONE1",
+      "LightType": "Wall",
+      "Group": "G1",
+      "X": 1526,
+      "Y": 730,
+      "Rotation": 0,
+      "Scale": 0.47549248,
+      "Intensity": 0.5,
+      "IsOn": true,
+      "colorR": 255,
+      "colorG": 255,
+      "colorB": 255
+    },
+    {
+      "Name": "t_9",
+      "ZoneParent": "ZONE1",
+      "LightType": "Wall",
+      "Group": "G1",
+      "X": 733,
+      "Y": 1517,
+      "Rotation": 3.1426182,
+      "Scale": 0.47549248,
+      "Intensity": 0.5,
+      "IsOn": true,
+      "colorR": 255,
+      "colorG": 255,
+      "colorB": 255
+    },
+    {
+      "Name": "t_10",
+      "ZoneParent": "ZONE2",
+      "LightType": "Wall",
+      "Group": "G2",
+      "X": 739,
+      "Y": 3025,
+      "Rotation": 3.1426182,
+      "Scale": 0.47549248,
+      "Intensity": 0.5,
+      "IsOn": true,
+      "colorR": 255,
+      "colorG": 255,
+      "colorB": 255
+    },
+    {
+      "Name": "t_11",
+      "ZoneParent": "ZONE1",
+      "LightType": "Wall",
+      "Group": "G1",
+      "X": 2269,
+      "Y": 1520,
+      "Rotation": 3.1426182,
+      "Scale": 0.47549248,
+      "Intensity": 0.5,
+      "IsOn": true,
+      "colorR": 255,
+      "colorG": 255,
+      "colorB": 255
+    },
+    {
+      "Name": "light13",
+      "ZoneParent": "ZONE2",
+      "LightType": "Wall",
+      "Group": "G2",
+      "X": 983,
+      "Y": 2335,
+      "Rotation": 0,
+      "Scale": 0.2,
+      "Intensity": 0.5,
+      "IsOn": true,
+      "colorR": 255,
+      "colorG": 255,
+      "colorB": 255
+    },
+    {
+      "Name": "light19",
+      "ZoneParent": "ZONE1",
+      "LightType": "Wall",
+      "Group": "G1",
+      "X": 1494,
+      "Y": 1527,
+      "Rotation": 3.1426182,
+      "Scale": 0.47549248,
+      "Intensity": 0.5,
+      "IsOn": true,
+      "colorR": 255,
+      "colorG": 255,
+      "colorB": 255
+    },
+    {
+      "Name": "light20",
+      "ZoneParent": "ZONE2",
+      "LightType": "Wall",
+      "Group": "G2",
+      "X": 2271,
+      "Y": 3026,
+      "Rotation": 3.1426182,
+      "Scale": 0.47549248,
+      "Intensity": 0.5,
+      "IsOn": true,
+      "colorR": 255,
+      "colorG": 255,
+      "colorB": 255
+    },
+    {
+      "Name": "light21",
+      "ZoneParent": "ZONE2",
+      "LightType": "Wall",
+      "Group": "G2",
+      "X": 1506,
+      "Y": 3021,
+      "Rotation": 3.1426182,
+      "Scale": 0.47549248,
+      "Intensity": 0.5,
+      "IsOn": true,
+      "colorR": 255,
+      "colorG": 255,
+      "colorB": 255
+    },
+    {
+      "Name": "light22",
+      "ZoneParent": "ZONE1",
+      "LightType": "Wall",
+      "Group": "G1",
+      "X": 2251,
+      "Y": 721,
+      "Rotation": 0,
+      "Scale": 0.47549248,
+      "Intensity": 0.5,
+      "IsOn": true,
+      "colorR": 255,
+      "colorG": 255,
+      "colorB": 255
+    },
+    {
+      "Name": "light23",
+      "ZoneParent": "ZONE2",
+      "LightType": "Wall",
+      "Group": "G2",
+      "X": 2253,
+      "Y": 2219,
+      "Rotation": 0,
+      "Scale": 0.47549248,
+      "Intensity": 0.5,
+      "IsOn": true,
+      "colorR": 255,
+      "colorG": 255,
+      "colorB": 255
+    },
+    {
+      "Name": "light25",
+      "ZoneParent": "ZONE2",
+      "LightType": "Wall",
+      "Group": "G2",
+      "X": 1496,
+      "Y": 2210,
+      "Rotation": 0,
+      "Scale": 0.47549248,
+      "Intensity": 0.5,
+      "IsOn": true,
+      "colorR": 255,
+      "colorG": 255,
+      "colorB": 255
+    },
+    {
+      "Name": "light26",
+      "ZoneParent": "ZONE1",
+      "LightType": "Spot",
+      "Group": "G1",
+      "X": 1862,
+      "Y": 1247,
+      "Rotation": 0,
+      "Scale": 0.25039858,
+      "Intensity": 0.5,
+      "IsOn": true,
+      "colorR": 255,
+      "colorG": 255,
+      "colorB": 255
+    },
+    {
+      "Name": "light27",
+      "ZoneParent": "ZONE2",
+      "LightType": "Spot",
+      "Group": "G2",
+      "X": 1891,
+      "Y": 2608,
+      "Rotation": 0,
+      "Scale": 0.25039858,
+      "Intensity": 0.5,
+      "IsOn": true,
+      "colorR": 255,
+      "colorG": 255,
+      "colorB": 255
+    },
+    {
+      "Name": "light28",
+      "ZoneParent": "ZONE2",
+      "LightType": "Spot",
+      "Group": "G2",
+      "X": 1522,
+      "Y": 2610,
+      "Rotation": 0,
+      "Scale": 0.25039858,
+      "Intensity": 0.5,
+      "IsOn": true,
+      "colorR": 255,
+      "colorG": 255,
+      "colorB": 255
+    },
+    {
+      "Name": "light32",
+      "ZoneParent": "ZONE3",
+      "LightType": "Wall",
+      "Group": "G3",
+      "X": 736,
+      "Y": 4551,
+      "Rotation": 3.1304202,
+      "Scale": 0.42575553,
+      "Intensity": 0.5,
+      "IsOn": true,
+      "colorR": 255,
+      "colorG": 255,
+      "colorB": 255
+    },
+    {
+      "Name": "light33",
+      "ZoneParent": "ZONE3",
+      "LightType": "Wall",
+      "Group": "G3",
+      "X": 748,
+      "Y": 3701,
+      "Rotation": 0,
+      "Scale": 0.42575553,
+      "Intensity": 0.5,
+      "IsOn": true,
+      "colorR": 255,
+      "colorG": 255,
+      "colorB": 255
+    },
+    {
+      "Name": "light34",
+      "ZoneParent": "ZONE3",
+      "LightType": "Wall",
+      "Group": "G3",
+      "X": 1500,
+      "Y": 3700,
+      "Rotation": 0,
+      "Scale": 0.42575553,
+      "Intensity": 0.5,
+      "IsOn": true,
+      "colorR": 255,
+      "colorG": 255,
+      "colorB": 255
+    },
+    {
+      "Name": "light35",
+      "ZoneParent": "ZONE3",
+      "LightType": "Wall",
+      "Group": "G3",
+      "X": 2234,
+      "Y": 3698,
+      "Rotation": 0,
+      "Scale": 0.42575553,
+      "Intensity": 0.5,
+      "IsOn": true,
+      "colorR": 255,
+      "colorG": 255,
+      "colorB": 255
+    },
+    {
+      "Name": "light36",
+      "ZoneParent": "ZONE3",
+      "LightType": "Wall",
+      "Group": "G3",
+      "X": 2271,
+      "Y": 4551,
+      "Rotation": 3.1369057,
+      "Scale": 0.42575553,
+      "Intensity": 0.5,
+      "IsOn": true,
+      "colorR": 255,
+      "colorG": 255,
+      "colorB": 255
+    },
+    {
+      "Name": "light37",
+      "ZoneParent": "ZONE3",
+      "LightType": "Wall",
+      "Group": "G3",
+      "X": 1520,
+      "Y": 4552,
+      "Rotation": 3.1304202,
+      "Scale": 0.42575553,
+      "Intensity": 0.5,
+      "IsOn": true,
+      "colorR": 255,
+      "colorG": 255,
+      "colorB": 255
+    },
+    {
+      "Name": "light38",
+      "ZoneParent": "ZONE3",
+      "LightType": "Spot",
+      "Group": "G3",
+      "X": 1122,
+      "Y": 4240,
+      "Rotation": 0,
+      "Scale": 0.19000074,
+      "Intensity": 0.5,
+      "IsOn": true,
+      "colorR": 255,
+      "colorG": 255,
+      "colorB": 255
+    },
+    {
+      "Name": "light39",
+      "ZoneParent": "ZONE3",
+      "LightType": "Spot",
+      "Group": "G3",
+      "X": 1121,
+      "Y": 4010,
+      "Rotation": 0,
+      "Scale": 0.18523178,
+      "Intensity": 0.5,
+      "IsOn": true,
+      "colorR": 255,
+      "colorG": 255,
+      "colorB": 255
+    },
+    {
+      "Name": "light40",
+      "ZoneParent": "ZONE3",
+      "LightType": "Spot",
+      "Group": "G3",
+      "X": 1874,
+      "Y": 4231,
+      "Rotation": 0,
+      "Scale": 0.19000074,
+      "Intensity": 0.5,
+      "IsOn": true,
+      "colorR": 255,
+      "colorG": 255,
+      "colorB": 255
+    },
+    {
+      "Name": "light41",
+      "ZoneParent": "ZONE3",
+      "LightType": "Spot",
+      "Group": "G3",
+      "X": 1868,
+      "Y": 3991,
+      "Rotation": 0,
+      "Scale": 0.18523178,
+      "Intensity": 0.5,
+      "IsOn": true,
+      "colorR": 255,
+      "colorG": 255,
+      "colorB": 255
+    }
+  ],
+  "Exhausts": [
+    {
+      "Name": "f_0",
+      "ZoneParent": "ZONE1",
+      "X": 457,
+      "Y": 548,
+      "Rotation": -0.042143583,
+      "FumeIntensity": 0.3,
+      "IsOn": false,
+      "IsRepairRequested": false,
+      "RepairProgress": 0
+    },
+    {
+      "Name": "f_1",
+      "ZoneParent": "ZONE1",
+      "X": 2552,
+      "Y": 533,
+      "Rotation": 0,
+      "FumeIntensity": 0.3,
+      "IsOn": false,
+      "IsRepairRequested": false,
+      "RepairProgress": 0
+    },
+    {
+      "Name": "fan0",
+      "ZoneParent": "ZONE2",
+      "X": 459,
+      "Y": 2049,
+      "Rotation": 0,
+      "FumeIntensity": 0.3,
+      "IsOn": false,
+      "IsRepairRequested": false,
+      "RepairProgress": 0
+    },
+    {
+      "Name": "fan1",
+      "ZoneParent": "ZONE2",
+      "X": 2528,
+      "Y": 2050,
+      "Rotation": 0,
+      "FumeIntensity": 0.3,
+      "IsOn": false,
+      "IsRepairRequested": false,
+      "RepairProgress": 0
+    },
+    {
+      "Name": "fan2",
+      "ZoneParent": "ZONE2",
+      "X": 456,
+      "Y": 3189,
+      "Rotation": 0,
+      "FumeIntensity": 0.3,
+      "IsOn": false,
+      "IsRepairRequested": false,
+      "RepairProgress": 0
+    },
+    {
+      "Name": "fan3",
+      "ZoneParent": "ZONE2",
+      "X": 2528,
+      "Y": 3179,
+      "Rotation": 0,
+      "FumeIntensity": 0.3,
+      "IsOn": false,
+      "IsRepairRequested": false,
+      "RepairProgress": 0
+    },
+    {
+      "Name": "fan4",
+      "ZoneParent": "ZONE1",
+      "X": 2512,
+      "Y": 1673,
+      "Rotation": 0,
+      "FumeIntensity": 0.3,
+      "IsOn": false,
+      "IsRepairRequested": false,
+      "RepairProgress": 0
+    },
+    {
+      "Name": "fan5",
+      "ZoneParent": "ZONE1",
+      "X": 462,
+      "Y": 1682,
+      "Rotation": 0,
+      "FumeIntensity": 0.3,
+      "IsOn": false,
+      "IsRepairRequested": false,
+      "RepairProgress": 0
+    },
+    {
+      "Name": "fan6",
+      "ZoneParent": "ZONE3",
+      "X": 448,
+      "Y": 3542,
+      "Rotation": 0,
+      "FumeIntensity": 0.3,
+      "IsOn": false,
+      "IsRepairRequested": false,
+      "RepairProgress": 0
+    },
+    {
+      "Name": "fan7",
+      "ZoneParent": "ZONE3",
+      "X": 2550,
+      "Y": 3545,
+      "Rotation": 0,
+      "FumeIntensity": 0.3,
+      "IsOn": false,
+      "IsRepairRequested": false,
+      "RepairProgress": 0
+    },
+    {
+      "Name": "fan8",
+      "ZoneParent": "ZONE3",
+      "X": 440,
+      "Y": 4718,
+      "Rotation": 0,
+      "FumeIntensity": 0.3,
+      "IsOn": false,
+      "IsRepairRequested": false,
+      "RepairProgress": 0
+    },
+    {
+      "Name": "fan9",
+      "ZoneParent": "ZONE3",
+      "X": 2559,
+      "Y": 4719,
+      "Rotation": 0,
+      "FumeIntensity": 0.3,
+      "IsOn": false,
+      "IsRepairRequested": false,
+      "RepairProgress": 0
+    }
+  ],
+  "Zones": [
+    {
+      "Name": "ZONE1",
+      "X": 1488.5,
+      "Y": 1120,
+      "Rotation": 0,
+      "Width": 2195,
+      "Height": 1272,
+      "ZoneType": "Closed"
+    },
+    {
+      "Name": "ZONE2",
+      "X": 1498.5,
+      "Y": 2619.5,
+      "Rotation": 0,
+      "Width": 2197,
+      "Height": 1261,
+      "ZoneType": "Closed"
+    },
+    {
+      "Name": "ZONE3",
+      "X": 1504.5,
+      "Y": 4127.5,
+      "Rotation": 0,
+      "Width": 2217,
+      "Height": 1269,
+      "ZoneType": "Closed"
+    }
+  ],
+  "Tiles": [
+    {
+      "Name": "tile10",
+      "ResourceName": "map1",
+      "X": 1500,
+      "Y": 1130,
+      "Rotation": 0,
+      "Scale": 1
+    },
+    {
+      "Name": "tile11",
+      "ResourceName": "map1",
+      "X": 1501,
+      "Y": 4125,
+      "Rotation": 3.1411543,
+      "Scale": 1
+    },
+    {
+      "Name": "tile12",
+      "ResourceName": "map1",
+      "X": 1500,
+      "Y": 2628,
+      "Rotation": 3.1411543,
+      "Scale": 1
+    }
+  ],
+  "GameTexts": [],
+  "camera": {
+    "X": -3409.0278,
+    "Y": -211.43481,
+    "Zoom": 0.25
+  }
+}

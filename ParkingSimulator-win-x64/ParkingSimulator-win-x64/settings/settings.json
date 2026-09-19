@@ -1,0 +1,13 @@
+{
+  "TeamName": "TEAM",
+  "ListenAddress": "http://0.0.0.0:9898",
+  "WebhookUrl": "http://www.carparking.local/webhook.php",
+  "ParkingSpeedMuliplier": 1,
+  "MinParkingTime": 1,
+  "MaxParkingTime": 5,
+  "Name": "admin",
+  "Password": "admin",
+  "GameSpeedMultiplier": 1.0,
+  "lvl2Password": "",
+  "lvl3Password": ""
+}
