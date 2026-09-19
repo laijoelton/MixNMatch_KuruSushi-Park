@@ -90,6 +90,7 @@ subscribe(async (snap) => {
   vehicles.update(snap.sessions || []);
   feed.update(snap.activity || []);
   renderWear(snap.wear || []);
+  renderMlPanel(snap.ml_insights || {});
   updateFullBanner(snap);
   if (drawerTarget && isDrawerOpen()) showDetails(drawerTarget.kind, drawerTarget.name, { refresh: true });
 });
@@ -119,8 +120,7 @@ connect();
 function showDetails(kind, name, { refresh = false } = {}) {
   const snap = currentSnapshot();
   if (!snap) return;
-  const view = kind === "spot" ? spotView(snap, name) : kind === "gate" ? gateView(snap, name) : kind === "fan" ? fanView(snap, name)
-    : kind === "ml-insights" ? mlInsightsView(snap) : null;
+  const view = kind === "spot" ? spotView(snap, name) : kind === "gate" ? gateView(snap, name) : kind === "fan" ? fanView(snap, name) : null;
   if (!view) {
     if (!refresh) toast(`${name} is not in the live data yet`, "warn");
     return;
@@ -236,45 +236,48 @@ function fanView(snap, name) {
   };
 }
 
-// ------------------------------------------------------------------ ML insights drawer + bell
-function sectionHeading(text) {
-  return h("div", { class: "drawer-kicker" }, text);
+// ------------------------------------------------------------------ ML insights fixed panel
+// Deliberately separate from the bell/toasts below: this panel always shows
+// the current telemetry, whether or not anything just fired. The bell only
+// signals that something predictive happened; clicking it draws attention
+// here rather than duplicating the data in a second place.
+function mlRow(label, metric, { bad = false } = {}) {
+  return h("div", { class: "ml-row" }, label, h("span", { class: `ml-metric ${bad ? "is-bad" : ""}`, text: metric }));
 }
 
-function mlInsightsView(snap) {
-  const insights = snap.ml_insights || {};
+function renderMlList(hostId, rows, emptyText) {
+  const host = document.getElementById(hostId);
+  if (!host) return;
+  host.replaceChildren(rows.length ? rows : h("div", { class: "ml-empty", text: emptyText }));
+}
+
+function renderMlPanel(insights) {
   const ventilation = [...(insights.ventilation || [])].sort((a, b) => a.minutes_to_threshold - b.minutes_to_threshold);
-  const components = insights.components || []; // already sorted by days_to_failure server-side
+  renderMlList("ml-ventilation", ventilation.map(v => mlRow(
+    h("span", { class: "grow", text: v.zone }),
+    v.minutes_to_threshold >= 9999 ? "Stable" : `${v.minutes_to_threshold}m → ${v.predicted_ppm}ppm`,
+    { bad: v.minutes_to_threshold <= 10 },
+  )), "No zone CO data yet.");
+
+  if ("components" in insights) {
+    const components = insights.components || []; // already sorted by days_to_failure server-side
+    renderMlList("ml-components", components.map(c => mlRow(
+      h("span", { class: "grow", text: `${c.name} (${c.type})` }),
+      `${c.days_to_failure}d · ${Math.round(c.failure_probability * 100)}%`,
+      { bad: c.days_to_failure <= 3 },
+    )), "No component wear data yet.");
+  }
+
   const anomalies = insights.anomalies || [];
-
-  const ventilationBody = ventilation.length
-    ? detailList(ventilation.map(v => [v.zone, v.minutes_to_threshold >= 9999
-        ? "No breach predicted" : `${v.minutes_to_threshold} min → ${v.predicted_ppm} ppm`]))
-    : reasonLine("No zone CO data yet.");
-
-  const componentsBody = "components" in insights
-    ? (components.length
-        ? detailList(components.map(c => [`${c.name} (${c.type})`,
-            h("span", { class: c.days_to_failure <= 3 ? "tag fault" : "", text: `${c.days_to_failure}d · ${Math.round(c.failure_probability * 100)}% risk` })]))
-        : reasonLine("No component wear data yet."))
-    : reasonLine("Requires maintenance access.");
-
-  const anomaliesBody = anomalies.length
-    ? detailList(anomalies.map(a => [plate(a.plate),
-        a.fallback_charge != null ? `$${Number(a.fallback_charge).toFixed(2)} · ${a.gate || "—"}` : (a.gate || "—")]))
-    : reasonLine("No resolved ghost cars yet.");
-
-  return {
-    kicker: "Predictive telemetry",
-    title: "ML Insights",
-    signature: JSON.stringify(insights),
-    body: [
-      sectionHeading("Ventilation forecast"), ventilationBody,
-      sectionHeading("Component health"), componentsBody,
-      sectionHeading("Anomaly log"), anomaliesBody,
-    ],
-  };
+  renderMlList("ml-anomalies", anomalies.map(a => mlRow(
+    plate(a.plate),
+    a.fallback_charge != null ? `$${Number(a.fallback_charge).toFixed(2)}` : (a.gate || "—"),
+  )), "No resolved ghost cars yet.");
 }
+
+document.getElementById("ml-panel-toggle").addEventListener("click", () => {
+  document.getElementById("ml-panel").classList.toggle("is-collapsed");
+});
 
 const PREDICTIVE_ALERT_TYPES = new Set(["PREDICTIVE_CO_WARNING", "PREDICTIVE_MAINTENANCE_WARNING", "GHOST_CAR_RESOLVED"]);
 
@@ -304,7 +307,11 @@ function bumpUnread() {
 document.getElementById("ml-bell-btn").addEventListener("click", () => {
   unreadCount = 0;
   document.getElementById("ml-bell-badge").hidden = true;
-  showDetails("ml-insights", "insights");
+  const panel = document.getElementById("ml-panel");
+  panel.classList.remove("is-collapsed");
+  panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  panel.classList.add("is-flash");
+  setTimeout(() => panel.classList.remove("is-flash"), 900);
 });
 
 document.addEventListener("keydown", (event) => {

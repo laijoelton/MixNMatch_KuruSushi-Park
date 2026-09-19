@@ -43,6 +43,28 @@
     </section>
   </div>
 </div>
+
+<aside id="ml-panel" class="ml-panel" aria-label="Predictive telemetry">
+  <div class="panel-head">
+    <h2>ML Insights</h2>
+    <span class="spacer"></span>
+    <button id="ml-panel-toggle" class="btn ghost icon small" type="button" aria-label="Collapse panel">–</button>
+  </div>
+  <div class="ml-panel-body">
+    <div class="ml-section">
+      <div class="ml-section-h">Ventilation forecast</div>
+      <div id="ml-ventilation" class="ml-list"></div>
+    </div>
+    <div class="ml-section" data-cap="maint:view" hidden>
+      <div class="ml-section-h">Component health</div>
+      <div id="ml-components" class="ml-list"></div>
+    </div>
+    <div class="ml-section">
+      <div class="ml-section-h">Anomaly log</div>
+      <div id="ml-anomalies" class="ml-list"></div>
+    </div>
+  </div>
+</aside>
 {% endblock %}
 {% block scripts %}
 <script type="module" src="/static/js/pages/live.js?v={{ asset_version }}"></script>
