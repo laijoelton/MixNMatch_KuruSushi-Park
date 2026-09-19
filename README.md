@@ -203,3 +203,115 @@ docker run -p 8080:8080 \
    pick a green spot, enter a plate, and check in; the spot should turn
    amber (reserved) on both the gate portal and the operator HUD within one
    broadcast tick.
+
+## Known hazards (read before a scored run)
+
+### The webhook signature recipe is unconfirmed
+
+The documented recipe -- drop `Signature`, sort remaining field names
+alphabetically, join values with `|`, hash -- **does not reproduce the
+signatures printed in the organizer's own samples.** Tested offline against
+their `component_broken` sample across MD5/SHA1/SHA256, four separators, three
+key orderings and several shared-secret guesses: no match. Their worked
+example includes a `RealDateTime` field the sample payloads omit, so the
+published samples are incomplete.
+
+A fixed algorithm therefore rejects every real event. `app/signature.py` runs
+in calibration mode instead: it scores 36 candidate recipes against live
+traffic and, while `WEBHOOK_SIGNATURE_MODE=observe`, never rejects anything.
+
+```bash
+python -m scripts.signature_report      # after a few minutes of live traffic
+```
+
+Once a recipe sits at 100%, pin it and switch to enforce:
+
+```
+WEBHOOK_SIGNATURE_RECIPE=md5:pipe:alpha
+WEBHOOK_SIGNATURE_MODE=enforce
+```
+
+If nothing matches, ask the organisers and **stay on observe**. Dropping real
+events costs far more than accepting unverified ones.
+
+### Billing is ambiguous and must be verified against a real car
+
+The docs contradict themselves: one page says *"Charging cost: 1 per each
+minute, multiply by 2 if electric"*, another says *"parking cost = total
+minutes spent parking, multiplied by 2 if car is electric"*. Meanwhile the API
+takes `parkingCost` and `chargingCost` separately, and there is a
+`Penalty_ChargeCarForNoElectricityUsed` for billing electricity to a car that
+used none.
+
+`compute_charge()` encodes the reading that an electric car pays `minutes`
+parking plus `minutes` electricity (2x total), and everything else pays
+`minutes` with `chargingCost = 0`. Set `ELECTRIC_SPLIT_CHARGING=false` to bill
+the 2x entirely as parking instead -- no code change needed.
+
+Billing runs from the moment the car occupies its spot, not from the entry
+sensor: the drive in is not parking time.
+
+### AUTOPILOT gates every outbound command
+
+`AUTOPILOT=false` (the default) logs each intended action as `[dry-run]` and
+sends nothing. Watch a full car cycle, confirm the spot choices and charges
+look right, then set `AUTOPILOT=true` and restart.
+
+Note that a dry-run dispatch releases its spot reservation immediately --
+otherwise the lot would fill with promises to cars that never move.
+
+### SEED_FROM_LEVEL is a development aid, not a runtime mode
+
+When the startup sync fails and `SEED_FROM_LEVEL` is set, the park layout is
+loaded from `settings/<level>.json` so the dispatcher can be developed with
+the simulator closed. It logs loudly:
+
+```
+running on SEEDED layout from lvl1 - NOT live simulator state
+```
+
+**Set `SEED_FROM_LEVEL=` (empty) before a scored run.** Driving a real
+simulator from a fake layout is worse than not running at all.
+
+### Routing distance is not physical distance
+
+`app/routing.py` projects station names onto a synthetic ring, so "distance"
+is how far apart two names sort alphabetically -- `S1` is adjacent to `S10`.
+The simulator's level file contains the real road network (63 nodes, 62
+directed edges, plus coordinates for every spot and gate).
+
+```bash
+python -m scripts.export_graph          # -> data/graph.json
+```
+
+A pathfinder over that graph writes `data/distances.json`:
+
+```json
+{"ENTRY1": {"S1": 340.2, "S3": 512.8}}
+```
+
+`app/routing.py` picks it up at startup and uses true driving distance when
+present, falling back to the ring when it is not.
+
+## Durability
+
+Every webhook is written to SQLite (`app/db.py`) *before* any handler runs, so
+a crash mid-decision cannot lose an event. `EventId` is the primary key, which
+makes redelivery a database-level reject rather than something the application
+has to remember. This also satisfies Level 1's requirement to log arrivals,
+parking time, departures and charges in a searchable database.
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/history` | Completed parking sessions |
+| `GET /api/events` | Raw webhook log (`?event_class=penalty`) |
+| `GET /api/payments` | Payment audit, including suspect ones |
+| `GET /api/signature-report` | Signature calibration tally |
+
+## Offline development
+
+```bash
+python -m scripts.export_graph     # road graph for the pathfinder
+python -m scripts.replay           # full car lifecycle, no simulator needed
+AMOUNT=0.01 python -m scripts.replay   # watch fraud detection hold a car
+```

@@ -2,6 +2,11 @@ __pycache__/
 *.pyc
 .env
 .venv/
+data/
+*.db
+*.db-wal
+*.db-shm
+node_modules/
 dispatcher.out.log
 dispatcher.err.log
 ParkingSimulator-win-x64/ParkingSimulator-win-x64/settings/game.db

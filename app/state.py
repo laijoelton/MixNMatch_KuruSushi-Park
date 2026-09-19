@@ -11,10 +11,25 @@ import threading
 import time
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional
 
 from app.config import settings
+
+
+def _utcnow() -> str:
+    """Wall-clock stamp for the dashboard; monotonic time cannot be a date."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _extract_plate(entry) -> Optional[str]:
+    """A detectedCars list entry may be a bare plate string or an object."""
+    if isinstance(entry, str):
+        return entry
+    if isinstance(entry, dict):
+        return entry.get("plate") or entry.get("CarPlateNumber") or entry.get("name")
+    return None
 
 
 class SpotStatus(str, Enum):
@@ -52,6 +67,10 @@ class Spot:
     broken: bool = False
     under_maintenance: bool = False
     occupant_plate: Optional[str] = None
+
+    # When the spot was promised to a car, so a reservation for a car that
+    # never arrives can be swept instead of holding the spot forever.
+    reserved_at: Optional[float] = None
 
     @property
     def dispatchable(self) -> bool:
@@ -101,6 +120,36 @@ class VehicleSession:
     paid: bool = False
     created_at: float = field(default_factory=time.monotonic)
 
+    # Car type decides the electric surcharge, and a car billed for
+    # electricity it never used incurs Penalty_ChargeCarForNoElectricityUsed.
+    car_type: str = "Normal"
+
+    # Billing runs from the moment the car occupies the spot, not from when it
+    # reached the entry -- the drive in is not parking time.
+    parked_at: Optional[float] = None
+    left_spot_at: Optional[float] = None
+
+    # Split of the last computed charge, kept for payment validation.
+    expected_parking: Optional[float] = None
+    expected_charging: Optional[float] = None
+
+    # Wall-clock stamps for the dashboard (monotonic is not a date).
+    arrived_wall: str = ""
+    parked_wall: str = ""
+    left_spot_wall: str = ""
+
+    @property
+    def is_electric(self) -> bool:
+        return self.car_type.strip().lower() == "electric"
+
+    @property
+    def billable_minutes(self) -> float:
+        """Minutes between parking and leaving the spot (or now, if still in)."""
+        if self.parked_at is None:
+            return 0.0
+        end = self.left_spot_at if self.left_spot_at is not None else time.monotonic()
+        return max(0.0, (end - self.parked_at) / 60.0)
+
 
 class _BoundedEventCache:
     """Fixed-capacity FIFO set used to dedup inbound ``EventId`` values."""
@@ -144,17 +193,31 @@ class ParkingState:
     # Bootstrap (called once at startup from the list-* REST responses)
     # ------------------------------------------------------------------ #
     def load_spots(self, raw: list[dict]) -> None:
+        """Load spots from list-parking-spots.
+
+        The documented sample shows ``detectedCars`` as a list (``[]`` when
+        empty, presumably plate strings or car objects when occupied). The
+        live simulator instead returns a plain integer count (``0`` or
+        ``1``+). Both shapes are handled: a list yields a plate when one is
+        present, an int yields only occupancy, not an identity -- the plate
+        becomes known on the next ``Park/CarIn`` webhook, same as it would for
+        a spot the dispatcher did not reserve itself.
+        """
         with self._lock:
             for item in raw:
-                detected = item.get("detectedCars") or []
-                # The live simulator reports this as either a plate-name list or a
-                # bare occupancy count depending on build - handle both shapes.
+                # The live simulator reports this as either a plate-name list
+                # or a bare occupancy count depending on build - handle both.
+                detected = item.get("detectedCars")
                 if isinstance(detected, list):
                     occupied = bool(detected)
-                    occupant_plate = detected[0] if detected else None
+                    plate = _extract_plate(detected[0]) if detected else None
+                elif isinstance(detected, (int, float)):
+                    occupied = detected > 0
+                    plate = None
                 else:
-                    occupied = bool(detected)
-                    occupant_plate = None
+                    occupied = False
+                    plate = None
+
                 self.spots[item["name"]] = Spot(
                     name=item["name"],
                     purpose=item.get("purpose", "Park"),
@@ -163,7 +226,7 @@ class ParkingState:
                     status=SpotStatus.OCCUPIED if occupied else SpotStatus.AVAILABLE,
                     broken=bool(item.get("broken", False)),
                     under_maintenance=bool(item.get("isUnderMaintenance", False)),
-                    occupant_plate=occupant_plate,
+                    occupant_plate=plate,
                 )
 
     def load_barriers(self, raw: list[dict]) -> None:
@@ -218,6 +281,30 @@ class ParkingState:
     # ------------------------------------------------------------------ #
     # Spot mutations
     # ------------------------------------------------------------------ #
+    def expire_stale_reservations(self, ttl_seconds: float) -> list[str]:
+        """Release reservations for cars that never turned up.
+
+        A reservation is a promise that a specific car is on its way. If the
+        car is neglected at the entry and drives off, or a dispatch command
+        fails, nothing else ever frees that spot -- and the lot slowly reports
+        itself full while standing empty. Sweeping here (rather than on a
+        timer) keeps it lazy and lock-free from the caller's point of view.
+        """
+        released: list[str] = []
+        cutoff = time.monotonic() - ttl_seconds
+        with self._lock:
+            for spot in self.spots.values():
+                if (
+                    spot.status == SpotStatus.RESERVED
+                    and spot.reserved_at is not None
+                    and spot.reserved_at < cutoff
+                ):
+                    spot.status = SpotStatus.AVAILABLE
+                    spot.occupant_plate = None
+                    spot.reserved_at = None
+                    released.append(spot.name)
+        return released
+
     def available_spots(self, car_type: str = "Any") -> list[str]:
         with self._lock:
             return [
@@ -232,7 +319,19 @@ class ParkingState:
                 return False
             spot.status = SpotStatus.RESERVED
             spot.occupant_plate = plate
+            spot.reserved_at = time.monotonic()
             return True
+
+    def release_reservation(self, spot_name: str, plate: str) -> None:
+        """Undo a reservation when the dispatch command did not actually go out."""
+        with self._lock:
+            spot = self.spots.get(spot_name)
+            if spot is None or spot.status != SpotStatus.RESERVED:
+                return
+            if spot.occupant_plate == plate:
+                spot.status = SpotStatus.AVAILABLE
+                spot.occupant_plate = None
+                spot.reserved_at = None
 
     def mark_spot_occupied(self, spot_name: str, plate: str) -> None:
         with self._lock:
@@ -319,15 +418,22 @@ class ParkingState:
     # ------------------------------------------------------------------ #
     # Vehicle sessions
     # ------------------------------------------------------------------ #
-    def start_session(self, plate: str, gate: str) -> VehicleSession:
+    def start_session(self, plate: str, gate: str, car_type: str = "Normal") -> VehicleSession:
         with self._lock:
             session = self.sessions.get(plate)
             if session is None:
-                session = VehicleSession(plate=plate, entry_gate=gate)
+                session = VehicleSession(
+                    plate=plate,
+                    entry_gate=gate,
+                    car_type=car_type or "Normal",
+                    arrived_wall=_utcnow(),
+                )
                 self.sessions[plate] = session
             else:
                 session.entry_gate = gate
                 session.phase = SessionPhase.ARRIVED
+                if car_type:
+                    session.car_type = car_type
             return session
 
     def get_session(self, plate: str) -> Optional[VehicleSession]:
@@ -343,11 +449,32 @@ class ParkingState:
 
     def mark_parked(self, plate: str, spot_name: str) -> None:
         with self._lock:
-            self.mark_spot_occupied(spot_name, plate)
             session = self.sessions.get(plate)
+
+            # If the car ended up somewhere other than the spot we reserved,
+            # free the reservation -- otherwise that spot leaks and the lot
+            # slowly appears full.
+            if session is not None and session.assigned_spot and session.assigned_spot != spot_name:
+                stale = self.spots.get(session.assigned_spot)
+                if stale is not None and stale.occupant_plate == plate:
+                    self.mark_spot_vacant(session.assigned_spot)
+
+            self.mark_spot_occupied(spot_name, plate)
             if session is not None:
                 session.phase = SessionPhase.PARKED
                 session.assigned_spot = spot_name
+                # Start the billing clock here, not at the entry sensor.
+                if session.parked_at is None:
+                    session.parked_at = time.monotonic()
+                    session.parked_wall = _utcnow()
+
+    def mark_left_spot(self, plate: str) -> None:
+        """Stop the billing clock when the car vacates its spot."""
+        with self._lock:
+            session = self.sessions.get(plate)
+            if session is not None and session.left_spot_at is None:
+                session.left_spot_at = time.monotonic()
+                session.left_spot_wall = _utcnow()
 
     def mark_exit_requested(self, plate: str, exit_gate: str) -> None:
         with self._lock:
@@ -378,9 +505,10 @@ class ParkingState:
             session.paid = True
             return True
 
-    def complete_session(self, plate: str) -> None:
+    def complete_session(self, plate: str) -> Optional[VehicleSession]:
+        """Remove the session and hand it back so it can be archived to SQLite."""
         with self._lock:
-            self.sessions.pop(plate, None)
+            return self.sessions.pop(plate, None)
 
     # ------------------------------------------------------------------ #
     # Telemetry: penalties, activity log, dashboard snapshot
