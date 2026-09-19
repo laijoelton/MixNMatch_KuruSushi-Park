@@ -529,14 +529,19 @@ class ParkingState:
             return list(zone.co_history) if zone else []
 
     def occupancy_ratio(self, zone_name: str) -> float:
-        """Fraction (0..1) of this zone's parking spots currently occupied."""
+        """R = (reserved + occupied) / capacity for this zone's parking spots.
+
+        Reserved bays are cars already dispatched but not yet parked - they
+        represent load about to land, so counting only OCCUPIED undercounts
+        a zone that's about to fill up.
+        """
         with self._lock:
             spots = [s for s in self.spots.values()
                      if s.zone_parent == zone_name and s.purpose == "Park"]
             if not spots:
                 return 0.0
-            occupied = sum(1 for s in spots if s.status == SpotStatus.OCCUPIED)
-            return occupied / len(spots)
+            loaded = sum(1 for s in spots if s.status in (SpotStatus.OCCUPIED, SpotStatus.RESERVED))
+            return loaded / len(spots)
 
     def fans_in_zone(self, zone_name: str) -> list[str]:
         with self._lock:
