@@ -89,6 +89,7 @@ subscribe(async (snap) => {
   alerts.update(deriveAlerts(snap, stats, { isAdmin }));
   vehicles.update(snap.sessions || []);
   feed.update(snap.activity || []);
+  renderWear(snap.wear || []);
   updateFullBanner(snap);
   if (drawerTarget && isDrawerOpen()) showDetails(drawerTarget.kind, drawerTarget.name, { refresh: true });
 });
@@ -173,6 +174,16 @@ function spotView(snap, name) {
   };
 }
 
+function renderWear(rows) {
+  const host = document.getElementById("wear-rows");
+  const sorted = [...rows].sort((a, b) => Number(b.broken) - Number(a.broken) || b.wear_percent - a.wear_percent || a.name.localeCompare(b.name));
+  host.replaceChildren(...sorted.map(row => h("tr", {},
+    ...[row.name, row.type, row.broken ? "Broken" : row.under_maintenance ? "Under repair" : row.repair_pending ? "Repair queued" : "Available",
+      row.cycle_count, (row.runtime_seconds / 3600).toFixed(2), row.repair_supported ? `${row.wear_percent}%` : "Tracked only"]
+      .map(text => h("td", { text })))));
+  if (!sorted.length) host.replaceChildren(h("tr", {}, h("td", { colspan: 6, text: "No component usage received yet." })));
+}
+
 function gateView(snap, name) {
   const gate = (snap.barriers || []).find((x) => x.name === name);
   if (!gate) return null;
@@ -181,9 +192,9 @@ function gateView(snap, name) {
   const reason = out ? "Operating a gate that is broken or under repair is penalised." : null;
   const call = (verb) => api(`/api/manual/barrier/${encodeURIComponent(name)}/${verb}`, { method: "POST" });
 
-  const openBtn = h("button", { class: "btn", type: "button", text: "Open", disabled: out || gate.state === "Open",
+  const openBtn = h("button", { class: "btn", type: "button", text: "Open / release hold", disabled: out || (gate.state === "Open" && !gate.operator_override),
     onclick: () => runAction(openBtn, () => call("open"), `Opening ${name}`) });
-  const closeBtn = h("button", { class: "btn", type: "button", text: "Close", disabled: out || gate.state === "Closed",
+  const closeBtn = h("button", { class: "btn", type: "button", text: "Hold closed", disabled: out || (gate.state === "Closed" && gate.operator_override),
     onclick: () => runAction(closeBtn, () => call("close"), `Closing ${name}`) });
   const repairBtn = h("button", { class: `btn ${gate.broken ? "primary" : "ghost"}`, type: "button", text: "Repair",
     disabled: gate.under_maintenance,

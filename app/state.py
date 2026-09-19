@@ -119,6 +119,8 @@ class Light:
     cycle_count: int = 0
     runtime_seconds: float = 0.0
     turned_on_at: Optional[float] = field(default_factory=time.monotonic)
+    broken: bool = False
+    under_maintenance: bool = False
 
 
 @dataclass
@@ -220,6 +222,7 @@ class ParkingState:
         self.neglected_vehicles: deque = deque(maxlen=100)
         self.last_sequence_id: int = 0
         self.deferred_repairs: dict[str, str] = {}
+        self.pending_repairs: dict[str, str] = {}
         self.penalty_count: int = 0
         self.total_fines: float = 0.0
         self.penalty_log: deque = deque(maxlen=200)
@@ -300,6 +303,8 @@ class ParkingState:
                     zone_parent=item.get("zoneParent", ""),
                     is_on=bool(item.get("isOn", True)),
                     turned_on_at=time.monotonic() if item.get("isOn", True) else None,
+                    broken=bool(item.get("broken", False)),
+                    under_maintenance=bool(item.get("isUnderMaintenance", False)),
                 )
 
     def load_zones(self, raw: list[dict]) -> None:
@@ -360,13 +365,14 @@ class ParkingState:
         with self._lock:
             return [
                 s.name for s in self.spots.values()
-                if s.dispatchable and (s.parking_for_car_type in ("Any", car_type))
+                if s.dispatchable and s.name not in self.pending_repairs
+                and (s.parking_for_car_type in ("Any", car_type))
             ]
 
     def reserve_spot(self, spot_name: str, plate: str) -> bool:
         with self._lock:
             spot = self.spots.get(spot_name)
-            if spot is None or not spot.dispatchable:
+            if spot is None or not spot.dispatchable or spot_name in self.pending_repairs:
                 return False
             spot.status = SpotStatus.RESERVED
             spot.occupant_plate = plate
@@ -413,6 +419,8 @@ class ParkingState:
                 self.barriers[name].broken = True
             elif component_type == "ExhaustFan" and name in self.fans:
                 self.fans[name].broken = True
+            elif component_type == "Light" and name in self.lights:
+                self.lights[name].broken = True
 
     def set_component_fixed(self, component_type: str, name: str) -> None:
         with self._lock:
@@ -435,6 +443,13 @@ class ParkingState:
                 fan.cycle_count = 0
                 fan.runtime_seconds = 0.0
                 fan.turned_on_at = time.monotonic() if fan.is_on else None
+            elif component_type == "Light" and name in self.lights:
+                light = self.lights[name]
+                light.broken = False
+                light.under_maintenance = False
+                light.cycle_count = 0
+                light.runtime_seconds = 0.0
+                light.turned_on_at = time.monotonic() if light.is_on else None
             self.deferred_repairs.pop(name, None)
 
     def queue_deferred_repair(self, name: str, component_type: str) -> None:
@@ -496,10 +511,9 @@ class ParkingState:
     # this only holds the live counters the dashboard reads.
     # ------------------------------------------------------------------ #
     def record_barrier_cycle(self, name: str) -> int:
-        """One open/close command was actually sent. Returns the new count."""
+        """Return movement count, already updated by update_barrier_state()."""
         with self._lock:
             barrier = self.barriers.setdefault(name, Barrier(name=name))
-            barrier.cycle_count += 1
             return barrier.cycle_count
 
     def set_fan_on(self, name: str, on: bool) -> tuple[int, float]:
@@ -515,7 +529,7 @@ class ParkingState:
                 fan.is_on = False
                 fan.cycle_count += 1
                 if fan.turned_on_at is not None:
-                    fan.runtime_seconds += max(0.0, now - fan.turned_on_at)
+                    fan.runtime_seconds += max(0.0, now - fan.turned_on_at) * settings.game_speed
                 fan.turned_on_at = None
             return fan.cycle_count, fan.runtime_seconds
 
@@ -531,7 +545,7 @@ class ParkingState:
                 light.is_on = False
                 light.cycle_count += 1
                 if light.turned_on_at is not None:
-                    light.runtime_seconds += max(0.0, now - light.turned_on_at)
+                    light.runtime_seconds += max(0.0, now - light.turned_on_at) * settings.game_speed
                 light.turned_on_at = None
             return light.cycle_count, light.runtime_seconds
 
@@ -551,17 +565,23 @@ class ParkingState:
             for f in self.fans.values():
                 runtime = f.runtime_seconds
                 if f.is_on and f.turned_on_at is not None:
-                    runtime += max(0.0, time.monotonic() - f.turned_on_at)
+                    runtime += max(0.0, time.monotonic() - f.turned_on_at) * settings.game_speed
                 out.append({"name": f.name, "type": "ExhaustFan",
                            "cycle_count": f.cycle_count, "runtime_seconds": runtime,
                            "broken": f.broken, "under_maintenance": f.under_maintenance})
             for l in self.lights.values():
                 runtime = l.runtime_seconds
                 if l.is_on and l.turned_on_at is not None:
-                    runtime += max(0.0, time.monotonic() - l.turned_on_at)
+                    runtime += max(0.0, time.monotonic() - l.turned_on_at) * settings.game_speed
                 out.append({"name": l.name, "type": "Light",
                            "cycle_count": l.cycle_count, "runtime_seconds": runtime,
-                           "broken": False, "under_maintenance": False})
+                           "broken": l.broken, "under_maintenance": l.under_maintenance})
+            for row in out:
+                row["repair_pending"] = row["name"] in self.pending_repairs or row["name"] in self.deferred_repairs
+                row["repair_supported"] = row["type"] != "Light"
+                row["wear_percent"] = round(100 * max(
+                    row["cycle_count"] / max(1, settings.wear_cycle_threshold),
+                    row["runtime_seconds"] / max(1, settings.wear_runtime_threshold_s)), 1)
             return out
 
     # ------------------------------------------------------------------ #
@@ -716,6 +736,10 @@ class ParkingState:
                     out.append({"name": f.name, "type": "ExhaustFan",
                                "broken": f.broken, "under_maintenance": f.under_maintenance,
                                "occupied": False})
+            for light in self.lights.values():
+                if light.broken or light.under_maintenance:
+                    out.append({"name": light.name, "type": "Light", "broken": light.broken,
+                                "under_maintenance": light.under_maintenance, "occupied": False})
             return out
 
     def occupancy_counts(self) -> dict[str, int]:
@@ -750,7 +774,8 @@ class ParkingState:
                     for f in self.fans.values()
                 ],
                 "lights": [
-                    {"name": l.name, "is_on": l.is_on, "zone": l.zone_parent}
+                    {"name": l.name, "is_on": l.is_on, "zone": l.zone_parent,
+                     "broken": l.broken, "under_maintenance": l.under_maintenance}
                     for l in self.lights.values()
                 ],
                 "wear": self.wear_snapshot(),

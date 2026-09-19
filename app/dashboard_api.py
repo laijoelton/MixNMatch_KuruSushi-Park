@@ -83,10 +83,11 @@ class LoginIn(BaseModel):
 @router.post("/api/auth/login")
 async def login(body: LoginIn, request: Request, response: Response) -> dict[str, Any]:
     ip = request.client.host if request.client else None
-    user = auth.authenticate(body.username, body.password)
+    username = body.username.strip()
+    user = auth.authenticate(username, body.password)
 
-    prior = db.prior_login_attempts(body.username, limit=3)
-    db.record_login_attempt(body.username, ip, user is not None)
+    prior = db.prior_login_attempts(username, limit=3)
+    db.record_login_attempt(username, ip, user is not None)
 
     if user is None:
         raise HTTPException(401, "Invalid username or password")

@@ -94,9 +94,8 @@ def _all(sql: str, params: tuple = ()) -> list[dict[str, Any]]:
 
 
 def _write(sql: str, params: tuple = ()) -> sqlite3.Cursor:
-    with _lock:
+    with _lock, _conn:
         cur = _conn.execute(sql, params)
-        _conn.commit()
         return cur
 
 

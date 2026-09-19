@@ -12,6 +12,17 @@
       <div class="panel-head" style="border:0;padding:0 0 var(--s3)"><h2 id="zones-h">Zones &amp; gates</h2></div>
       <div class="zones" id="zones"></div>
     </section>
+
+    <section class="panel" data-cap="maint:view" hidden aria-labelledby="wear-heading">
+      <div class="panel-head"><h2 id="wear-heading">Component health &amp; usage</h2></div>
+      <p style="padding:0 16px">Runtime uses simulator time. Repairs are queued at 85% of configured limits. Lights support on/off control only.</p>
+      <div class="table-wrap" style="max-height:340px;overflow:auto">
+        <table class="table">
+          <thead><tr><th>Component</th><th>Type</th><th>Condition</th><th>Cycles</th><th>Runtime (h)</th><th>Wear</th></tr></thead>
+          <tbody id="wear-rows"></tbody>
+        </table>
+      </div>
+    </section>
   </div>
 
   <div class="live-side">

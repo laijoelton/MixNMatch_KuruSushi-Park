@@ -359,6 +359,46 @@ its launcher and installed packages now run compileall and pytest successfully.
 
 ---
 
+### 4.16 Level 2 requirements audit and reliability corrections (19 September 2026)
+
+The supplied Level 2 PDF takes precedence over the pasted sprint checklist. Full
+traceability is in `docs/LEVEL2_REQUIREMENTS_AUDIT.md`. The actual baseline here was
+135 passed / 1 failed: failed username insertion left SQLite inside a transaction.
+Authentication writes now roll back, and login history uses the canonical username.
+
+Recovery preserves live occupied/broken/maintenance bays and dispatch retries
+recheck reservations before sending. Known exits are not reaped as missing exits.
+Paid-but-unreleased vehicles can resume departure on recovery or another valid
+payment without a second invoice; concurrent/recursive release is guarded.
+
+Wear runtime now uses simulated seconds; movement transitions count once. Repair
+queue entries exclude new bay reservations and controls, deduplicate work, stop
+running fans before preventive repair, and wait for moving gates. Failed retries
+release their suppression flags and do not block unrelated tasks during backoff.
+Broken components discovered by sync are also scheduled. Lights retain real fault
+state but have no repair command in the documented simulator API. Repaired fans
+reconsider the last known CO reading. Runtime thresholds remain configurable and
+must be calibrated against the simulator; no rated thresholds were available in
+discovery responses or level JSON.
+
+When a barrier reports `component_fixed`, pending maintenance state is cleared and
+the recovery coordinator immediately resumes both assigned entrance dispatches and
+paid departures that were paused while the gate was unavailable.
+
+The live dashboard shows wear and health, gate holds work even when already closed,
+and reports refresh from local WebSocket ticks. Daily fines use UTC event receipt
+date like other operational totals (legacy rows without events fall back to server
+date). Narrow layouts keep controls accessible. Simulator request timeout and
+empty-level recovery cooldown now scale with game speed.
+
+Validation: compileall, **160 passing pytest cases** (2 dependency deprecation
+warnings), all 24 JavaScript modules parsed with
+Node, and browser checks against a separate dry-run Level 2 preview. Browser checks
+covered login, component data, admin reports, manual refresh, technician capability
+visibility and 390px report layout. No live simulator mutation, production database
+change, `.env` edit or application dependency added. Pytest was missing from this
+checkout and was installed in its existing Python 3.13 development environment.
+
 ## 5. Edge cases and how they are handled
 
 | Edge case | Handling |

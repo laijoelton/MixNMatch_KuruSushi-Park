@@ -7,7 +7,7 @@ import dataclasses
 import pytest
 
 from app import main
-from app.state import Barrier, BarrierPosition, VehicleSession, SessionPhase, state
+from app.state import Barrier, BarrierPosition, Spot, VehicleSession, SessionPhase, state
 
 
 @pytest.fixture
@@ -17,6 +17,8 @@ def fast(monkeypatch):
     monkeypatch.setattr(main, "ENTRY_RETRY_S", 0.2)
     state.barriers.clear()
     state.sessions.clear()
+    state.spots.clear()
+    state.pending_repairs.clear()
     main._left_entry.clear()
 
 
@@ -49,6 +51,8 @@ def test_open_or_unknown_or_broken_barrier_does_not_wait(fast):
 
 
 def _stuck_session(plate, spot):
+    state.spots[spot] = Spot(spot)
+    assert state.reserve_spot(spot, plate)
     session = VehicleSession(plate=plate, entry_gate="ENTRY1")
     session.phase = SessionPhase.ASSIGNED
     session.assigned_spot = spot

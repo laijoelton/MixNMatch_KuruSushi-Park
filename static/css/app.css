@@ -648,3 +648,16 @@ dialog.confirm .d-actions { display: flex; justify-content: flex-end; gap: var(-
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* Keep the operational controls reachable in narrow windows. */
+@media (max-width: 760px) {
+  .topbar { height: auto; min-height: 60px; flex-wrap: wrap; padding: 12px; gap: 10px; }
+  .topbar-title { width: 100%; flex-wrap: wrap; gap: 6px; }
+  .topbar-title .crumb { flex-basis: 100%; }
+  .topbar-status { margin-left: 0; flex-wrap: wrap; }
+  .topbar-spacer, .search-btn, .user-menu .avatar, .user-menu .user-meta { display: none; }
+  .user-menu { margin-left: auto; }
+  .content { padding: 12px; }
+  .panel-head { flex-wrap: wrap; gap: 10px; }
+  .panel-head > [role="status"] { flex: 1 1 120px; }
+}

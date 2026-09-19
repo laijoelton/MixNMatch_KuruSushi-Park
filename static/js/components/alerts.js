@@ -26,6 +26,9 @@ export function deriveAlerts(snapshot, stats, { isAdmin } = {}) {
   for (const fan of snapshot.fans || []) {
     if (fan.broken) add(`fan-${fan.name}`, "bad", `Fan ${fan.name} is broken`, `Zone ${fan.zone || "—"} ventilation reduced`, { kind: "fan", name: fan.name });
   }
+  for (const light of snapshot.lights || []) {
+    if (light.broken || light.under_maintenance) add(`light-${light.name}`, "warn", `Light ${light.name} unavailable`, "Inspect the fixture; simulator has no light repair command", null);
+  }
   for (const zone of snapshot.zones || []) {
     const level = zone.danger_level || "Safe";
     if (level === "High" || level === "Critical") add(`co-${zone.name}`, "bad", `CO ${level} in ${zone.name}`, `${Number(zone.co_level).toFixed(1)} — fans must run`, { kind: "zone", name: zone.name });
