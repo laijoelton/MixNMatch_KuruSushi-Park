@@ -90,7 +90,6 @@ subscribe(async (snap) => {
   vehicles.update(snap.sessions || []);
   feed.update(snap.activity || []);
   renderWear(snap.wear || []);
-  renderMlPanel(snap.ml_insights || {});
   updateFullBanner(snap);
   if (drawerTarget && isDrawerOpen()) showDetails(drawerTarget.kind, drawerTarget.name, { refresh: true });
 });
@@ -236,49 +235,10 @@ function fanView(snap, name) {
   };
 }
 
-// ------------------------------------------------------------------ ML insights fixed panel
-// Deliberately separate from the bell/toasts below: this panel always shows
-// the current telemetry, whether or not anything just fired. The bell only
-// signals that something predictive happened; clicking it draws attention
-// here rather than duplicating the data in a second place.
-function mlRow(label, metric, { bad = false } = {}) {
-  return h("div", { class: "ml-row" }, label, h("span", { class: `ml-metric ${bad ? "is-bad" : ""}`, text: metric }));
-}
-
-function renderMlList(hostId, rows, emptyText) {
-  const host = document.getElementById(hostId);
-  if (!host) return;
-  host.replaceChildren(rows.length ? rows : h("div", { class: "ml-empty", text: emptyText }));
-}
-
-function renderMlPanel(insights) {
-  const ventilation = [...(insights.ventilation || [])].sort((a, b) => a.minutes_to_threshold - b.minutes_to_threshold);
-  renderMlList("ml-ventilation", ventilation.map(v => mlRow(
-    h("span", { class: "grow", text: v.zone }),
-    v.minutes_to_threshold >= 9999 ? "Stable" : `${v.minutes_to_threshold}m → ${v.predicted_ppm}ppm`,
-    { bad: v.minutes_to_threshold <= 10 },
-  )), "No zone CO data yet.");
-
-  if ("components" in insights) {
-    const components = insights.components || []; // already sorted by days_to_failure server-side
-    renderMlList("ml-components", components.map(c => mlRow(
-      h("span", { class: "grow", text: `${c.name} (${c.type})` }),
-      `${c.days_to_failure}d · ${Math.round(c.failure_probability * 100)}%`,
-      { bad: c.days_to_failure <= 3 },
-    )), "No component wear data yet.");
-  }
-
-  const anomalies = insights.anomalies || [];
-  renderMlList("ml-anomalies", anomalies.map(a => mlRow(
-    plate(a.plate),
-    a.fallback_charge != null ? `$${Number(a.fallback_charge).toFixed(2)}` : (a.gate || "—"),
-  )), "No resolved ghost cars yet.");
-}
-
-document.getElementById("ml-panel-toggle").addEventListener("click", () => {
-  document.getElementById("ml-panel").classList.toggle("is-collapsed");
-});
-
+// ------------------------------------------------------------------ predictive alert toasts
+// The full ML telemetry (ventilation forecast / component health / anomaly
+// log) lives on its own nav page (/ml-insights, pages/ml_insights.js). The
+// bell here only signals that something predictive just fired.
 const PREDICTIVE_ALERT_TYPES = new Set(["PREDICTIVE_CO_WARNING", "PREDICTIVE_MAINTENANCE_WARNING", "GHOST_CAR_RESOLVED"]);
 
 function predictiveAlertMessage(alert) {
@@ -307,11 +267,7 @@ function bumpUnread() {
 document.getElementById("ml-bell-btn").addEventListener("click", () => {
   unreadCount = 0;
   document.getElementById("ml-bell-badge").hidden = true;
-  const panel = document.getElementById("ml-panel");
-  panel.classList.remove("is-collapsed");
-  panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  panel.classList.add("is-flash");
-  setTimeout(() => panel.classList.remove("is-flash"), 900);
+  location.href = "/ml-insights";
 });
 
 document.addEventListener("keydown", (event) => {
