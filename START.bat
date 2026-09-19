@@ -47,8 +47,10 @@ if not exist "%VENV_PY%" (
 ) else (
   echo  [1/5] Virtual environment found - checking dependencies...
   REM Re-run on every start: an existing .venv never picks up packages added
-  REM to requirements.txt later (numpy/scikit-learn for app\ml_agent.py were
-  REM missed this way). pip exits quickly when everything is already there.
+  REM to requirements.txt later - numpy and scikit-learn for app\ml_agent.py
+  REM were missed this way. pip exits quickly when everything is already there.
+  REM No parentheses in these comments: inside this block cmd would read one
+  REM as the end of the else branch.
   "%VENV_PY%" -m pip install -q -r requirements.txt
   if errorlevel 1 (
     echo  [i] Dependency check failed - continuing; optional features may be off.
