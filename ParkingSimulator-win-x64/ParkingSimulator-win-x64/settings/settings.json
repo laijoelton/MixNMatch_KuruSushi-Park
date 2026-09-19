@@ -1,5 +1,5 @@
 {
-  "TeamName": "TEAM",
+  "TeamName": "Mix_and_Match",
   "ListenAddress": "http://0.0.0.0:9898",
   "WebhookUrl": "http://www.carparking.local/webhook.php",
   "ParkingSpeedMuliplier": 1,
