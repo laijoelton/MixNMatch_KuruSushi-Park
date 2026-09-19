@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Logs{% endblock %}
+{% block heading %}Logs{% endblock %}
+{% block crumb %}Events and audit history available to your account{% endblock %}
+{% block content %}
+<section class="panel">
+  <div class="filters" id="log-tabs" aria-label="Log category"></div>
+  <div class="table-wrap"><table class="table"><thead><tr><th>Time</th><th>Event</th><th>Details</th></tr></thead><tbody id="log-rows"></tbody></table></div>
+  <div class="pager"><span id="log-page"></span><button class="btn" id="log-prev">Previous</button><button class="btn" id="log-next">Next</button><button class="btn danger" id="log-flush" data-cap="logs:flush" hidden>Flush this log</button></div>
+</section>
+{% endblock %}
+{% block scripts %}<script type="module" src="/static/js/pages/logs.js?v={{ asset_version }}"></script>{% endblock %}

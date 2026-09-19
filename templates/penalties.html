@@ -28,42 +28,5 @@
 </section>
 {% endblock %}
 {% block scripts %}
-<script>
-(function () {
-  const rowsEl = document.getElementById('p-rows');
-  const summaryEl = document.getElementById('p-summary');
-  const form = document.getElementById('p-filters');
-
-  function esc(s) {
-    return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => (
-      { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
-    ));
-  }
-
-  async function load() {
-    const code = new FormData(form).get('code') || '';
-    const qs = code ? `?code=${encodeURIComponent(code)}` : '';
-    const res = await fetch(`/api/penalties${qs}`, { credentials: 'same-origin' });
-    if (!res.ok) {
-      summaryEl.textContent = 'Failed to load penalties';
-      return;
-    }
-    const rows = await res.json();
-    rowsEl.innerHTML = rows.map((r) => `
-      <tr>
-        <td>${esc(r.server_datetime || '')}</td>
-        <td>${esc(r.reason || '')}</td>
-        <td>${esc(r.type || '')}</td>
-        <td>${esc(r.component_name || '')}</td>
-        <td class="num">${Number(r.fine_amount || 0).toFixed(2)}</td>
-      </tr>`).join('');
-    const total = rows.reduce((sum, r) => sum + Number(r.fine_amount || 0), 0);
-    summaryEl.textContent = `${rows.length} penalt${rows.length === 1 ? 'y' : 'ies'} · total fines ${total.toFixed(2)}`;
-  }
-
-  form.addEventListener('submit', (e) => { e.preventDefault(); load(); });
-  form.addEventListener('reset', () => setTimeout(load, 0));
-  load();
-})();
-</script>
+<script type="module" src="/static/js/pages/penalties.js?v={{ asset_version }}"></script>
 {% endblock %}

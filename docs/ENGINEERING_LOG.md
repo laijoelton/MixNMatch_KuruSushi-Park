@@ -54,7 +54,7 @@ the specification. The ones that bite in practice:
 | `app/main.py` | Webhook intake, event handlers, dashboard routes, dispatch logic |
 | `app/state.py` | In-memory park model — spots, gates, fans, zones, sessions |
 | `app/db.py` | SQLite: durable event log, sessions, payments, penalties |
-| `app/signature.py` | Webhook signature verification with runtime calibration |
+| `app/signature.py` | Strict MD5 webhook signature verification |
 | `app/client.py` | REST client for the simulator |
 | `app/routing.py` | Spot selection |
 | `app/seed.py` | Offline fallback: load the park from `lvl1.json` |
@@ -139,36 +139,14 @@ rather than fighting it.
 **Lesson:** a config value that matches its default proves nothing. Test with a
 value that could not possibly be a default.
 
-### 4.2 Webhook signature verification rejected every event
+### 4.2 Webhook signature enforcement
 
-**Symptom:** would have been total — `HTTPException(401)` on every webhook.
-
-**Diagnosis:** two compounding problems.
-
-`WEBHOOK_HASH_ALGO` defaulted to `sha256`, producing 64 hex characters. The
-simulator sends 32. `hmac.compare_digest` could never match.
-
-Worse, the documented recipe is wrong. The docs say: drop `Signature`, sort
-remaining field names alphabetically, join values with `|`, hash. We tested that
-against the organiser's own `component_broken` sample across MD5/SHA1/SHA256 ×
-4 separators × 3 key orderings × 7 shared-secret guesses. **Zero matches.**
-Their worked example includes a `RealDateTime` field the sample payloads omit,
-so the published samples are incomplete and cannot be verified offline.
-
-**Fix:** `app/signature.py` runs in *calibration mode*. It scores 36 candidate
-recipes (`algo:separator:key-order`) against every live event and tallies which
-match, while `WEBHOOK_SIGNATURE_MODE=observe` never rejects anything.
-
-```bash
-python -m scripts.signature_report    # after live traffic
-```
-
-If a recipe reaches 100%, pin it and switch to `enforce`. If none does, the
-signature covers a field or secret not in the docs — ask the organisers.
-
-**Design principle:** when the spec is wrong and the cost of a false negative
-(dropping real events) vastly exceeds a false positive (accepting unverified
-ones), fail open and instrument. Do not guess in code.
+Earlier versions calibrated several candidate hashes because published samples were
+incomplete. The September sprint explicitly fixes the protocol to MD5 of values
+joined by `|` in alphabetical field-name order, excluding `Signature`. This now
+fails closed (401), including missing signatures, and records rejected payloads in
+`unsigned_webhook_logs`. Observe mode and recipe overrides no longer weaken it.
+Tests sign complete payloads and check missing/invalid signatures and fake payments.
 
 ### 4.3 Cars were never released after paying
 
@@ -245,23 +223,14 @@ but no identity — the plate becomes known on the next `Park/CarIn`.
 **Lesson:** documented response shapes are a hypothesis. And a fallback that
 hides a failure is worse than the failure — it now logs loudly.
 
-### 4.7 Cars already in the lot escaped without paying
+### 4.7 Unknown vehicles at the exit
 
-**Symptom:** `Car escaped without paying after parking for some time` ×19.
-
-**Diagnosis:** cars parked before the dispatcher started — or that survived a
-restart — have no session. At the exit, `get_session()` returned `None`, we
-returned early, never charged, and the car escaped free.
-
-**Fix:** adopt them. At `Park/CarIn` with no session, create one so the billing
-clock runs. At the exit with no session, create one and charge an estimate
-(`UNKNOWN_CAR_MINUTES=3.0`, the midpoint of the simulator's `MinParkingTime=1`
-and `MaxParkingTime=5`).
-
-**The reasoning:** we cannot know the true duration, so we will probably take
-`CarChargedIncorrectParkingAmount`. But billing `0` reads to the simulator as
-*not charging at all*, which earns `CarShouldBeChargedAtExit` **and**
-`CarEscapedWithoutPaying`. One wrong number is cheaper than two penalties.
+Vehicles first seen parking can be adopted into durable sessions. A vehicle reaching
+an exit with no active session is held by closing its mapped barrier and publishing
+`UNREGISTERED_VEHICLE_EXIT`. A staff gate capability authorizes a fallback invoice
+based on historical median parking cost (configured safe estimate when empty).
+Only a validated payment releases the car. An assigned vehicle crossing the exit
+sensor before parking is ignored instead of being misclassified as a ghost.
 
 ### 4.8 Fractional charges were never paid
 
@@ -342,29 +311,51 @@ problem (4.10), not a full lot.
 
 **Verified:** `tests/test_traffic_sync.py::test_full_lot_turns_car_away`.
 
-### 4.12 The first car after a sync never left the entry
+### 4.12 Entrance sensor settling and cascaded entrances
 
-**Symptom:** after the auto-sync (4.10) every car was dispatched and parked
-except the first one, `NQP 718`, which stayed `ASSIGNED` to S9 at `ENTRY1`.
+HTTP success can accompany a rejected goto before a car has halted. Dispatch now
+reserves once and launches a background task with up to `ENTRY_MAX_ATTEMPTS`
+at `max(0.4, 1 / game_speed)` seconds. The task stops on entrance departure,
+parking, replacement of the session, or gate hold. `active_dispatches` suppresses
+subsequent entrance sensors before any allocation or barrier actuation. A reservation
+that never reaches a bay is archived as neglect and shown on the HUD.
 
-**Diagnosis (from the event log):** `ENTRY1 CarIn` at 59.600 triggered the
-sync, which found `gateA` Closed and sent `open`, then the goto was sent
-immediately. `gateA` only reported `Open` at 59.918. Every later car shows
-`ENTRY1 CarOut` ~0.9 s after its `CarIn`; `NQP 718` never did. The goto sent
-through a still-rising barrier was dropped silently (201, no movement) - the
-same failure mode as early exit charges (4.x exit timing). Two things made it
-possible: `_ensure_barriers_open` recorded the barrier as `Open` the instant
-the command was sent, and nothing watched for a car failing to leave the entry.
+### 4.13 Durable once-only billing and route-crossing suppression
 
-**Fix:** a barrier we just commanded is recorded as `Opening`; only its own
-`gate_action: Open` webhook marks it `Open`. `dispatch_entry` waits for that
-(`GATE_OPEN_WAIT_S`, 5 s scaled by game speed, then dispatches anyway). Every
-dispatched car is watched: `EntrySpot/CarOut` marks it as having left; if it
-has not after `ENTRY_RETRY_S` (8 s scaled), the goto is sent once more.
+A valid exit requires parking/SpotLeft evidence and `MIN_DWELL_TIME_S / game_speed`
+physical dwell. Exit CarOut also requires a confirmed exit. Before a charge network
+call, SQLite atomically claims the session invoice; the in-memory `charge_attempted`
+flag is set without yielding. No transport, payment-timeout, penalty-correction, or
+restart path retries the invoice. Effective tariff values are read at charge time;
+previous invoices retain their amount. Active sessions restore wall-clock timestamps
+onto the new monotonic clock. SpotLeft orphans are archived after a scaled timeout.
 
-**Verified:** `tests/test_entry_dispatch.py` - waits for the Open webhook,
-gives up instead of hanging, never waits on open/unknown/broken barriers,
-resends only for a car that did not leave.
+### 4.14 Capability matrix and data projection
+
+Four independent roles replace the old ladder. `app/policy.py` enumerates every
+method/path and grants no implicit access to new routes. SQLite cookie sessions are
+looked up for every request and WebSocket frame. WebSocket fan-out uses one snapshot
+and `asyncio.gather`, projecting fields and classified activity per current capability.
+Stats, history and event APIs omit money for nonfinancial roles; all event projections
+remove signatures. Tariffs and logs have dedicated pages. Audit records carry targets
+and JSON before/after details, and sign-in displays the exact previous three attempts.
+
+### 4.15 Environmental automation and persistent gate controls
+
+All simulator mutations pass through `act`, including repair queue tasks and manual
+controls. Operator holds persist in SQLite and are never undone by Closed webhooks.
+Discovery includes light IDs; day/night control uses ServerDateTime and individual
+light endpoints, avoiding the old assumption that light groups equal zones. Fans use
+50/30 ppm hysteresis. Wear persists, restores on recovery, and triggers repair at 85%
+while occupied spots defer repair. Lights have no repair API, so counters are retained
+rather than falsely reporting repairs. Daily throughput uses the sessions.zone column.
+
+Verified with compileall, 136 passing pytest cases, JavaScript syntax
+checks, and HTTP page rendering against an isolated dry-run server. No live simulator
+mutations were used for verification. Browser visual QA was unavailable because the
+computer-use provider reported no available browser. No Python dependencies added. The existing virtual environment configuration was
+repointed to the bundled Python 3.12 runtime because its former installation was missing;
+its launcher and installed packages now run compileall and pytest successfully.
 
 ---
 
@@ -376,9 +367,9 @@ resends only for a car that did not leave.
 | Out-of-order / missing events | `SequenceId` gaps recorded in `sequence_gaps`, never silently swallowed |
 | Car parks somewhere other than its reservation | Drift guard frees the stale reservation |
 | Car never arrives after dispatch | `RESERVATION_TTL_S` sweep |
-| Goto dropped (barrier still rising, or silently ignored) | Wait for the barrier's own `Open` webhook; resend once if no `EntrySpot/CarOut` within `ENTRY_RETRY_S` |
+| Goto dropped (barrier still rising, or silently ignored) | Background bounded retry until entrance departure, respecting operator holds |
 | Car already parked at startup | Adopted at `Park/CarIn` |
-| Unknown car at the exit | Adopted and charged an estimate |
+| Unknown car at the exit | Barrier held; staff-authorized fallback invoice followed by verified payment |
 | Fake payment | Compared against our own computed figure; car held at exit, never released |
 | Lot full | Car sent to `leavepark` immediately rather than left to trigger `CarLeftFromEntryBecauseNeglected` (only when live bays are known — see 4.11) |
 | Broken spot with a car in it | Repair deferred until `Park/CarOut` |
@@ -398,7 +389,7 @@ Everything lives in `.env` (see `.env.example`). The ones that matter:
 |---|---|---|
 | `AUTOPILOT` | `false` | `false` logs `[dry-run]` and sends nothing |
 | `SIMULATOR_BASE_URL` | `http://127.0.0.1:9898` | Matches `ListenAddress` |
-| `WEBHOOK_SIGNATURE_MODE` | `observe` | Calibrate; never drop events |
+| Signature enforcement | fixed MD5 | Invalid or missing signatures return 401 |
 | `PARKING_RATE_PER_MINUTE` | `1.0` | Docs: minutes parked |
 | `BILLING_ROUNDING` | `round` | Fractions are never paid |
 | `ELECTRIC_SPLIT_CHARGING` | `true` | Split the 2× across both fields |
@@ -433,7 +424,7 @@ A healthy start looks like:
 ```
 simulator auth: token acquired
 startup sync complete: 36 spots, 3 barriers, 1 zones, 0 fans
-autopilot=True  signature_mode=observe
+autopilot=True  signature_mode=enforce
 ```
 
 `startup sync failed` or `running on SEEDED layout` means it is **not**
@@ -459,9 +450,8 @@ python -m scripts.export_graph        # road graph for the pathfinder
 
 ## 8. Known open items
 
-**The signature recipe is still unconfirmed.** Handled, not solved. Run
-`scripts/signature_report.py` after live traffic. Stay on `observe` until a
-recipe hits 100%.
+**Signature integration:** the requested MD5 protocol is enforced. Published incomplete
+samples remain historical reference only; test against complete live payloads.
 
 **Billing rounding needs more live evidence.** `round` is the current best
 reading from a small sample. Watch the ratio of `payment accepted` to
@@ -475,8 +465,9 @@ onto a synthetic ring, so `S1` is "adjacent" to `S10`. The real road graph (63
 nodes, 62 directed edges) is exported to `data/graph.json`; a pathfinder writing
 `data/distances.json` is picked up automatically at startup.
 
-**One entry gate is assumed.** `ENTRY_GATE=gateA` is a level-1 simplification.
-Level 2 has 3 entry spots, level 3 has 8.
+**Gate mapping:** sensor-to-barrier association uses the nearest known barrier in
+the detected level geometry, with ENTRY_GATE as an entry-only fallback. Validate
+physical associations on new custom layouts.
 
 ---
 

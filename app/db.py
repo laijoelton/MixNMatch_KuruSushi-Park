@@ -174,6 +174,18 @@ with _lock:
     _conn.execute("PRAGMA journal_mode=WAL")
     _conn.execute("PRAGMA synchronous=NORMAL")
     _conn.executescript(_SCHEMA)
+    columns = {r[1] for r in _conn.execute("PRAGMA table_info(sessions)")}
+    for name in ("zone", "session_id"):
+        if name not in columns:
+            _conn.execute(f"ALTER TABLE sessions ADD COLUMN {name} TEXT")
+    _conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_session_identity ON sessions(session_id)")
+    _conn.executescript("""
+        CREATE TABLE IF NOT EXISTS active_sessions (
+            plate TEXT PRIMARY KEY, session_id TEXT NOT NULL, payload TEXT NOT NULL,
+            charge_attempted INTEGER NOT NULL DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS neglected_vehicles (
+            session_id TEXT PRIMARY KEY, plate TEXT, gate TEXT, reason TEXT, occurred_at TEXT);
+    """)
     _conn.commit()
 
 
@@ -294,15 +306,17 @@ def record_session(row: dict[str, Any]) -> None:
     """Append a finished parking session for dashboard history."""
     with _lock:
         _conn.execute(
-            """INSERT INTO sessions
+            """INSERT OR IGNORE INTO sessions
                (plate, car_type, spot, entry_gate, exit_gate, arrived_at, parked_at,
                 left_spot_at, minutes, planned_minutes, parking_cost, charging_cost,
-                paid_amount, payment_ok, completed_at)
+                paid_amount, payment_ok, completed_at, zone, session_id)
                VALUES (:plate, :car_type, :spot, :entry_gate, :exit_gate, :arrived_at,
                        :parked_at, :left_spot_at, :minutes, :planned_minutes, :parking_cost,
-                       :charging_cost, :paid_amount, :payment_ok, :completed_at)""",
-            {"completed_at": _utcnow(), **row},
+                       :charging_cost, :paid_amount, :payment_ok, :completed_at, :zone, :session_id)""",
+            {"completed_at": _utcnow(), "zone": None, "session_id": None, **row},
         )
+        if row.get("session_id"):
+            _conn.execute("DELETE FROM active_sessions WHERE session_id = ?", (row["session_id"],))
         _conn.commit()
 
 
@@ -398,15 +412,9 @@ def prior_login_attempts(username: str, limit: int = 3) -> list[dict[str, Any]]:
     with _lock:
         rows = _conn.execute(
             """SELECT username, ip, success, occurred_at FROM login_attempts
-               WHERE username = ? ORDER BY id DESC LIMIT 1 OFFSET 1""",
-            (username,),
+               WHERE username = ? ORDER BY id DESC LIMIT ?""",
+            (username, max(1, min(limit, 100))),
         ).fetchall()
-        if len(rows) < limit:
-            rows = _conn.execute(
-                """SELECT username, ip, success, occurred_at FROM login_attempts
-                   WHERE username = ? ORDER BY id DESC LIMIT ? OFFSET 1""",
-                (username, limit),
-            ).fetchall()
     return [dict(r) for r in rows][:limit]
 
 
@@ -462,6 +470,9 @@ def component_wear_rows() -> list[dict[str, Any]]:
 
 def record_ghost_car(plate: str, gate: Optional[str], fallback_charge: float) -> int:
     with _lock:
+        existing = _conn.execute("SELECT id FROM ghost_car_events WHERE plate = ? AND resolved = 0", (plate,)).fetchone()
+        if existing:
+            return existing["id"]
         cur = _conn.execute(
             """INSERT INTO ghost_car_events (plate, gate, occurred_at, fallback_charge)
                VALUES (?, ?, ?, ?)""",
@@ -497,6 +508,29 @@ def median_parking_cost() -> Optional[float]:
     if n % 2:
         return float(values[mid])
     return float((values[mid - 1] + values[mid]) / 2.0)
+
+
+def save_active_session(session) -> None:
+    from dataclasses import asdict
+    with _lock, _conn:
+        _conn.execute("""INSERT INTO active_sessions (plate, session_id, payload, charge_attempted) VALUES (?, ?, ?, ?)
+            ON CONFLICT(plate) DO UPDATE SET session_id=excluded.session_id, payload=excluded.payload,
+            charge_attempted=MAX(active_sessions.charge_attempted, excluded.charge_attempted)""",
+            (session.plate, session.session_id, json.dumps(asdict(session)), int(session.charge_attempted)))
+
+
+def claim_charge(session) -> bool:
+    """Commit the once-only claim before any network I/O, including after a crash."""
+    with _lock, _conn:
+        cur = _conn.execute("UPDATE active_sessions SET charge_attempted = 1 WHERE session_id = ? AND charge_attempted = 0",
+                            (session.session_id,))
+        return cur.rowcount == 1
+
+
+def record_neglect(session, reason: str) -> None:
+    with _lock, _conn:
+        _conn.execute("INSERT OR IGNORE INTO neglected_vehicles (session_id, plate, gate, reason, occurred_at) VALUES (?, ?, ?, ?, ?)",
+                      (session.session_id, session.plate, session.entry_gate, reason, _utcnow()))
 
 
 def counters() -> dict[str, Any]:

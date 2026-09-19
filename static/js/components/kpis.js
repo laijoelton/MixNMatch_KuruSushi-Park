@@ -39,6 +39,7 @@ export function createKpis(container) {
     setText(cards.onSite.value, sessions.length);
     setText(cards.onSite.sub, `${drivingIn} arriving · ${atExit} at exit`);
 
+    cards.penalties.el.hidden = !isAdmin;
     if (!stats) return;
     if (isAdmin) {
       setText(cards.money.label, "Revenue");

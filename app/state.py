@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import threading
 import time
+import uuid
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -71,6 +72,8 @@ class Spot:
     # When the spot was promised to a car, so a reservation for a car that
     # never arrives can be swept instead of holding the spot forever.
     reserved_at: Optional[float] = None
+    is_accessible: bool = False
+    cycle_count: int = 0
 
     @property
     def dispatchable(self) -> bool:
@@ -91,6 +94,8 @@ class Barrier:
     under_maintenance: bool = False
     # Wear: one cycle per open/close command sent to the simulator.
     cycle_count: int = 0
+    operator_override: bool = False
+    held_vehicles: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -135,6 +140,12 @@ class VehicleSession:
     charged: bool = False
     paid: bool = False
     created_at: float = field(default_factory=time.monotonic)
+    session_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    charge_attempted: bool = False
+    zone: str = ""
+    entry_departed: bool = False
+    exit_confirmed: bool = False
+    released: bool = False
 
     # What the driver booked. The simulator bills this, not the wall-clock
     # time we observe -- see compute_charge().
@@ -160,10 +171,14 @@ class VehicleSession:
 
     @property
     def is_electric(self) -> bool:
-        return self.car_type.strip().lower() == "electric"
+        return normalize_car_type(self.car_type) == "ev"
 
     @property
     def billable_minutes(self) -> float:
+        return self.planned_minutes if self.planned_minutes > 0 else self.measured_minutes
+
+    @property
+    def measured_minutes(self) -> float:
         """Minutes between parking and leaving the spot (or now, if still in)."""
         if self.parked_at is None:
             return 0.0
@@ -201,6 +216,8 @@ class ParkingState:
         self.lights: dict[str, Light] = {}
         self.zones: dict[str, Zone] = {}
         self.sessions: dict[str, VehicleSession] = {}
+        self.active_dispatches: dict[str, str] = {}
+        self.neglected_vehicles: deque = deque(maxlen=100)
         self.last_sequence_id: int = 0
         self.deferred_repairs: dict[str, str] = {}
         self.penalty_count: int = 0
@@ -248,6 +265,8 @@ class ParkingState:
                     broken=bool(item.get("broken", False)),
                     under_maintenance=bool(item.get("isUnderMaintenance", False)),
                     occupant_plate=plate,
+                    is_accessible=bool(item.get("isAccessible", item.get("is_accessible", False)))
+                                  or item.get("parkingForCarType", "").lower() == "accessible",
                 )
 
     def load_barriers(self, raw: list[dict]) -> None:
@@ -268,6 +287,7 @@ class ParkingState:
                     name=item["name"],
                     zone_parent=item.get("zoneParent", ""),
                     is_on=bool(item.get("isOn", False)),
+                    turned_on_at=time.monotonic() if item.get("isOn", False) else None,
                     broken=bool(item.get("broken", False)),
                     under_maintenance=bool(item.get("isUnderMaintenance", False)),
                 )
@@ -279,6 +299,7 @@ class ParkingState:
                     name=item["name"],
                     zone_parent=item.get("zoneParent", ""),
                     is_on=bool(item.get("isOn", True)),
+                    turned_on_at=time.monotonic() if item.get("isOn", True) else None,
                 )
 
     def load_zones(self, raw: list[dict]) -> None:
@@ -399,16 +420,21 @@ class ParkingState:
                 spot = self.spots[name]
                 spot.broken = False
                 spot.under_maintenance = False
+                spot.cycle_count = 0
                 if spot.occupant_plate is None:
                     spot.status = SpotStatus.AVAILABLE
             elif component_type == "BarrierGate" and name in self.barriers:
                 barrier = self.barriers[name]
                 barrier.broken = False
                 barrier.under_maintenance = False
+                barrier.cycle_count = 0
             elif component_type == "ExhaustFan" and name in self.fans:
                 fan = self.fans[name]
                 fan.broken = False
                 fan.under_maintenance = False
+                fan.cycle_count = 0
+                fan.runtime_seconds = 0.0
+                fan.turned_on_at = time.monotonic() if fan.is_on else None
             self.deferred_repairs.pop(name, None)
 
     def queue_deferred_repair(self, name: str, component_type: str) -> None:
@@ -513,6 +539,11 @@ class ParkingState:
         """Live wear counters for every tracked component, for the wear-threshold sweep."""
         with self._lock:
             out: list[dict[str, Any]] = []
+            for spot in self.spots.values():
+                if spot.purpose == "Park":
+                    out.append({"name": spot.name, "type": "ParkingSpot",
+                                "cycle_count": spot.cycle_count, "runtime_seconds": 0.0,
+                                "broken": spot.broken, "under_maintenance": spot.under_maintenance})
             for b in self.barriers.values():
                 out.append({"name": b.name, "type": "BarrierGate",
                            "cycle_count": b.cycle_count, "runtime_seconds": 0.0,
@@ -577,6 +608,8 @@ class ParkingState:
             if session is not None:
                 session.assigned_spot = spot_name
                 session.phase = SessionPhase.ASSIGNED
+                self.active_dispatches[plate] = spot_name
+                session.zone = self.spots[spot_name].zone_parent
 
     def mark_parked(self, plate: str, spot_name: str) -> None:
         with self._lock:
@@ -594,8 +627,11 @@ class ParkingState:
             if session is not None:
                 session.phase = SessionPhase.PARKED
                 session.assigned_spot = spot_name
+                self.active_dispatches[plate] = spot_name
+                session.zone = self.spots[spot_name].zone_parent
                 # Start the billing clock here, not at the entry sensor.
                 if session.parked_at is None:
+                    self.spots[spot_name].cycle_count += 1
                     session.parked_at = time.monotonic()
                     session.parked_wall = _utcnow()
 
@@ -639,6 +675,7 @@ class ParkingState:
     def complete_session(self, plate: str) -> Optional[VehicleSession]:
         """Remove the session and hand it back so it can be archived to SQLite."""
         with self._lock:
+            self.active_dispatches.pop(plate, None)
             return self.sessions.pop(plate, None)
 
     # ------------------------------------------------------------------ #
@@ -657,9 +694,9 @@ class ParkingState:
                 "component": component_name, "at": time.time(),
             })
 
-    def log_activity(self, message: str, level: str = "info") -> None:
+    def log_activity(self, message: str, level: str = "info", capability: str = "logs:view_ops") -> None:
         with self._lock:
-            self.activity_log.appendleft({"message": message, "level": level, "at": time.time()})
+            self.activity_log.appendleft({"message": message, "level": level, "at": time.time(), "capability": capability})
 
     def broken_components(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -696,12 +733,15 @@ class ParkingState:
                     {"name": s.name, "purpose": s.purpose, "status": s.status.value,
                      "broken": s.broken, "under_maintenance": s.under_maintenance,
                      "occupant_plate": s.occupant_plate, "zone": s.zone_parent,
-                     "car_type": s.parking_for_car_type}
+                     "car_type": s.parking_for_car_type, "is_accessible": s.is_accessible}
                     for s in self.spots.values()
                 ],
                 "barriers": [
                     {"name": b.name, "state": b.state.value, "broken": b.broken,
-                     "under_maintenance": b.under_maintenance, "zone": b.zone_parent}
+                     "under_maintenance": b.under_maintenance, "zone": b.zone_parent,
+                     "operator_override": b.operator_override,
+                     "hold_reason": "Held closed by operator" if b.operator_override else
+                                    "Vehicle awaiting clearance" if b.held_vehicles else ""}
                     for b in self.barriers.values()
                 ],
                 "fans": [
@@ -731,9 +771,17 @@ class ParkingState:
                 "penalties": {"count": self.penalty_count, "total_fines": round(self.total_fines, 2),
                              "recent": list(self.penalty_log)[:20]},
                 "activity": list(self.activity_log)[:30],
+                "neglected_vehicles": list(self.neglected_vehicles),
                 "deferred_repairs": dict(self.deferred_repairs),
                 "last_sequence_id": self.last_sequence_id,
                 "uptime_s": round(time.time() - self.started_at, 1),
             }
 
+def normalize_car_type(value: str) -> str:
+    value = (value or "normal").strip().lower()
+    return {"normal": "sedan", "electric": "ev", "van": "suv", "disabled": "accessible",
+            "handicapped": "accessible"}.get(value, value)
+
+
+BarrierGate = Barrier
 state = ParkingState(max_processed_events=settings.max_processed_events)

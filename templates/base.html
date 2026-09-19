@@ -19,15 +19,15 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
         History
       </a>
-      <a href="/payments" data-role="admin" hidden class="rail-link {% if active == 'payments' %}is-active{% endif %}" {% if active == 'payments' %}aria-current="page"{% endif %}>
+      <a href="/payments" data-cap="fin:view" hidden class="rail-link {% if active == 'payments' %}is-active{% endif %}" {% if active == 'payments' %}aria-current="page"{% endif %}>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18M7 15h3"/></svg>
         Payments
       </a>
-      <a href="/admin" data-role="admin" hidden class="rail-link {% if active == 'admin' %}is-active{% endif %}" {% if active == 'admin' %}aria-current="page"{% endif %}>
+      <a href="/admin" data-cap="admin:users" hidden class="rail-link {% if active == 'admin' %}is-active{% endif %}" {% if active == 'admin' %}aria-current="page"{% endif %}>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 3l8 3v6c0 4.5-3.4 8-8 9-4.6-1-8-4.5-8-9V6z"/><path d="M9 12l2 2 4-4"/></svg>
         Admin
       </a>
-      <a href="/penalties" class="rail-link {% if active == 'penalties' %}is-active{% endif %}" {% if active == 'penalties' %}aria-current="page"{% endif %}>
+      <a href="/penalties" data-cap="fin:view" hidden class="rail-link {% if active == 'penalties' %}is-active{% endif %}" {% if active == 'penalties' %}aria-current="page"{% endif %}>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9L2.5 18a2 2 0 0 0 1.7 3h15.6a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
         Penalties
       </a>
@@ -35,6 +35,8 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 3v18h18"/><path d="M7 15l4-5 3 3 5-7"/></svg>
         Reports
       </a>
+      <a href="/tariffs" class="rail-link" data-cap="fin:view" hidden>Tariffs</a>
+      <a href="/logs" class="rail-link">Logs</a>
     </nav>
 
     <div class="main">

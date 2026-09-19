@@ -12,7 +12,7 @@ from app.state import Barrier, BarrierPosition, VehicleSession, SessionPhase, st
 
 @pytest.fixture
 def fast(monkeypatch):
-    monkeypatch.setattr(main, "settings", dataclasses.replace(main.settings, autopilot=True))
+    monkeypatch.setattr(main, "settings", dataclasses.replace(main.settings, autopilot=True, entry_max_attempts=3, game_speed=8))
     monkeypatch.setattr(main, "GATE_OPEN_WAIT_S", 1.0)
     monkeypatch.setattr(main, "ENTRY_RETRY_S", 0.2)
     state.barriers.clear()
@@ -25,7 +25,7 @@ def test_waits_until_barrier_reports_open(fast):
 
     async def scenario():
         async def simulator_reports_open():
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.02)
             state.update_barrier_state("gateA", "Open")
         opener = asyncio.create_task(simulator_reports_open())
         opened = await main._wait_for_barrier_open("gateA")
@@ -64,7 +64,7 @@ def test_car_that_never_leaves_entry_is_sent_again(fast, monkeypatch):
     monkeypatch.setattr(main.client, "car_goto", goto)
     _stuck_session("NQP 718", "S9")
     asyncio.run(main._resend_if_still_at_entry("NQP 718", "S9"))
-    assert sent == [("NQP 718", "S9")]
+    assert sent == [("NQP 718", "S9")] * 3
 
 
 def test_car_that_left_entry_is_not_resent(fast, monkeypatch):

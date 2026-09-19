@@ -19,10 +19,13 @@ LEVEL_SPOTS = [
 
 
 def _arrival(plate):
-    return {"EventClass": "car_spot_action", "CarPlateNumber": plate, "SpotName": "ENTRY1",
+    payload = {"EventClass": "car_spot_action", "CarPlateNumber": plate, "SpotName": "ENTRY1",
             "SpotType": "EntrySpot", "CarType": "Normal", "Direction": "CarIn",
             "PlannedParkingDurationInMinutes": "2", "EventId": f"traffic-{next(_ids)}",
             "SequenceId": next(_ids), "Signature": "x", "ServerDateTime": "2026-09-19 17:00:00"}
+    from app.signature import digest
+    payload["Signature"] = digest(payload)
+    return payload
 
 
 @pytest.fixture
@@ -48,12 +51,17 @@ def sim(monkeypatch):
     monkeypatch.setattr(main.client, "list_barriers", empty)
     monkeypatch.setattr(main.client, "list_zones", empty)
     monkeypatch.setattr(main.client, "list_exhaust_fans", empty)
+    monkeypatch.setattr(main.client, "list_lights", empty)
     monkeypatch.setattr(main.client, "car_goto", goto)
     monkeypatch.setattr(main.client, "barrier_open", noop)
     monkeypatch.setattr(main, "settings", dataclasses.replace(main.settings, autopilot=True))
     monkeypatch.setattr(main, "TRAFFIC_SYNC_COOLDOWN_S", 0.0)
     state.spots.clear()
     state.sessions.clear()
+    state.barriers.clear()
+    state.active_dispatches.clear()
+    main.db._conn.execute("DELETE FROM active_sessions")
+    main.db._conn.commit()
     main._live_bays_synced = False
     return calls, level
 

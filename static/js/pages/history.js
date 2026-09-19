@@ -7,10 +7,11 @@ import { initShell } from "../core/shell.js";
 // Search completed stays. Filtering and paging happen in SQL on the server;
 // the URL mirrors the filters so a view can be refreshed or shared.
 
-await initShell();
+const me = await initShell();
+const canFinance = me.capabilities.includes("fin:view");
 
 const PAGE_SIZE = 25;
-const STATUS = [["", "All"], ["paid", "Paid"], ["suspect", "Suspect"], ["unpaid", "Unpaid"]];
+const STATUS = canFinance ? [["", "All"], ["paid", "Paid"], ["suspect", "Suspect"], ["unpaid", "Unpaid"]] : [];
 const form = document.getElementById("filters");
 const rows = document.getElementById("rows");
 const summary = document.getElementById("result-summary");
@@ -19,7 +20,7 @@ const next = document.getElementById("next");
 const statusGroup = document.getElementById("f-status");
 
 const query = new URLSearchParams(location.search);
-let status = query.get("status") || "";
+let status = canFinance ? query.get("status") || "" : "";
 let page = Math.max(1, Number(query.get("page")) || 1);
 form.plate.value = query.get("plate") || "";
 form.spot.value = query.get("spot") || "";
@@ -108,9 +109,9 @@ async function load() {
       h("td", { text: dateTime(row.arrived_at) }),
       h("td", { text: dateTime(row.left_spot_at || row.completed_at) }),
       h("td", { class: "num", text: row.planned_minutes != null ? `${row.planned_minutes} min` : row.minutes != null ? `${Number(row.minutes).toFixed(1)} min` : "—" }),
-      h("td", { class: "num", text: money((row.parking_cost || 0) + (row.charging_cost || 0)) }),
-      h("td", { class: "num", text: money(row.paid_amount) }),
-      h("td", {}, statusTag(row))));
+      canFinance ? h("td", { class: "num", text: money((row.parking_cost || 0) + (row.charging_cost || 0)) }) : null,
+      canFinance ? h("td", { class: "num", text: money(row.paid_amount) }) : null,
+      canFinance ? h("td", {}, statusTag(row)) : null));
   }
 
   const first = data.total ? (data.page - 1) * data.size + 1 : 0;
@@ -130,9 +131,9 @@ async function showTimeline(row) {
         ["Bay", row.spot || "—"],
         ["Entry → exit", `${row.entry_gate || "—"} → ${row.exit_gate || "—"}`],
         ["Booked stay", row.planned_minutes != null ? `${row.planned_minutes} min` : "—"],
-        ["Charged", money((row.parking_cost || 0) + (row.charging_cost || 0))],
-        ["Paid", money(row.paid_amount)],
-        ["Verdict", statusTag(row)],
+        canFinance ? ["Charged", money((row.parking_cost || 0) + (row.charging_cost || 0))] : null,
+        canFinance ? ["Paid", money(row.paid_amount)] : null,
+        canFinance ? ["Verdict", statusTag(row)] : null,
       ]),
       h("h3", { class: "drawer-kicker", style: "margin:8px 0 0", text: "Events" }),
       list,

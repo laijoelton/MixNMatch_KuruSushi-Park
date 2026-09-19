@@ -16,7 +16,10 @@ import { createZones } from "../components/zones.js";
 const STATS_INTERVAL_MS = 5000;
 
 const me = await initShell({ usesLiveSocket: true });
-const isAdmin = me.role === "admin";
+const isAdmin = me.capabilities.includes("admin:users");
+const canFinance = me.capabilities.includes("fin:view");
+const canRepair = me.capabilities.includes("maint:control");
+const canGate = me.capabilities.includes("ops:control_gates");
 let stats = null;
 let geometryKey = null;     // which spot set the drawn geometry belongs to
 let drawerTarget = null;    // {kind, name} shown in the drawer
@@ -78,9 +81,10 @@ async function loadStats() {
 }
 
 subscribe(async (snap) => {
+  if (snap.role && snap.role !== me.role) { location.reload(); return; }
   await loadGeometry(snap);
   twin.update(snap);
-  kpis.update(snap, stats, isAdmin);
+  kpis.update(snap, stats, canFinance);
   zones.update(snap);
   alerts.update(deriveAlerts(snap, stats, { isAdmin }));
   vehicles.update(snap.sessions || []);
@@ -165,7 +169,7 @@ function spotView(snap, name) {
       session ? ["Entered via", session.entry_gate || "—"] : null,
       ["Condition", spot.broken ? "Broken" : spot.under_maintenance ? "Under repair" : "Good"],
     ]),
-    actions: [repair, reasonLine(blocked)],
+    actions: canRepair ? [repair, reasonLine(blocked)] : [],
   };
 }
 
@@ -188,14 +192,14 @@ function gateView(snap, name) {
   return {
     kicker: "Barrier gate",
     title: name,
-    signature: JSON.stringify([gate.state, gate.broken, gate.under_maintenance]),
+    signature: JSON.stringify([gate.state, gate.broken, gate.under_maintenance, gate.hold_reason]),
     body: detailList([
       ["Position", h("span", { class: `tag ${state === "open" ? "free" : state === "fault" ? "fault" : state === "moving" ? "reserved" : ""}`, text: gate.state })],
       ["Condition", gate.broken ? "Broken" : gate.under_maintenance ? "Under repair" : "Good"],
       ["Zone", gate.zone || "Perimeter"],
-      ["Service state", GATE_STATE_LABEL[state]],
+      ["Service state", gate.hold_reason || GATE_STATE_LABEL[state]],
     ]),
-    actions: [openBtn, closeBtn, repairBtn, reasonLine(reason)],
+    actions: [...(canGate ? [openBtn, closeBtn] : []), ...(canRepair ? [repairBtn] : []), reasonLine(reason)],
   };
 }
 
@@ -215,7 +219,7 @@ function fanView(snap, name) {
       ["Zone", fan.zone || "—"],
       ["Zone CO", zone ? `${Number(zone.co_level).toFixed(1)} (${zone.danger_level || "Safe"})` : "—"],
     ]),
-    actions: [repairBtn, reasonLine("Fans switch automatically with CO level.")],
+    actions: [...(canRepair ? [repairBtn] : []), reasonLine("Fans switch automatically with CO level.")],
   };
 }
 
@@ -223,3 +227,20 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "f" && !event.ctrlKey && !event.metaKey && !/input|textarea|select/i.test(event.target.tagName)) twin.fit();
 });
 window.addEventListener("beforeunload", closeDrawer);
+
+window.addEventListener("park-alert", event => {
+  const alert = event.detail;
+  if (alert.alert_type !== "UNREGISTERED_VEHICLE_EXIT") return;
+  const content = [h("b", { text: `Unregistered vehicle ${alert.plate} at ${alert.gate}. ` }), "Awaiting staff clearance."];
+  if (canGate) {
+    const button = h("button", { class: "btn small", text: "Authorize fallback invoice", onclick: async () => {
+      await runAction(button, () => api("/api/ghost-car/override", { method: "POST", body: { ghost_id: alert.ghost_id } }), "Invoice attempted; awaiting payment");
+    } });
+    content.push(button);
+  }
+  setBanner(`ghost-${alert.ghost_id}`, { kind: "bad", text: content });
+});
+const ghosts = await api("/api/ghost-cars?resolved=false");
+for (const ghost of ghosts) window.dispatchEvent(new CustomEvent("park-alert", { detail: {
+  type: "alert", alert_type: "UNREGISTERED_VEHICLE_EXIT", plate: ghost.plate, gate: ghost.gate, ghost_id: ghost.id,
+} }));

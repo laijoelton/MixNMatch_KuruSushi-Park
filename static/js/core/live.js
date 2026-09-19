@@ -62,6 +62,10 @@ export function connect() {
     } catch {
       return;
     }
+    if (data.type === "alert") {
+      window.dispatchEvent(new CustomEvent("park-alert", { detail: data }));
+      return;
+    }
     lastSnapshot = data;
     lastUpdateAt = Date.now();
     for (const fn of subscribers) safeCall(fn, data);

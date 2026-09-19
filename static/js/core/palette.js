@@ -6,18 +6,18 @@ import { clear, h } from "./dom.js";
 const PAGES = [
   { label: "Live operations", kind: "page", href: "/" },
   { label: "History", kind: "page", href: "/history" },
-  { label: "Payments", kind: "page", href: "/payments", admin: true },
-  { label: "Admin", kind: "page", href: "/admin", admin: true },
+  { label: "Payments", kind: "page", href: "/payments", cap: "fin:view" },
+  { label: "Admin", kind: "page", href: "/admin", cap: "admin:users" },
 ];
 
 let itemsProvider = () => [];
 let pickHandler = () => {};
-let isAdmin = false;
+let capabilities = [];
 
-export function configurePalette({ items, onPick, admin }) {
+export function configurePalette({ items, onPick, capabilities: caps }) {
   if (items) itemsProvider = items;
   if (onPick) pickHandler = onPick;
-  if (admin != null) isAdmin = admin;
+  if (caps) capabilities = caps;
 }
 
 export function initPalette() {
@@ -33,7 +33,7 @@ export function initPalette() {
   let active = 0;
 
   function allItems() {
-    const pages = PAGES.filter((p) => isAdmin || !p.admin);
+    const pages = PAGES.filter((p) => !p.cap || capabilities.includes(p.cap));
     const items = [...itemsProvider()].sort((a, b) =>
       a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: "base" }));
     return [...items, ...pages];

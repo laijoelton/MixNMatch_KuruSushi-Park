@@ -13,15 +13,11 @@ def _client(user=None, pw=None):
 
 
 def test_policy_table():
-    assert auth.required_role("/webhooks/simulator") == "public"
-    assert auth.required_role("/static/css/app.css") == "public"
-    assert auth.required_role("/gate") == "public"
-    assert auth.required_role("/api/gate/bays") == "public"
-    assert auth.required_role("/api/state") == "operator"
-    assert auth.required_role("/ws/live") == "operator"
-    assert auth.required_role("/api/manual/barrier/g1/open") == "operator"
-    assert auth.required_role("/api/manual/sync") == "admin"
-    assert auth.required_role("/api/admin/users") == "admin"
+    assert auth.required_capabilities("/webhooks/simulator", "POST") == frozenset()
+    assert auth.required_capabilities("/api/state") == {"ops:view"}
+    assert auth.required_capabilities("/api/manual/barrier/g1/open", "POST") == {"ops:control_gates"}
+    assert auth.required_capabilities("/api/manual/sync", "POST") == {"ops:control_dispatch"}
+    assert auth.required_capabilities("/api/new-unmapped-route") is None
 
 
 def test_anonymous_is_blocked():

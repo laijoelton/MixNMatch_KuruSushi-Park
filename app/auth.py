@@ -4,7 +4,7 @@ Separate from the simulator login in ``app/client.py`` - this decides who may
 use *our* dashboard. Everything is stdlib: PBKDF2 for passwords, random
 tokens for sessions, and the same SQLite file the rest of the service uses.
 
-Access control lives in one place, ``required_role()``, and is enforced by
+Access control lives in one place, ``app.policy.required_capabilities()``, and is enforced by
 ``AuthMiddleware`` for every HTTP request and WebSocket - hiding a button in
 the browser is never the security boundary.
 """
@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import logging
-import os
 import secrets
 import sqlite3
 import threading
@@ -26,15 +26,13 @@ from starlette.responses import JSONResponse, RedirectResponse
 
 from app import db  # noqa: F401 - importing db creates the data directory
 from app.config import settings
+from app.policy import ROLES, allowed, capabilities, has, required_capabilities
 
 log = logging.getLogger("dashboard.auth")
 
 COOKIE_NAME = "pg_session"
 SESSION_TTL_S = 8 * 3600
 PBKDF2_ITERATIONS = 200_000
-# "maintenance" repairs components; "financial_auditor" sees the revenue
-# section of reporting. "admin" is a superuser over every role check below.
-ROLES = ("operator", "admin", "maintenance", "financial_auditor")
 
 _conn = sqlite3.connect(settings.database_path, check_same_thread=False)
 _conn.row_factory = sqlite3.Row
@@ -128,15 +126,17 @@ def list_users() -> list[dict[str, Any]]:
 def delete_user(user_id: int, acting_user_id: int) -> None:
     if user_id == acting_user_id:
         raise ValueError("you cannot delete your own account")
-    target = _one("SELECT role FROM dashboard_users WHERE id = ?", (user_id,))
-    if target is None:
-        raise ValueError("no such user")
-    if target["role"] == "admin":
-        admins = _one("SELECT COUNT(*) AS n FROM dashboard_users WHERE role = 'admin'")["n"]
-        if admins <= 1:
-            raise ValueError("cannot delete the last admin")
-    _write("DELETE FROM dashboard_sessions WHERE user_id = ?", (user_id,))
-    _write("DELETE FROM dashboard_users WHERE id = ?", (user_id,))
+    with _lock, _conn:
+        _conn.execute("BEGIN IMMEDIATE")
+        target = _one("SELECT role FROM dashboard_users WHERE id = ?", (user_id,))
+        if target is None:
+            raise ValueError("no such user")
+        if target["role"] == "admin":
+            admins = _one("SELECT COUNT(*) AS n FROM dashboard_users WHERE role = 'admin'")["n"]
+            if admins <= 1:
+                raise ValueError("cannot delete the last admin")
+        _conn.execute("DELETE FROM dashboard_sessions WHERE user_id = ?", (user_id,))
+        _conn.execute("DELETE FROM dashboard_users WHERE id = ?", (user_id,))
 
 
 def authenticate(username: str, password: str) -> Optional[dict[str, Any]]:
@@ -182,9 +182,10 @@ def revoke_session(token: Optional[str]) -> None:
 # --------------------------------------------------------------------------- #
 # Audit log
 # --------------------------------------------------------------------------- #
-def record_audit(username: str, method: str, path: str, status: Optional[int]) -> None:
-    _write("INSERT INTO audit_log (at, username, method, path, status) VALUES (?,?,?,?,?)",
-           (time.time(), username, method, path, status))
+def record_audit(username: str, method: str, path: str, status: Optional[int],
+                 target: str = "", detail: Optional[dict] = None) -> None:
+    _write("INSERT INTO audit_log (at, username, method, path, status, target, detail) VALUES (?,?,?,?,?,?,?)",
+           (time.time(), username, method, path, status, target or path, json.dumps(detail or {})))
 
 
 def recent_audit(limit: int = 100) -> list[dict[str, Any]]:
@@ -194,37 +195,28 @@ def recent_audit(limit: int = 100) -> list[dict[str, Any]]:
 def ensure_schema_and_seed() -> None:
     with _lock:
         _conn.executescript(_SCHEMA)
+        columns = {r[1] for r in _conn.execute("PRAGMA table_info(audit_log)")}
+        for name in ("target", "detail"):
+            if name not in columns:
+                _conn.execute(f"ALTER TABLE audit_log ADD COLUMN {name} TEXT")
+        for old, new in (("operator", "facility_operator"), ("maintenance", "maintenance_technician"),
+                         ("financial_auditor", "auditor")):
+            _conn.execute("UPDATE dashboard_users SET role = ? WHERE role = ?", (new, old))
         _conn.commit()
-    if _one("SELECT COUNT(*) AS n FROM dashboard_users")["n"] == 0:
-        create_user("admin", os.environ.get("DASHBOARD_ADMIN_PASSWORD", "admin123"), "admin")
-        create_user("operator", os.environ.get("DASHBOARD_OPERATOR_PASSWORD", "operator123"), "operator")
-        create_user("maintenance", os.environ.get("DASHBOARD_MAINTENANCE_PASSWORD", "maintenance123"),
-                    "maintenance")
-        create_user("auditor", os.environ.get("DASHBOARD_FINANCIAL_AUDITOR_PASSWORD", "auditor123"),
-                    "financial_auditor")
-        log.info("dashboard: seeded default admin, operator, maintenance and financial_auditor accounts")
+    for username, role, password in (
+        ("admin", "admin", settings.dashboard_admin_password),
+        ("operator", "facility_operator", settings.dashboard_operator_password),
+        ("auditor", "auditor", settings.dashboard_auditor_password),
+        ("technician", "maintenance_technician", settings.dashboard_technician_password),
+    ):
+        if not _one("SELECT id FROM dashboard_users WHERE role = ?", (role,)) and password:
+            if not _one("SELECT id FROM dashboard_users WHERE username = ?", (username,)):
+                create_user(username, password, role)
 
 
 # --------------------------------------------------------------------------- #
 # Access policy - the single place that decides who may call what
 # --------------------------------------------------------------------------- #
-_PUBLIC_EXACT = {"/login", "/api/auth/login", "/healthz", "/webhooks/simulator",
-                 "/gate", "/api/gate/checkin", "/api/gate/bays", "/favicon.ico"}
-_PUBLIC_PREFIX = ("/static/",)
-_ADMIN_EXACT = {"/admin", "/payments", "/api/payments", "/api/manual/sync",
-                "/api/manual/arrival", "/api/dispatch", "/api/signature-report"}
-_ADMIN_PREFIX = ("/api/admin/",)
-
-
-def required_role(path: str) -> str:
-    """``public``, ``operator`` (any signed-in user) or ``admin``."""
-    if path in _PUBLIC_EXACT or path.startswith(_PUBLIC_PREFIX):
-        return "public"
-    if path in _ADMIN_EXACT or path.startswith(_ADMIN_PREFIX):
-        return "admin"
-    return "operator"
-
-
 def _cookie(scope: dict, name: str) -> Optional[str]:
     for key, value in scope.get("headers", []):
         if key == b"cookie":
@@ -247,16 +239,16 @@ class AuthMiddleware:
             return
 
         path = scope["path"]
-        user = user_for_token(_cookie(scope, COOKIE_NAME))
+        user = SessionStore.get(_cookie(scope, COOKIE_NAME))
         scope.setdefault("state", {})["user"] = user
 
-        need = required_role(path)
+        method = "WEBSOCKET" if scope["type"] == "websocket" else scope["method"]
+        need = required_capabilities(path, method)
+        if need is None:
+            log.warning("Unmapped route denied by default: %s %s", method, path)
         denied = None
-        if need != "public":
-            if user is None:
-                denied = 401
-            elif need == "admin" and user["role"] != "admin":
-                denied = 403
+        if not allowed(user, path, method):
+            denied = 403 if need is None or user else 401
 
         if denied and scope["type"] == "websocket":
             await receive()  # consume websocket.connect, then refuse the handshake
@@ -269,8 +261,10 @@ class AuthMiddleware:
             elif is_page:
                 response = RedirectResponse("/?denied=1", status_code=302)
             else:
-                detail = "Sign in required" if denied == 401 else "Requires admin role"
+                detail = "Sign in required" if denied == 401 else "Capability required"
                 response = JSONResponse({"detail": detail}, status_code=denied)
+            if user:
+                record_audit(user["username"], method, path, denied)
             await response(scope, receive, send)
             return
 
@@ -292,10 +286,6 @@ class AuthMiddleware:
 # --------------------------------------------------------------------------- #
 # Per-route role dependencies - fine-grained, on top of AuthMiddleware
 # --------------------------------------------------------------------------- #
-# AuthMiddleware only distinguishes public / signed-in / admin at the path
-# level. Some Level 2 endpoints need a specific staff role (maintenance,
-# financial_auditor) regardless of path, so these are ordinary FastAPI
-# dependencies layered on top - ``user: dict = Depends(require_maintenance)``.
 def require_staff(request: Request) -> dict[str, Any]:
     """Any signed-in dashboard user."""
     user = getattr(request.state, "user", None)
@@ -304,26 +294,40 @@ def require_staff(request: Request) -> dict[str, Any]:
     return user
 
 
-def require_role(*roles: str):
-    """Dependency factory: the signed-in user must hold one of ``roles``.
-
-    ``admin`` always passes, the same superuser behaviour AuthMiddleware
-    already gives it for path-level admin routes.
-    """
-    allowed = set(roles) | {"admin"}
-
-    def _dependency(request: Request) -> dict[str, Any]:
+def require_capability(capability: str):
+    def dependency(request: Request) -> dict[str, Any]:
         user = require_staff(request)
-        if user["role"] not in allowed:
-            raise HTTPException(403, f"Requires role: {' or '.join(sorted(allowed - {'admin'}))}")
+        if not has(user, capability):
+            raise HTTPException(403, f"Requires capability: {capability}")
         return user
+    return dependency
 
-    return _dependency
+
+require_admin = require_capability("admin:users")
+require_maintenance = require_capability("maint:control")
+require_financial_auditor = require_capability("fin:view")
 
 
-require_admin = require_role("admin")
-require_maintenance = require_role("maintenance")
-require_financial_auditor = require_role("financial_auditor")
+def update_role(user_id: int, role: str) -> dict:
+    if role not in ROLES:
+        raise ValueError("unknown role")
+    with _lock, _conn:
+        _conn.execute("BEGIN IMMEDIATE")
+        target = _one("SELECT * FROM dashboard_users WHERE id = ?", (user_id,))
+        if target is None:
+            raise ValueError("no such user")
+        if target["role"] == "admin" and role != "admin":
+            if _one("SELECT COUNT(*) AS n FROM dashboard_users WHERE role = 'admin'")["n"] <= 1:
+                raise ValueError("cannot demote the last admin")
+        _conn.execute("UPDATE dashboard_users SET role = ? WHERE id = ?", (role, user_id))
+    return _one(f"SELECT {_PUBLIC_USER_FIELDS} FROM dashboard_users WHERE id = ?", (user_id,))
+
+
+class SessionStore:
+    """Durable cookie sessions; each lookup joins the current user role."""
+    create = staticmethod(create_session)
+    get = staticmethod(user_for_token)
+    revoke = staticmethod(revoke_session)
 
 
 def install(app) -> None:

@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any, Optional
+from typing import Any, Optional, Awaitable, Callable
 
 import httpx
 
@@ -19,6 +19,9 @@ class SimulatorClient:
         self._token: Optional[str] = None
         self._token_obtained_at: float = 0.0
         self._login_lock = asyncio.Lock()
+        self._recovery_lock = asyncio.Lock()
+        self.on_reconnect: Optional[Callable[[], Awaitable[Any]]] = None
+        self._recovering = False
 
     async def aclose(self) -> None:
         await self._http.aclose()
@@ -57,17 +60,31 @@ class SimulatorClient:
                 log.warning("simulator transport error on %s %s (attempt %d/%d): %s",
                            method, path, attempt, transient_attempts, exc)
                 if attempt < transient_attempts:
-                    await asyncio.sleep(transient_delay_s * attempt)
+                    await asyncio.sleep(transient_delay_s * attempt / max(settings.game_speed, 0.1))
                     continue
                 raise
             if response.status_code == 401 and retry:
-                log.warning("simulator auth: token rejected, re-authenticating")
-                self._token = None
-                return await self._request(method, path, params=params, json_body=json_body, retry=False)
+                if self._recovering:
+                    response.raise_for_status()
+                async with self._recovery_lock:
+                    if headers.get("Authorization") == f"Bearer {self._token}":
+                        self._token = None
+                        await self.login()
+                        self._recovering = True
+                        try:
+                            if self.on_reconnect:
+                                await self.on_reconnect()
+                        finally:
+                            self._recovering = False
+                # Never resend a charge, even on an authentication failure.
+                if path.endswith("/charge"):
+                    response.raise_for_status()
+                return await self._request(method, path, params=params, json_body=json_body, retry=False,
+                                           transient_attempts=transient_attempts)
             if response.status_code >= 500 and attempt < transient_attempts:
                 log.warning("simulator 5xx on %s %s (attempt %d/%d): %s",
                            method, path, attempt, transient_attempts, response.status_code)
-                await asyncio.sleep(transient_delay_s * attempt)
+                await asyncio.sleep(transient_delay_s * attempt / max(settings.game_speed, 0.1))
                 continue
             response.raise_for_status()
             return response
@@ -109,6 +126,7 @@ class SimulatorClient:
         await self._request(
             "POST", f"/api/v1/car/{plate}/charge",
             params={"parkingCost": parking_cost, "chargingCost": charging_cost},
+            transient_attempts=1,
         )
 
     # ------------------------------------------------------------------ #

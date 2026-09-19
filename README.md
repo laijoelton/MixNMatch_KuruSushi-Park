@@ -2,10 +2,8 @@
 
 HackMY IoT 2026 · Track 2: Next-Gen Parking Solutions
 
-**This branch (`feature/dashboard-ui`) layers a live operator HUD and a
-mobile gate portal on top of the `feature/simulator-core` dispatch engine**,
-without changing any of that engine's dispatch, penalty-mitigation or
-webhook logic. `main` is this branch merged in — the full, unified system.
+The dispatcher runs on `main` with event-driven simulator control, durable billing,
+four capability-based staff roles, and a separate public driver kiosk.
 
 ## ParkGuardian Operator Console
 
@@ -15,24 +13,31 @@ first start (change them with the env vars below, or from the Admin page):
 | Username | Password | Role |
 |---|---|---|
 | `admin` | `admin123` (`DASHBOARD_ADMIN_PASSWORD`) | Admin |
-| `operator` | `operator123` (`DASHBOARD_OPERATOR_PASSWORD`) | Operator |
+| `operator` | `operator123` (`DASHBOARD_OPERATOR_PASSWORD`) | Facility operator |
+| `auditor` | `auditor123` (`DASHBOARD_AUDITOR_PASSWORD`) | Auditor |
+| `technician` | `technician123` (`DASHBOARD_TECHNICIAN_PASSWORD`) | Maintenance technician |
 
 | Route | Who | What it is |
 |---|---|---|
-| `/` | Operator, Admin | **Live operations.** Digital twin drawn from the simulator's own level file (real coordinates, any level; zoom, pan, zone focus), KPIs, *Needs attention* inbox (faults, CO, fake payments, full lot, missed events), vehicles on site, humanised event feed, per-zone occupancy by car type with gate status. Click a bay, gate or fan for details and Open / Close / Repair — actions that would earn a penalty (operating a broken gate, repairing an occupied bay) are disabled with the reason shown. |
-| `/history` | Operator, Admin | Completed stays searchable by plate (with or without the space), bay, payment status and date; paginated in SQL; each row opens that car's raw event timeline. |
-| `/payments` | Admin | Revenue, net after fines, every payment with a Verified / Suspect verdict and why, fines by reason. |
+| `/` | All staff | **Live operations.** Digital twin drawn from the simulator's own level file (real coordinates, any level; zoom, pan, zone focus), KPIs, *Needs attention* inbox (faults, CO, fake payments, full lot, missed events), vehicles on site, humanised event feed, per-zone occupancy by car type with gate status. Click a bay, gate or fan for details and Open / Close / Repair — actions that would earn a penalty (operating a broken gate, repairing an occupied bay) are disabled with the reason shown. |
+| `/history` | All staff | Completed stays searchable by plate (with or without the space), bay, payment status and date; paginated in SQL; each row opens that car's raw event timeline. |
+| `/payments` | Auditor, Admin | Revenue, net after fines, every payment with a Verified / Suspect verdict and why, fines by reason. |
 | `/admin` | Admin | Accounts (last admin and self-deletion are refused), audit trail of every change made through the dashboard, manual resync and simulated arrival behind confirmations. |
 | `/gate` | Public kiosk | Driver check-in: vehicle type, only bays that suit it are selectable. |
 | `/login` | Public | Sign-in. |
 
-**Access control is server-side.** `app/auth.py` holds one policy table
-(`required_role`) enforced by an ASGI middleware for every HTTP request and
-the `/ws/live` WebSocket: anonymous API calls get 401, pages redirect to
-sign-in, operators get 403 on admin routes. Passwords are PBKDF2-SHA256 with a
-per-user salt; sessions are random tokens in an `HttpOnly` cookie backed by a
-server-side row, so sign-out really revokes. Every non-GET request by a
-signed-in user is written to `audit_log`.
+**Access control is server-side.** `app/policy.py` maps methods and paths to
+explicit capabilities. Unknown routes deny access except for admin. Roles are
+independent sets: auditors view finances and edit tariffs; facility operators
+control gates; technicians read operations and component health; admins control
+all features. Cookie sessions use PBKDF2-SHA256 passwords and SQLite-backed
+`SessionStore` lookups, so role changes apply on the next HTTP request or WebSocket
+frame. Financial fields are omitted from operator/technician payloads.
+
+`/tariffs` edits effective billing settings without changing `.env`. `/logs` offers
+capability-filtered, paginated operations, maintenance, financial and audit tabs.
+The Admin page provisions users and updates their roles. Last-admin protection
+covers demotion and deletion. Sign-in shows the previous three login attempts.
 
 **Level-agnostic.** `app/layout.py::detect_level()` compares the live spot
 names with each `lvlN.json` (Jaccard ≥ 0.8) and the console draws whichever
@@ -124,14 +129,10 @@ ever runs — this is what prevents `Penalty_SendCarToOccupiedSpot` and
   acknowledged, never allowed to crash the receiver or drop the organizer's
   retry.
 
-**Webhook signature verification:** `app/main.py::verify_signature`
-reproduces the organizer's documented recipe — sort all payload fields
-except `Signature` alphabetically, join their values with `|`, hash the
-result. If `WEBHOOK_SECRET` is set, the hash is HMAC-keyed with it;
-otherwise a plain digest is computed, matching the unsigned examples in the
-organizer's docs. The digest algorithm is configurable (`WEBHOOK_HASH_ALGO`,
-default `sha256`) since the exact algorithm is not stated in the published
-Webhooks reference.
+**Webhook signature verification:** MD5 of values joined with `|`, ordered by
+alphabetical field name, excluding `Signature`. Missing or invalid signatures
+return 401 and are recorded in `unsigned_webhook_logs`. Legacy signature mode,
+recipe and secret settings do not disable enforcement.
 
 ## JSON API Surface
 
@@ -223,33 +224,10 @@ docker run -p 8080:8080 \
 
 ## Known hazards (read before a scored run)
 
-### The webhook signature recipe is unconfirmed
+### Signature enforcement
 
-The documented recipe -- drop `Signature`, sort remaining field names
-alphabetically, join values with `|`, hash -- **does not reproduce the
-signatures printed in the organizer's own samples.** Tested offline against
-their `component_broken` sample across MD5/SHA1/SHA256, four separators, three
-key orderings and several shared-secret guesses: no match. Their worked
-example includes a `RealDateTime` field the sample payloads omit, so the
-published samples are incomplete.
-
-A fixed algorithm therefore rejects every real event. `app/signature.py` runs
-in calibration mode instead: it scores 36 candidate recipes against live
-traffic and, while `WEBHOOK_SIGNATURE_MODE=observe`, never rejects anything.
-
-```bash
-python -m scripts.signature_report      # after a few minutes of live traffic
-```
-
-Once a recipe sits at 100%, pin it and switch to enforce:
-
-```
-WEBHOOK_SIGNATURE_RECIPE=md5:pipe:alpha
-WEBHOOK_SIGNATURE_MODE=enforce
-```
-
-If nothing matches, ask the organisers and **stay on observe**. Dropping real
-events costs far more than accepting unverified ones.
+The sprint specifies the exact MD5 recipe above. Historical incomplete PDF samples
+cannot be used as signed fixtures. Replay scripts must sign the complete payload.
 
 ### Billing is ambiguous and must be verified against a real car
 
@@ -332,3 +310,24 @@ python -m scripts.export_graph     # road graph for the pathfinder
 python -m scripts.replay           # full car lifecycle, no simulator needed
 AMOUNT=0.01 python -m scripts.replay   # watch fraud detection hold a car
 ```
+
+## September 2026 reliability and capability overhaul
+
+- Entrance dispatch uses at most 12 asynchronous attempts, spaced by
+  `max(0.4, 1 / GameSpeedMultiplier)` seconds. Repeated entrance sensors reuse the
+  existing reservation; parked and departed vehicles stop retries.
+- Exit crossings are ignored until parking/SpotLeft evidence and minimum transit
+  dwell exist. Invoices use the effective tariff at calculation time and are
+  attempted exactly once, including transport failures and process recovery.
+- Gate holds persist across recovery. Unregistered exit vehicles require staff
+  authorization of a median historical fallback invoice, then a real valid payment.
+- Simulator 401 responses trigger token refresh and a one-shot state recovery.
+  SQLite preserves active sessions, charge claims, gate holds and wear counters.
+- Lights use discovered component IDs and simulator time (off 07:00?18:59).
+  CO fans switch on above 50 ppm and off below 30 ppm. Maintenance starts at 85%
+  of rated wear and waits for occupied bays to become vacant.
+- Daily throughput groups completed sessions by their persisted zone.
+
+Verification: `python -m compileall app/ tests/` and `python -m pytest -q`.
+No Python dependencies were added. Live simulator verification remains separate
+from the automated simulator doubles; `.env` is never modified by migrations.

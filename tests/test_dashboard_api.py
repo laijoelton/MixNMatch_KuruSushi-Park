@@ -27,12 +27,14 @@ def test_login_bad_password():
 
 
 def test_me():
-    assert _login("operator", "operator123").get("/api/me").json() == {"username": "operator", "role": "operator"}
+    result = _login("operator", "operator123").get("/api/me").json()
+    assert result["role"] == "facility_operator"
+    assert "fin:view" not in result["capabilities"]
 
 
 def test_history_filters_and_paging():
     _seed_sessions()
-    c = _login("operator", "operator123")
+    c = _login("auditor", "auditor123")
     everything = c.get("/api/history/search", params={"size": 2}).json()
     assert everything["total"] >= 3 and len(everything["items"]) == 2
     hit = c.get("/api/history/search", params={"plate": "wct759"}).json()["items"]
@@ -51,9 +53,9 @@ def test_stats_hides_finance_from_operator():
 
 def test_admin_user_management():
     admin = _login("admin", "admin123")
-    created = admin.post("/api/admin/users", json={"username": "temp", "password": "temp123", "role": "operator"})
+    created = admin.post("/api/admin/users", json={"username": "temp", "password": "temp123", "role": "facility_operator"})
     assert created.status_code == 201
-    dup = admin.post("/api/admin/users", json={"username": "temp", "password": "temp123", "role": "operator"})
+    dup = admin.post("/api/admin/users", json={"username": "temp", "password": "temp123", "role": "facility_operator"})
     assert dup.status_code == 400 and "already exists" in dup.json()["detail"]
     assert admin.delete(f"/api/admin/users/{created.json()['id']}").status_code == 200
 

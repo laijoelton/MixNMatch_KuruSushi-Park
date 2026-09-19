@@ -32,6 +32,12 @@ export function deriveAlerts(snapshot, stats, { isAdmin } = {}) {
     else if (level === "Mid") add(`co-${zone.name}`, "warn", `CO rising in ${zone.name}`, `${Number(zone.co_level).toFixed(1)}`, { kind: "zone", name: zone.name });
   }
 
+  for (const row of snapshot.neglected_vehicles || []) {
+    add(`neglect-${row.plate}`, "warn", `Vehicle ${row.plate} never reached a bay`, row.reason, null);
+  }
+  for (const gate of snapshot.barriers || []) {
+    if (gate.hold_reason) add(`hold-${gate.name}`, "warn", `${gate.name}: ${gate.hold_reason}`, "Review the vehicle or gate hold", { kind: "gate", name: gate.name });
+  }
   const park = (snapshot.spots || []).filter((sp) => sp.purpose === "Park");
   // The dispatcher syncs bays once at startup; if the simulator had no level
   // running then, it holds zero bays and treats every arrival as "lot full".

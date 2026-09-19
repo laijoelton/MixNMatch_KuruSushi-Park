@@ -13,6 +13,8 @@ import logging
 from typing import Any
 
 from fastapi import WebSocket
+from app import auth
+from app.policy import has, project_snapshot
 
 log = logging.getLogger("dispatcher.ws")
 
@@ -36,12 +38,17 @@ class ConnectionManager:
     async def broadcast(self, payload: dict[str, Any]) -> None:
         async with self._lock:
             targets = list(self._connections)
-        dead: list[WebSocket] = []
-        for ws in targets:
+        async def send(ws):
             try:
-                await ws.send_json(payload)
+                user = auth.user_for_token(ws.cookies.get(auth.COOKIE_NAME))
+                if user is None or not has(user, "ops:view"):
+                    await ws.close(code=4401 if user is None else 4403)
+                    return ws
+                await ws.send_json(project_snapshot(payload, user))
             except Exception:  # noqa: BLE001 - a broken socket must not affect other clients
-                dead.append(ws)
+                return ws
+            return None
+        dead = [ws for ws in await asyncio.gather(*(send(ws) for ws in targets)) if ws is not None]
         if dead:
             async with self._lock:
                 for ws in dead:

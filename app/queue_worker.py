@@ -16,6 +16,8 @@ import itertools
 import logging
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Optional
+from datetime import datetime
+from app.config import settings
 
 log = logging.getLogger("dispatcher.queue")
 
@@ -101,7 +103,7 @@ class PriorityTaskQueue:
                 log.warning("maintenance task failed (%d/%d): %s - %s",
                            task.attempts, self._max_attempts, task.label, exc)
                 if task.attempts < self._max_attempts:
-                    await asyncio.sleep(self._retry_delay_s)
+                    await asyncio.sleep(self._retry_delay_s / max(settings.game_speed, 0.1))
                     async with self._condition:
                         heapq.heappush(self._heap, task)
                         self._condition.notify()
@@ -111,3 +113,27 @@ class PriorityTaskQueue:
 
 
 maintenance_queue = PriorityTaskQueue()
+
+
+def server_hour(raw: str) -> Optional[int]:
+    try:
+        return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).hour
+    except (TypeError, ValueError):
+        return None
+
+
+async def schedule_lights(raw: str, parking_state, simulator, act) -> None:
+    hour = server_hour(raw)
+    if hour is None:
+        return
+    from app import db
+    desired = not (settings.day_start_hour <= hour < settings.night_start_hour)
+    for light in list(parking_state.lights.values()):
+        if light.is_on == desired:
+            continue
+        action = simulator.light_on if desired else simulator.light_off
+        if await act(f"light {light.name} {'ON' if desired else 'OFF'} (server hour {hour})",
+                     lambda n=light.name: action(n)):
+            cycles, runtime = parking_state.set_light_on(light.name, desired)
+            db.sync_component_wear(light.name, "Light", cycles, runtime)
+            db.record_component_event(light.name, "Light", "on" if desired else "off")

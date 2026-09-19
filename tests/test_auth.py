@@ -17,7 +17,7 @@ def test_hash_roundtrip_and_salt_differs():
 
 def test_seed_users_exist_and_authenticate():
     assert auth.authenticate("admin", "admin123")["role"] == "admin"
-    assert auth.authenticate("operator", "operator123")["role"] == "operator"
+    assert auth.authenticate("operator", "operator123")["role"] == "facility_operator"
     assert auth.authenticate("admin", "nope") is None
     assert auth.authenticate("ghost", "x") is None
 
@@ -34,10 +34,10 @@ def test_session_lifecycle():
 
 def test_create_and_delete_user_rules():
     admin = auth.authenticate("admin", "admin123")
-    u = auth.create_user("night-shift", "pw12345", "operator")
-    assert u["role"] == "operator"
+    u = auth.create_user("night-shift", "pw12345", "facility_operator")
+    assert u["role"] == "facility_operator"
     with pytest.raises(ValueError):
-        auth.create_user("night-shift", "pw12345", "operator")   # duplicate
+        auth.create_user("night-shift", "pw12345", "facility_operator")   # duplicate
     with pytest.raises(ValueError):
         auth.create_user("x", "pw12345", "superuser")             # bad role
     with pytest.raises(ValueError):

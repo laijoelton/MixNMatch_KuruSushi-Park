@@ -99,8 +99,6 @@ class Settings:
     billing_rounding: str
     billing_basis: str
     exit_charge_delay_s: float
-    payment_wait_s: float
-    charge_max_attempts: int
     # Dashboard: how often the operator HUD is pushed over the WebSocket.
     broadcast_interval_s: float
     webhook_debug: bool
@@ -133,6 +131,13 @@ class Settings:
     # day, and at/after which they go back ON for night.
     day_start_hour: int
     night_start_hour: int
+    min_dwell_time_s: float
+    orphan_timeout_s: float
+    entry_max_attempts: int
+    dashboard_admin_password: str
+    dashboard_operator_password: str
+    dashboard_auditor_password: str
+    dashboard_technician_password: str
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -144,12 +149,10 @@ class Settings:
             simulator_email=os.environ.get("SIMULATOR_EMAIL", "admin"),
             simulator_password=os.environ.get("SIMULATOR_PASSWORD", "admin"),
 
-            # Signature handling. `observe` logs and calibrates but never
-            # rejects; `enforce` requires a match. Start on observe -- the
-            # documented recipe does not reproduce the docs' own samples.
+            # Fixed protocol: always enforce the specified MD5 recipe.
             webhook_secret=os.environ.get("WEBHOOK_SECRET", ""),
-            webhook_signature_mode=os.environ.get("WEBHOOK_SIGNATURE_MODE", "observe"),
-            webhook_signature_recipe=os.environ.get("WEBHOOK_SIGNATURE_RECIPE", ""),
+            webhook_signature_mode="enforce",
+            webhook_signature_recipe="md5:pipe:alpha",
 
             webhook_port=_env_int("WEBHOOK_PORT", 8080),
             request_timeout_s=_env_float("SIMULATOR_TIMEOUT_S", 10.0),
@@ -216,15 +219,10 @@ class Settings:
             # is invisible to us. Wait for the car to settle first.
             exit_charge_delay_s=_env_float("EXIT_CHARGE_DELAY_S", 2.0),
 
-            # How long to wait for payment_made before charging again. Drivers
-            # give up and escape after 5 minutes, so there is room for retries.
-            payment_wait_s=_env_float("PAYMENT_WAIT_S", 25.0),
-            charge_max_attempts=_env_int("CHARGE_MAX_ATTEMPTS", 3),
-
             broadcast_interval_s=_env_float("BROADCAST_INTERVAL_S", 1.0),
             webhook_debug=_env_bool("WEBHOOK_DEBUG", False),
 
-            co_fan_off_threshold=_env_float("CO_FAN_OFF_THRESHOLD", 20.0),
+            co_fan_off_threshold=_env_float("CO_FAN_OFF_THRESHOLD", 30.0),
 
             wear_cycle_threshold=_env_int("WEAR_CYCLE_THRESHOLD", 500),
             wear_runtime_threshold_s=_env_float("WEAR_RUNTIME_THRESHOLD_S", 36000.0),
@@ -238,6 +236,13 @@ class Settings:
             environment_loop_interval_s=_env_float("ENVIRONMENT_LOOP_INTERVAL_S", 15.0),
             day_start_hour=_env_int("DAY_START_HOUR", 7),
             night_start_hour=_env_int("NIGHT_START_HOUR", 19),
+            min_dwell_time_s=_env_float("MIN_DWELL_TIME_S", 5.0),
+            orphan_timeout_s=_env_float("ORPHAN_TIMEOUT_S", 300.0),
+            entry_max_attempts=_env_int("ENTRY_MAX_ATTEMPTS", 12),
+            dashboard_admin_password=os.environ.get("DASHBOARD_ADMIN_PASSWORD", "admin123"),
+            dashboard_operator_password=os.environ.get("DASHBOARD_OPERATOR_PASSWORD", "operator123"),
+            dashboard_auditor_password=os.environ.get("DASHBOARD_AUDITOR_PASSWORD", "auditor123"),
+            dashboard_technician_password=os.environ.get("DASHBOARD_TECHNICIAN_PASSWORD", "technician123"),
         )
 
 

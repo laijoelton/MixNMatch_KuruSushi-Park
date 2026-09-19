@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -17,7 +18,8 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
-from app import auth, db
+from app import auth, db, tariffs
+from app.policy import capabilities, has, project_events, redact
 from app.layout import current_geometry
 from app.state import state
 
@@ -88,7 +90,7 @@ async def login(body: LoginIn, request: Request, response: Response) -> dict[str
 
     if user is None:
         raise HTTPException(401, "Invalid username or password")
-    token = auth.create_session(user["id"])
+    token = auth.SessionStore.create(user["id"])
     response.set_cookie(auth.COOKIE_NAME, token, max_age=auth.SESSION_TTL_S,
                         httponly=True, samesite="lax", path="/")
     return {"username": user["username"], "role": user["role"], "prior_attempts": prior}
@@ -96,15 +98,15 @@ async def login(body: LoginIn, request: Request, response: Response) -> dict[str
 
 @router.post("/api/auth/logout")
 async def logout(request: Request, response: Response) -> dict[str, bool]:
-    auth.revoke_session(request.cookies.get(auth.COOKIE_NAME))
+    auth.SessionStore.revoke(request.cookies.get(auth.COOKIE_NAME))
     response.delete_cookie(auth.COOKIE_NAME, path="/")
     return {"ok": True}
 
 
 @router.get("/api/me")
-async def me(request: Request) -> dict[str, str]:
+async def me(request: Request) -> dict[str, Any]:
     user = _user(request)
-    return {"username": user["username"], "role": user["role"]}
+    return {"username": user["username"], "role": user["role"], "capabilities": sorted(capabilities(user))}
 
 
 # --------------------------------------------------------------------------- #
@@ -139,7 +141,7 @@ _STATUS_SQL = {"paid": "payment_ok = 1", "suspect": "payment_ok = 0", "unpaid": 
 
 
 @router.get("/api/history/search")
-async def history_search(plate: Optional[str] = None, spot: Optional[str] = None,
+async def history_search(request: Request, plate: Optional[str] = None, spot: Optional[str] = None,
                          status: Optional[str] = None,
                          date_from: Optional[str] = Query(None, alias="from"),
                          date_to: Optional[str] = Query(None, alias="to"),
@@ -154,6 +156,8 @@ async def history_search(plate: Optional[str] = None, spot: Optional[str] = None
     if spot:
         where.append("spot = ?")
         params.append(spot.strip())
+    if status and not has(request.state.user, "fin:view"):
+        raise HTTPException(403, "Financial status filters require fin:view")
     if status in _STATUS_SQL:
         where.append(_STATUS_SQL[status])
     if date_from:
@@ -169,11 +173,11 @@ async def history_search(plate: Optional[str] = None, spot: Optional[str] = None
     items = db.query(
         f"SELECT * FROM sessions {clause} ORDER BY completed_at DESC, id DESC LIMIT ? OFFSET ?",
         tuple(params) + (size, (page - 1) * size))
-    return {"items": items, "total": total, "page": page, "size": size}
+    return {"items": redact(items, has(request.state.user, "fin:view")), "total": total, "page": page, "size": size}
 
 
 @router.get("/api/history/timeline")
-async def history_timeline(plate: str = Query(..., min_length=1, max_length=16)) -> list[dict[str, Any]]:
+async def history_timeline(request: Request, plate: str = Query(..., min_length=1, max_length=16)) -> list[dict[str, Any]]:
     """Every stored webhook about one plate, in the simulator's own order."""
     rows = db.query(
         "SELECT sequence_id, event_class, server_datetime, received_at, payload FROM events "
@@ -181,7 +185,7 @@ async def history_timeline(plate: str = Query(..., min_length=1, max_length=16))
         (plate,))
     for row in rows:
         row["payload"] = json.loads(row["payload"])
-    return rows
+    return project_events(rows, request.state.user)
 
 
 # --------------------------------------------------------------------------- #
@@ -198,14 +202,14 @@ async def stats(request: Request) -> dict[str, Any]:
         (SELECT COUNT(*) FROM penalties)                      AS penalty_count,
         (SELECT COALESCE(SUM(fine_amount), 0) FROM penalties) AS total_fines,
         (SELECT COUNT(*) FROM sequence_gaps)                  AS sequence_gaps""")[0]
-    if user["role"] == "admin":
+    if has(user, "fin:view"):
         revenue = db.query("SELECT COALESCE(SUM(amount), 0) AS r FROM payments WHERE valid = 1")[0]["r"]
         out["revenue"] = round(revenue, 2)
         out["net"] = round(revenue - out["total_fines"], 2)
         out["fines_by_reason"] = db.query(
             "SELECT reason, COUNT(*) AS count, SUM(fine_amount) AS total FROM penalties "
             "GROUP BY reason ORDER BY total DESC LIMIT 10")
-    return out
+    return redact(out, has(user, "fin:view"))
 
 
 # --------------------------------------------------------------------------- #
@@ -223,22 +227,152 @@ async def admin_list_users() -> list[dict[str, Any]]:
 
 
 @router.post("/api/admin/users", status_code=201)
-async def admin_create_user(body: NewUserIn) -> dict[str, Any]:
+async def admin_create_user(body: NewUserIn, request: Request) -> dict[str, Any]:
     try:
-        return auth.create_user(body.username, body.password, body.role)
+        created = auth.create_user(body.username, body.password, body.role)
+        auth.record_audit(request.state.user["username"], "POST", "/api/admin/users", 201,
+                          created["username"], {"before": None, "after": created})
+        return created
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
 
 @router.delete("/api/admin/users/{user_id}")
 async def admin_delete_user(user_id: int, request: Request) -> dict[str, bool]:
+    before = next((u for u in auth.list_users() if u["id"] == user_id), None)
     try:
         auth.delete_user(user_id, acting_user_id=_user(request)["id"])
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+    auth.record_audit(request.state.user["username"], "DELETE", f"/api/admin/users/{user_id}", 200,
+                      str(user_id), {"before": before, "after": None})
     return {"ok": True}
 
 
 @router.get("/api/admin/audit")
 async def admin_audit(limit: int = 100) -> list[dict[str, Any]]:
     return auth.recent_audit(limit)
+
+
+class RoleIn(BaseModel):
+    role: str
+
+
+@router.patch("/api/admin/users/{user_id}")
+async def admin_update_user(user_id: int, body: RoleIn, request: Request):
+    before = next((u for u in auth.list_users() if u["id"] == user_id), None)
+    try:
+        after = auth.update_role(user_id, body.role)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    auth.record_audit(request.state.user["username"], "PATCH", f"/api/admin/users/{user_id}", 200,
+                      str(user_id), {"before": before, "after": after})
+    return after
+
+
+@router.get("/tariffs", include_in_schema=False)
+async def tariffs_page(request: Request):
+    return _page(request, "tariffs.html", "tariffs")
+
+
+@router.get("/api/tariffs")
+async def read_tariffs():
+    return {"settings": tariffs.effective(), "history": db.query("SELECT * FROM tariff_settings ORDER BY key LIMIT 100")}
+
+
+@router.put("/api/tariffs")
+async def write_tariffs(request: Request, changes: dict):
+    try:
+        before, after = tariffs.update(changes, request.state.user["username"])
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    auth.record_audit(request.state.user["username"], "PUT", "/api/tariffs", 200, "tariff_settings",
+                      {"before": before, "after": after})
+    return {"settings": after}
+
+
+@router.get("/logs", include_in_schema=False)
+async def logs_page(request: Request):
+    return _page(request, "logs.html", "logs")
+
+
+LOG_TABS = {"operations": "logs:view_ops", "maintenance": "logs:view_maint",
+            "financial": "logs:view_fin", "audit": "logs:view_audit", "logins": "logs:view_audit",
+            "unsigned": "logs:view_audit"}
+
+
+@router.get("/api/logs")
+async def logs(request: Request, tab: str = "operations", page: int = 1, size: int = 50):
+    if tab not in LOG_TABS or not has(request.state.user, LOG_TABS[tab]):
+        raise HTTPException(403, "Log capability required")
+    size, page = max(1, min(size, 100)), max(1, page)
+    params = (size, (page - 1) * size)
+    if tab == "audit":
+        rows = auth._all("SELECT * FROM audit_log ORDER BY id DESC LIMIT ? OFFSET ?", params)
+    elif tab in ("logins", "unsigned"):
+        table = "login_attempts" if tab == "logins" else "unsigned_webhook_logs"
+        rows = db.query(f"SELECT * FROM {table} ORDER BY id DESC LIMIT ? OFFSET ?", params)
+        for row in rows:
+            if "payload" in row:
+                row["payload"] = json.loads(row["payload"])
+        rows = redact(rows, True)
+    else:
+        from app.policy import EVENT_CAPABILITY
+        classes = [c for c, capability in EVENT_CAPABILITY.items() if capability == LOG_TABS[tab]]
+        placeholders = ",".join("?" for _ in classes)
+        rows = db.query(f"SELECT * FROM events WHERE event_class IN ({placeholders}) ORDER BY received_at DESC LIMIT ? OFFSET ?",
+                        tuple(classes) + params)
+        rows = project_events(rows, request.state.user)
+    return {"items": rows, "page": page, "size": size,
+            "tabs": [tab for tab, cap in LOG_TABS.items() if has(request.state.user, cap)]}
+
+
+@router.delete("/api/logs")
+async def flush_logs(request: Request, tab: str):
+    if tab not in LOG_TABS:
+        raise HTTPException(400, "Unknown log tab")
+    if tab == "audit":
+        auth._write("DELETE FROM audit_log")
+    else:
+        with db._lock, db._conn:
+            if tab in ("logins", "unsigned"):
+                table = "login_attempts" if tab == "logins" else "unsigned_webhook_logs"
+                db._conn.execute(f"DELETE FROM {table}")
+            else:
+                # Keep EventId deduplication intact; flush the detailed payload only.
+                from app.policy import EVENT_CAPABILITY
+                for event_class, cap in EVENT_CAPABILITY.items():
+                    if cap == LOG_TABS[tab]:
+                        db._conn.execute("UPDATE events SET payload = '{}', signature = NULL, process_error = NULL WHERE event_class = ?", (event_class,))
+    auth.record_audit(request.state.user["username"], "DELETE", "/api/logs", 200, tab,
+                      {"before": "retained", "after": "flushed"})
+    return {"ok": True}
+
+
+@router.get("/api/admin/schema")
+async def schema():
+    return db.query("SELECT name, sql FROM sqlite_master WHERE type = 'table' ORDER BY name LIMIT 200")
+
+
+class SchemaColumnIn(BaseModel):
+    table: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
+    column: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
+    type: str = Field(pattern=r"^(TEXT|INTEGER|REAL|BLOB)$")
+
+
+@router.post("/api/admin/schema")
+async def add_schema_column(body: SchemaColumnIn, request: Request):
+    """Add a nullable reporting column without dropping existing data or constraints."""
+    tables = {r["name"] for r in db.query("SELECT name FROM sqlite_master WHERE type = 'table' LIMIT 200")}
+    if body.table not in tables or body.table.startswith("sqlite_"):
+        raise HTTPException(400, "Unknown application table")
+    before = db.query(f'PRAGMA table_info("{body.table}")')
+    try:
+        with db._lock, db._conn:
+            db._conn.execute(f'ALTER TABLE "{body.table}" ADD COLUMN "{body.column}" {body.type}')
+    except sqlite3.OperationalError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    after = db.query(f'PRAGMA table_info("{body.table}")')
+    auth.record_audit(request.state.user["username"], "POST", "/api/admin/schema", 200, body.table,
+                      {"before": before, "after": after})
+    return {"table": body.table, "columns": after}

@@ -16,7 +16,7 @@ export async function initShell({ usesLiveSocket = false } = {}) {
   setText(document.getElementById("user-avatar"), me.username.slice(0, 2));
 
   const isAdmin = me.role === "admin";
-  for (const el of document.querySelectorAll("[data-role='admin']")) el.hidden = !isAdmin;
+  for (const el of document.querySelectorAll("[data-cap]")) el.hidden = !me.capabilities.includes(el.dataset.cap);
   document.body.dataset.role = me.role;
 
   document.getElementById("logout-btn").addEventListener("click", async () => {
@@ -26,11 +26,11 @@ export async function initShell({ usesLiveSocket = false } = {}) {
 
   const params = new URLSearchParams(location.search);
   if (params.has("denied")) {
-    toast("That page needs the admin role.", "warn");
+    toast("Your account does not have access to that page.", "warn");
     history.replaceState(null, "", location.pathname);
   }
 
-  configurePalette({ admin: isAdmin });
+  configurePalette({ capabilities: me.capabilities });
   initPalette();
   pollHealth(usesLiveSocket);
   return me;

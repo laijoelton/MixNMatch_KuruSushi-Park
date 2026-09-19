@@ -23,9 +23,18 @@ async function loadUsers() {
           loadAudit();
         }
       } });
+    const roleSelect = h("select", { class: "select", "aria-label": `Role for ${user.username}` });
+    for (const role of ["admin", "auditor", "facility_operator", "maintenance_technician"]) {
+      roleSelect.append(h("option", { value: role, text: role, selected: role === user.role }));
+    }
+    roleSelect.addEventListener("change", async () => {
+      await runAction(roleSelect, () => api(`/api/admin/users/${user.id}`, { method: "PATCH", body: { role: roleSelect.value } }), "Role updated");
+      if (self) location.reload();
+      else { loadUsers(); loadAudit(); }
+    });
     body.append(h("tr", {},
       h("td", {}, h("b", { text: user.username }), self ? h("span", { class: "muted", text: " (you)" }) : null),
-      h("td", {}, h("span", { class: `tag ${user.role === "admin" ? "accent" : ""}`, text: user.role })),
+      h("td", {}, roleSelect),
       h("td", { text: dateTime(user.created_at) }),
       h("td", { style: "text-align:right" }, del)));
   }
