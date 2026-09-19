@@ -136,6 +136,9 @@ class Settings:
     # The ML repair sweep (4.22) stays off: its model predicted ~99% failure for
     # every component and queued every bay and fan at once (4.31).
     ml_predictive_repairs: bool
+    # A gate repair not finished after this many simulated seconds is treated
+    # as stuck and gives up the one repair slot (4.35). Real repairs: 50-160 s.
+    gate_repair_stuck_s: float
     # Night lights (4.29): a zone stays lit this many simulated seconds after
     # its last moving car. 0 = dark as soon as the last car parks (4.30).
     light_hold_s: float
@@ -261,6 +264,7 @@ class Settings:
             spot_preventive_parks=_env_int("SPOT_PREVENTIVE_PARKS", 9),
             gate_repair_min_opens=_env_int("GATE_REPAIR_MIN_OPENS", 1),
             ml_predictive_repairs=_env_bool("ML_PREDICTIVE_REPAIRS", False),
+            gate_repair_stuck_s=_env_float("GATE_REPAIR_STUCK_S", 400.0),
             light_hold_s=_env_float("LIGHT_HOLD_S", 0.0),
             wear_runtime_threshold_s=_env_float("WEAR_RUNTIME_THRESHOLD_S", 36000.0),
 

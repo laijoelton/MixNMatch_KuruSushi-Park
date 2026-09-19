@@ -328,6 +328,16 @@ async def _advance_zone_maintenance() -> None:
         if (exit_gate in info["todo"] and (entry not in info["todo"] or not entry)
                 and exit_gate not in _gates_in_use()):
             await _queue_repair("BarrierGate", exit_gate, via_zone=True)
+        # 4.34: shut for the first repair; back on automatic as soon as the
+        # second (last) gate's repair has started.
+        if len(info["todo"]) == 1:
+            last = next(iter(info["todo"]))
+            barrier = state.barriers.get(last)
+            if last in state.pending_repairs or (barrier and barrier.under_maintenance):
+                if not info.get("reopened"):
+                    info["reopened"] = True
+                    state.log_activity(f"{zone} back on automatic while {last} is repaired",
+                                       capability="logs:view_maint")
 
 
 
@@ -339,11 +349,42 @@ async def _advance_zone_maintenance() -> None:
 # Ranking by wear staggers the repairs instead of letting gates come due
 # together. The main gate is never repaired preventively (operator-only).
 # --------------------------------------------------------------------------- #
+_repair_seen_at: dict[str, float] = {}   # gate -> when we first saw it under repair
+
+
 def _gate_repair_slot_holder() -> Optional[str]:
+    """The gate holding the one repair slot. A repair still unfinished after
+    GATE_REPAIR_STUCK_S is declared stuck and no longer holds it (4.35). The
+    clock starts when we first see the gate under repair: a level can load with
+    a gate already half-repaired, and never finish it."""
+    now = time.monotonic()
+    limit = settings.gate_repair_stuck_s / max(settings.game_speed, 0.1)
     for name, barrier in state.barriers.items():
-        if barrier.under_maintenance or name in state.pending_repairs:
-            return name
+        if not (barrier.under_maintenance or name in state.pending_repairs):
+            _repair_seen_at.pop(name, None)
+            continue
+        if name in state.stuck_repairs:
+            continue
+        if barrier.under_maintenance and now - _repair_seen_at.setdefault(name, now) > limit:
+            _mark_repair_stuck(name)
+            continue
+        return name
     return None
+
+
+def _mark_repair_stuck(name: str) -> None:
+    state.stuck_repairs.add(name)
+    state.pending_repairs.pop(name, None)
+    state.log_activity(f"{name}: the simulator accepted its repair but has not finished it in "
+                       f"{settings.gate_repair_stuck_s:.0f} s - releasing the repair slot; check the simulator",
+                       level="error", capability="logs:view_maint")
+    log.error("gate repair stuck: %s", name)
+    for zone, info in list(state.zone_maintenance.items()):
+        info["todo"].discard(name)
+        if not info["todo"]:
+            state.zone_maintenance.pop(zone, None)
+            state.log_activity(f"{zone} maintenance ended: its remaining repair is stuck",
+                               level="warn", capability="logs:view_maint")
 
 
 async def _schedule_gate_repairs() -> None:
@@ -425,6 +466,7 @@ async def _on_level_loaded(level: str) -> None:
     _waiting_at.clear()
     _holding_gate.clear()
     _last_motion.clear()
+    _repair_seen_at.clear()
     db.reset_live_level()
     dropped = state.reset_for_new_level()
     announce_level(level)
@@ -921,7 +963,9 @@ async def dispatch_entry(plate: str, gate_name: str, car_type: str = "Normal",
         candidates = accessible or candidates
     # A zone closed for gate maintenance takes no new cars (4.26); the car
     # waits rather than being turned away if every suitable zone is closed.
-    open_candidates = [n for n in candidates if state.spots[n].zone_parent not in state.zone_maintenance]
+    open_candidates = [n for n in candidates
+                       if state.spots[n].zone_parent not in state.zone_maintenance
+                       or state.zone_maintenance[state.spots[n].zone_parent].get("reopened")]
     if candidates and not open_candidates:
         return {"plate": plate, "gate": gate_name, "target": None, "dispatched": False,
                 "reason": "Zone closed for maintenance"}
@@ -2052,6 +2096,15 @@ async def _handle_component_fixed(payload: dict[str, Any]) -> None:
             await _handle_carbon_monoxide_event({"ZoneName": zone.name,
                 "CarbonMonoxideLevel": zone.gas_co_level, "DangerLevel": zone.danger_level})
     elif component_type == "BarrierGate":
+        state.stuck_repairs.discard(name)
+        _repair_seen_at.pop(name, None)
+        barrier = state.barriers.get(name)
+        if (barrier is not None and _zone_of_gate(name) and not barrier.operator_open
+                and name not in _gates_in_use()):
+            # 4.34: keep the repaired gate shut. The simulator does not always
+            # report the gate's position after a repair, so do not trust ours.
+            if await act(f"close {name} after its repair", lambda: client.barrier_close(name)):
+                state.update_barrier_state(name, "Closing")
         for zone, info in list(state.zone_maintenance.items()):
             info["todo"].discard(name)
             if not info["todo"]:

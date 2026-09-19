@@ -7,6 +7,7 @@ ratio; that zone's entry gate opens for it and closes once it has parked.
 """
 import asyncio
 import dataclasses
+import time
 
 import pytest
 
@@ -76,6 +77,8 @@ def lvl2(monkeypatch):
     main._waiting_at.clear()
     main._holding_gate.clear()
     state.zone_maintenance.clear()
+    state.stuck_repairs.clear()
+    main._repair_seen_at.clear()
     for name, zone in (("gate1", "ZONE1"), ("gate2", ""), ("gate3", "ZONE2"), ("gate4", "ZONE2"),
                        ("gate5", "ZONE3"), ("gate6", "ZONE3"), ("gate7", "")):
         state.barriers[name] = Barrier(name, zone_parent=zone)
@@ -514,3 +517,60 @@ def test_gate_auto_route_is_staff_only():
     from app import policy
     assert policy.allowed({"role": "facility_operator"}, "/api/barriers/gate4/auto", "POST")
     assert not policy.allowed({"role": "auditor"}, "/api/barriers/gate4/auto", "POST")
+
+
+# --------------------------------------------------------------------------- #
+# 4.34: the zone stays shut through its first repair, then goes back to
+# automatic as soon as its second gate's repair starts.
+# --------------------------------------------------------------------------- #
+def test_zone_is_shut_for_the_first_repair_and_automatic_during_the_second(lvl2):
+    _fill("ZONE3", ["P69", "P70"])
+    _fill("ZONE1", ["S1"])
+    asyncio.run(main._queue_repair("BarrierGate", "gate5"))
+    assert _in_repair() == ["gate5"]
+    assert asyncio.run(main.dispatch_entry("ZON 040", "ENTRY1", "Normal"))["target"] == "S1", "ZONE3 shut"
+
+    lvl2.clear()
+    asyncio.run(main._handle_component_fixed({"Type": "BarrierGate", "Name": "gate5"}))
+    assert ("close", "gate5") in lvl2, "the repaired entry gate is closed outright, whatever we last saw"
+    assert _in_repair() == ["gate6"], "second gate's repair has started"
+    result = asyncio.run(main.dispatch_entry("ZON 041", "ENTRY1", "Normal"))
+    assert result["target"] in {"P69", "P70"}, "ZONE3 is back on automatic while gate6 is repaired"
+
+
+# --------------------------------------------------------------------------- #
+# 4.35: a repair that never finishes must not hold the one repair slot forever.
+# gate1 loaded half-repaired from a saved lvl2.json (progress frozen at 221) and
+# blocked every other gate repair while gate3, gate4 and gate6 kept breaking.
+# --------------------------------------------------------------------------- #
+def test_a_stuck_repair_gives_up_the_slot_so_broken_gates_get_repaired(lvl2, monkeypatch):
+    monkeypatch.setattr(main, "settings", dataclasses.replace(main.settings, gate_repair_stuck_s=400.0))
+    _fill("ZONE1", ["S1"])
+    _fill("ZONE2", ["bay36"])
+    state.barriers["gate1"].under_maintenance = True          # e.g. restored half-repaired
+    main._repair_seen_at["gate1"] = time.monotonic() - 60      # 60 s wall = 480 s simulated at speed 8
+    asyncio.run(main._handle_component_broken({"Type": "BarrierGate", "Name": "gate3"}))
+    assert "gate1" in state.stuck_repairs
+    assert "gate3" in state.pending_repairs, "the broken gate is no longer blocked"
+    assert any(b["name"] == "gate1" and b["repair_stuck"] for b in state.snapshot()["barriers"])
+
+
+def test_a_repair_still_within_its_time_keeps_the_slot(lvl2, monkeypatch):
+    monkeypatch.setattr(main, "settings", dataclasses.replace(main.settings, gate_repair_stuck_s=400.0))
+    _fill("ZONE2", ["bay36"])
+    state.barriers["gate1"].under_maintenance = True
+    main._repair_seen_at["gate1"] = time.monotonic() - 5        # 40 s simulated: a normal repair
+    asyncio.run(main._handle_component_broken({"Type": "BarrierGate", "Name": "gate3"}))
+    assert "gate3" not in state.pending_repairs and not state.stuck_repairs
+
+
+def test_a_stuck_gate_ends_its_zone_maintenance_and_clears_when_fixed(lvl2, monkeypatch):
+    monkeypatch.setattr(main, "settings", dataclasses.replace(main.settings, gate_repair_stuck_s=400.0))
+    _fill("ZONE1", ["S1"])
+    state.zone_maintenance["ZONE1"] = {"entry": "gate1", "exit": "gate2", "trigger": "t", "todo": {"gate1"}}
+    state.barriers["gate1"].under_maintenance = True
+    main._repair_seen_at["gate1"] = time.monotonic() - 60
+    asyncio.run(main._schedule_gate_repairs())
+    assert "ZONE1" not in state.zone_maintenance, "the rotation must be able to move on"
+    asyncio.run(main._handle_component_fixed({"Type": "BarrierGate", "Name": "gate1"}))
+    assert "gate1" not in state.stuck_repairs

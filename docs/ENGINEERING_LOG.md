@@ -1191,6 +1191,77 @@ Two older tests encoded "queued repair refuses staff" and "worker raises for a
 held gate". They were updated to the new rule, with the same outcome: a held
 gate is never repaired. Full suite: **254 passed**.
 
+### 4.34 Zone shut for the first repair, automatic during the second (20 September 2026)
+
+**Requirement:** during a zone's maintenance, keep the gate closed through the
+first repair, and return the zone to automatic when the second gate's repair
+starts.
+
+**Fix:**
+- After a zone gate's `component_fixed`, the dispatcher sends `close` outright,
+  unless staff hold it open or a car still needs it. It does not rely on our
+  cached position: after gate1's repair on 20 September the simulator sent no
+  gate event at all.
+- `_advance_zone_maintenance` sets `reopened` once only one gate is left and its
+  repair is queued or running. Dispatch then accepts the zone again. The
+  maintenance record stays until that last gate is fixed, so the rotation does
+  not move on early.
+- Snapshot and alert show "ZONE3: last gate being repaired — taking cars again".
+
+**Also re-checked, not changed:** every entry-gate open in the latest run (14 of
+14) was followed by a goto for a car of that gate's own zone. None was for a car
+of another zone. A gate that "opens as another zone's car passes" is opening for
+a car of its own zone that was just dispatched at ENTRY1. The route is planned
+when the goto is sent, so the gate must be open then (4.20, 4.27).
+
+**Verification:** ZONE3 stays shut during gate5's repair and the next car goes to
+ZONE1. On gate5's fix, `close gate5` is sent and gate6's repair starts, and the
+next car may go to ZONE3 again. Full suite: **255 passed**.
+
+### 4.35 Gate stuck with a wrench and no timer; every other gate repair blocked (20 September 2026)
+
+**Symptom:** in the simulator, gate1 showed a repair wrench with no countdown
+timer. Meanwhile gate3, gate4 and gate6 kept breaking and were not repaired:
+`component_events` has no gate fix after 19:37, but gate3 broke at 19:40, 19:47
+and 19:54, gate6 at 19:44 and 19:49, and gate4 at 19:49.
+
+**Root cause, two layers:**
+1. **Saved level state.** The simulator writes live state back into
+   `settings/lvl2.json` (gate positions, `IsRepairRequested`, `RepairProgress`).
+   A copy with **gate1 `IsRepairRequested: true`, `RepairProgress: 221.0491158`**
+   was committed in `b2b33af`. The clean file in `5f59f9a` has `false` / `0`.
+   Every level load therefore started gate1 half-repaired, with its progress
+   frozen. A fresh repair request (simulator log line 788, HTTP 201) never moved
+   it either: no "has been repaired" followed in the next 6,000 lines.
+2. **Our slot.** 4.28's one-repair-slot counted gate1 as the holder for ever, so
+   every other gate repair waited behind a repair that would never finish.
+
+**Fix:**
+- `sim_levels/lvl1-3.json` hold the clean level files from `5f59f9a`. START.bat
+  copies them into the simulator's `settings\` before each launch, so saved
+  live state can never carry over. `settings/lvl2.json` is restored in the
+  working tree. **Do not commit the simulator's `settings/lvl*.json` after a run.**
+- `_gate_repair_slot_holder` starts a clock when it first sees a gate under
+  repair, whether we started the repair or it loaded that way. After
+  `GATE_REPAIR_STUCK_S` (400 simulated s; real repairs take 50–160 s)
+  `_mark_repair_stuck`:
+  - frees the slot;
+  - drops the gate from its zone maintenance, ending it if nothing else is left,
+    so the rotation moves on;
+  - logs an error, and the dashboard shows "Gate gate1 repair is not
+    progressing".
+
+  A later `component_fixed` clears the flag. A level load resets it.
+
+**Verification:**
+- a stuck gate1 releases the slot and a broken gate3 is queued;
+- a repair within its time keeps the slot;
+- a stuck gate ends its zone maintenance, and the flag clears on fix;
+- the exact START.bat copy line, run in `cmd`, replaced a stale `lvl2.json` with
+  the clean one.
+
+Full suite: **258 passed**.
+
 ---
 
 ## 5. Edge cases and how they are handled
@@ -1215,7 +1286,7 @@ gate is never repaired. Full suite: **254 passed**.
 | A zone's entry gate is held, broken or under repair | That zone is skipped and the car goes to the next-lowest-ratio zone. If every suitable zone is blocked, the car waits (`Held closed by operator` / `Barrier unavailable`) and is not turned away (4.18) |
 | A plate returns (plates are recycled from `settings/plates.txt`) | EntrySpot `CarIn` for a session that already parked/exited/was billed archives it and starts a fresh visit; a car still driving to its bay keeps its session (4.19) |
 | A level is (re)loaded in the simulator | Console `Load Game` line → previous level's live sessions, holds and model dropped, one sync, all gates closed (4.19) |
-| A zone gate needs repair (broken or preventive) | One zone in maintenance at a time, in rotation: closed to new cars, entry gate repaired once nobody is driving in, then the exit gate straight away; reopens when both are fixed. A gate breaking in another zone is repaired first but does not close its zone (4.26, 4.32) |
+| A zone gate needs repair (broken or preventive) | One zone in maintenance at a time, in rotation: closed to new cars for the first repair (the repaired gate is closed outright), back on automatic as soon as the second gate's repair starts. A gate breaking in another zone is repaired first but does not close its zone (4.26, 4.32, 4.34) |
 | A car reaches an exit without an entry scan (unknown, or appeared in a bay) | Ghost car: exit held, billed automatically with the ML fee; the gate is ringed orange and staff press Open on it to let the car out (4.25, 4.33) |
 | Staff open or close a gate from the dashboard | Staff win: the gate is held open or held closed until staff press Automatic. The automation (idle close, rotation, exit holds) never moves it, and a queued repair is cancelled. Only a broken gate or one under repair refuses (4.33) |
 | Admin clears a page's records (red dustbin on History / Payments / Penalties) | `DELETE /api/admin/data/{history,payments,penalties}`, gated by the admin-only `admin:reset` capability (other roles get `403`; the icon is hidden via `data-cap`). History deletes `sessions` + `neglected_vehicles`; Payments deletes `payments`; Penalties deletes `penalties` and zeroes the in-memory fine counters. `active_sessions`/live sessions are never touched — clearing them mid-run would lose billing state and cause `CarEscapedWithoutPaying`. `events` is never touched — it is the `EventId` de-duplication record. Every clear is written to the audit log with the row count |
@@ -1241,6 +1312,7 @@ Everything lives in `.env` (see `.env.example`). The ones that matter:
 | `SEED_FROM_LEVEL` | `lvl1` in code, empty in `.env`/`.env.example` | **Keep empty.** When set, the dashboard shows that level's map while no level is running, which is how a Level 1 map appeared before Level 2 was clicked (4.19) |
 | `ENTRY_GATE_CLOSE_DELAY_S` | `1.5` | Simulated seconds after a car leaves its zone sensor before the zone gate closes behind it (4.21) |
 | `CO_FAN_OFF_THRESHOLD` | `15` | Fans run from above `CO_FAN_ON_THRESHOLD` (50) until below this (4.23) |
+| `GATE_REPAIR_STUCK_S` | `400` | A gate repair not finished after this many simulated seconds is flagged stuck and frees the repair slot (4.35) |
 | `ML_PREDICTIVE_REPAIRS` | `false` | **Keep false.** The ML repair sweep predicted ~99% failure for everything and queued every bay and fan (4.31) |
 | `GATE_REPAIR_MIN_OPENS` | `1` | Zones are maintained in rotation, one at a time; a zone whose gates have fewer opens than this since repair is skipped (4.28, 4.32) |
 | `LIGHT_HOLD_S` | `0` | At night a zone stays lit this many simulated seconds after its last moving car; 0 = dark as soon as it parks (4.29, 4.30) |

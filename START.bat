@@ -89,6 +89,10 @@ if not errorlevel 1 (
   REM was loaded, and the dispatcher follows that file to reset for it.
   if not exist data mkdir data
   if exist "data\simulator.log" del "data\simulator.log" >nul 2>&1
+  REM Start every run from clean level files. The simulator saves live state -
+  REM gate positions and half-finished repairs - back into settings\lvl*.json,
+  REM and a saved half-repair never finishes on the next load: log 4.35.
+  if exist "sim_levels\lvl2.json" copy /y "sim_levels\lvl*.json" "ParkingSimulator-win-x64\ParkingSimulator-win-x64\settings\" >nul
   start "Grand Park Auto Simulator" /D "ParkingSimulator-win-x64\ParkingSimulator-win-x64" powershell -NoProfile -ExecutionPolicy Bypass -Command "& '.\ParkingSimulator.exe' | Tee-Object -FilePath '%CD%\data\simulator.log'"
   call :sleep 4
   tasklist /fi "imagename eq ParkingSimulator.exe" 2>nul | findstr /i /c:"ParkingSimulator.exe" >nul

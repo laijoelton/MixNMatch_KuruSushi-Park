@@ -248,6 +248,8 @@ class ParkingState:
         # Zones closed for gate maintenance (4.26):
         # zone -> {"entry", "exit", "trigger", "todo": gates still to repair}
         self.zone_maintenance: dict[str, dict[str, Any]] = {}
+        # Gates whose repair the simulator accepted but never finished (4.35).
+        self.stuck_repairs: set[str] = set()
         self.penalty_count: int = 0
         self.total_fines: float = 0.0
         self.penalty_log: deque = deque(maxlen=200)
@@ -803,7 +805,7 @@ class ParkingState:
             dropped = len(self.sessions)
             for table in (self.sessions, self.active_dispatches, self.spots, self.barriers, self.zones,
                           self.fans, self.lights, self.pending_repairs, self.deferred_repairs,
-                          self.zone_maintenance):
+                          self.zone_maintenance, self.stuck_repairs):
                 table.clear()
             self.neglected_vehicles.clear()
             return dropped
@@ -874,6 +876,7 @@ class ParkingState:
                      "operator_override": b.operator_override,
                      "operator_open": b.operator_open,
                      "held_plates": sorted(b.held_vehicles),
+                     "repair_stuck": b.name in self.stuck_repairs,
                      "hold_reason": "Held closed by operator" if b.operator_override else
                                     "Held open by operator" if b.operator_open else
                                     "Vehicle awaiting clearance" if b.held_vehicles else ""}
@@ -911,7 +914,8 @@ class ParkingState:
                 "activity": list(self.activity_log)[:30],
                 "neglected_vehicles": list(self.neglected_vehicles),
                 "zone_maintenance": {zone: {"entry": info["entry"], "exit": info["exit"],
-                                            "trigger": info["trigger"], "todo": sorted(info["todo"])}
+                                            "trigger": info["trigger"], "todo": sorted(info["todo"]),
+                                            "reopened": bool(info.get("reopened"))}
                                      for zone, info in self.zone_maintenance.items()},
                 "deferred_repairs": dict(self.deferred_repairs),
                 "last_sequence_id": self.last_sequence_id,
