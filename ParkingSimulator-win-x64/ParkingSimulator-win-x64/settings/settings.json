@@ -1,5 +1,5 @@
 {
-  "TeamName": "Mix_and_Match",
+  "TeamName": "Mix and Match",
   "ListenAddress": "http://0.0.0.0:9898",
   "WebhookUrl": "http://127.0.0.1:8080/webhooks/simulator",
   "ParkingSpeedMuliplier": 1,
