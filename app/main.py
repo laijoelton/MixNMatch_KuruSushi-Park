@@ -37,7 +37,7 @@ from app.client import client
 from app.config import settings
 from app.layout import announce_level, load_layout, running_level
 from app.queue_worker import maintenance_queue, schedule_lights
-from app.routing import load_distance_table, rank_spots, ring
+from app.routing import load_distance_table, rank_spots
 from app.seed import load_level
 from app.signature import verify as verify_signature_recipes
 from app.state import Barrier, BarrierPosition, SessionPhase, VehicleSession, SpotStatus, normalize_car_type, state
@@ -707,7 +707,6 @@ async def sync_from_simulator() -> dict[str, int]:
         gate = _barrier_for_sensor(row["gate"] or "")
         if gate:
             state.barriers[gate].held_vehicles.add(row["plate"])
-    ring.rebuild(list(state.spots.keys()) + list(state.barriers.keys()))
     global _live_bays_synced
     if any(s.get("purpose") == "Park" for s in spots):
         _live_bays_synced = True
@@ -862,15 +861,14 @@ async def lifespan(app: FastAPI):
                 state.load_zones(seeded["zones"])
                 state.load_fans(seeded["fans"])
                 state.load_lights(seeded["lights"])
-                ring.rebuild(list(state.spots.keys()) + list(state.barriers.keys()))
                 log.warning("running on SEEDED layout from %s - NOT live simulator state",
                             settings.seed_from_level)
 
     if load_distance_table():
         log.info("routing: using precomputed driving distances (data/distances.json)")
     else:
-        log.warning("routing: no data/distances.json - falling back to the name-ordered "
-                    "synthetic ring, which is NOT physical distance")
+        log.info("routing: no data/distances.json - will use Euclidean distance from coordinates "
+                 "or stable alphabetical order as fallback")
 
     log.info("autopilot=%s  signature_mode=%s  game_speed=%sx",
              settings.autopilot, settings.webhook_signature_mode, settings.game_speed)
