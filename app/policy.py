@@ -40,7 +40,7 @@ _routes("GET", ("/login", "/gate", "/healthz", "/favicon.ico", "/api/gate/bays",
 _routes("POST", ("/api/auth/login", "/webhooks/simulator", "/api/gate/checkin"))
 _routes("GET", ("/api/me",), "authenticated")
 _routes("POST", ("/api/auth/logout",), "authenticated")
-_routes("GET", ("/", "/dashboard", "/api/state", "/api/spots", "/api/gates", "/api/layout", "/api/twin", "/api/stats", "/reports", "/api/reports/daily", "/api/ghost-cars"), "ops:view")
+_routes("GET", ("/", "/dashboard", "/api/state", "/api/spots", "/api/gates", "/api/layout", "/api/twin", "/api/stats", "/reports", "/api/reports/daily", "/api/ghost-cars", "/ml-insights"), "ops:view")
 _routes("WEBSOCKET", ("/ws/live", "/ws/telemetry"), "ops:view")
 _routes("GET", ("/history", "/api/history", "/api/history/search", "/api/history/timeline"), "ops:view")
 _routes("GET", ("/payments", "/api/payments", "/penalties", "/api/penalties"), "fin:view")
@@ -130,6 +130,8 @@ def project_snapshot(payload: dict, user: dict) -> dict:
     if "maint:view" not in caps:
         for key in ("wear", "deferred_repairs", "maintenance_queue", "fans", "lights"):
             result.pop(key, None)
+        if "ml_insights" in result:
+            result["ml_insights"] = {k: v for k, v in result["ml_insights"].items() if k != "components"}
     # Free-form messages are explicitly classified when recorded, never inspected heuristically.
     if "activity" in result:
         result["activity"] = [a for a in result["activity"]

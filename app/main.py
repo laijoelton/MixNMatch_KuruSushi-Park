@@ -163,6 +163,7 @@ _holding_gate: dict[str, str] = {}  # plate -> zone entry gate opened for it, un
 _entry_watchers: set[asyncio.Task] = set()
 _dispatch_tasks: dict[str, asyncio.Task] = {}
 _webhook_events_in_progress: set[str] = set()
+_co_warned_zones: set[str] = set()  # zones with an unresolved PREDICTIVE_CO_WARNING broadcast
 
 
 async def _wait_for_barrier_open(name: str) -> bool:
@@ -831,6 +832,7 @@ async def _broadcast_loop() -> None:
             snapshot["server_time"] = time.time()
             snapshot["ws_clients"] = manager.count
             snapshot["maintenance_queue"] = maintenance_queue.stats
+            snapshot["ml_insights"] = ml_agent.latest_insights()
             await manager.broadcast(snapshot)
         except Exception:  # noqa: BLE001 - the broadcaster must never die
             log.exception("broadcast tick failed")
@@ -878,7 +880,8 @@ async def lifespan(app: FastAPI):
     wear_checker = asyncio.create_task(_wear_check_loop(), name="dispatcher-wear-check")
     environment = asyncio.create_task(_environment_loop(), name="dispatcher-environment")
     predictive = asyncio.create_task(
-        ml_agent.run_predictive_loop(wear_snapshot=state.wear_snapshot, queue_repair=_queue_repair),
+        ml_agent.run_predictive_loop(wear_snapshot=state.wear_snapshot, queue_repair=_queue_repair,
+                                      broadcast=manager.broadcast),
         name="dispatcher-ml-predictive",
     )
     background_tasks = (broadcaster, wear_checker, environment, predictive)
@@ -1363,6 +1366,14 @@ async def ghost_car_override(ghost_id: int,
     db.resolve_ghost_car(ghost_id, user["username"])
     auth.record_audit(user["username"], "POST", "/api/ghost-car/override", 200, plate,
                       {"before": {"resolved": False}, "after": {"resolved": True, "invoice_attempted": True}})
+    try:
+        await manager.broadcast({
+            "type": "alert", "alert_type": "GHOST_CAR_RESOLVED",
+            "plate": plate, "ghost_id": ghost_id, "fallback_charge": session.expected_parking,
+            "resolved_by": user["username"], "server_time": time.time(),
+        })
+    except Exception:  # noqa: BLE001 - a broadcast failure must not fail the override
+        log.exception("failed to broadcast ghost-car resolution for %s", plate)
     return {"ok": sent, "ghost_id": ghost_id, "plate": plate, "awaiting_payment": True}
 
 
@@ -1978,8 +1989,13 @@ async def _handle_ghost_car(plate: str, exit_spot: str, payload: dict[str, Any])
     its exit barrier is held closed, and a payment does NOT release it: staff
     release it from the dashboard banner (POST /api/ghost-cars/{id}/release).
     """
+    confidence = None
+    median_duration = None
     try:
-        fee = ml_agent.ghost_car_anomaly_imputation(plate, payload.get("CarType", "Normal"))
+        imputed = ml_agent.ghost_car_anomaly_imputation(plate, payload.get("CarType", "Normal"))
+        fee = imputed["imputed_fee"]
+        confidence = imputed["confidence_score"]
+        median_duration = imputed["median_duration"]
     except Exception:  # noqa: BLE001 - the hold must proceed even if imputation fails
         log.exception("ghost_car_anomaly_imputation failed for %s; using median/flat fallback", plate)
         fee = db.median_parking_cost()
@@ -2003,7 +2019,8 @@ async def _handle_ghost_car(plate: str, exit_spot: str, payload: dict[str, Any])
     log.error("GHOST CAR %s at %s (ghost_id=%d, fee=%.2f) - invoiced and held for staff",
               plate, exit_spot, ghost_id, fee)
     _spawn(_invoice_ghost(plate))
-    await _broadcast_ghost(ghost_id, plate, exit_spot)
+    await _broadcast_ghost(ghost_id, plate, exit_spot, fallback_charge=fee,
+                           confidence_score=confidence, median_duration=median_duration)
 
 
 async def _invoice_ghost(plate: str) -> None:
@@ -2041,11 +2058,13 @@ def _ghost_status(plate: str) -> dict[str, Any]:
             "payment_received": bool(session and session.paid)}
 
 
-async def _broadcast_ghost(ghost_id: int, plate: str, gate: Optional[str], *, resolved: bool = False) -> None:
+async def _broadcast_ghost(ghost_id: int, plate: str, gate: Optional[str], *, resolved: bool = False,
+                           **ml_detail: Any) -> None:
     try:
         await manager.broadcast({
             "type": "alert", "alert_type": "GHOST_CAR_RESOLVED" if resolved else "UNREGISTERED_VEHICLE_EXIT",
             "plate": plate, "gate": gate, "ghost_id": ghost_id, **_ghost_status(plate),
+            **ml_detail,   # main's ML toast detail: fallback_charge, confidence_score, median_duration
             "server_time": time.time(),
         })
     except Exception:  # noqa: BLE001 - a broadcast failure must not lose the hold
@@ -2118,15 +2137,33 @@ async def _handle_carbon_monoxide_event(payload: dict[str, Any]) -> None:
     zone_name = payload["ZoneName"]
     co_level = float(payload.get("CarbonMonoxideLevel", 0.0))
     danger_level = payload.get("DangerLevel", "Safe")
+    history = state.co_history(zone_name)  # before this reading is recorded below
     state.update_zone(zone_name, co_level, danger_level)
     state.log_activity(f"CO {danger_level} in {zone_name} ({co_level:.1f})",
                        level="warn" if danger_level in ("High", "Critical") else "info")
     log.warning("CO event in %s: level=%.2f danger=%s", zone_name, co_level, danger_level)
 
-    # Fixed hysteresis (4.23): ON above CO_FAN_ON_THRESHOLD (50), then keep
-    # ventilating down to CO_FAN_OFF_THRESHOLD (15). The wide band leaves
-    # headroom for a fan to be repaired before CO climbs back to 50. This
-    # replaces the occupancy-dependent ML edges merged from main (4.22).
+    # The ML forecast (main, 4.22) still runs for the insights page and the
+    # early CO warning, but it does not switch the fans. Fans use the fixed
+    # hysteresis the team chose in 4.23: ON above CO_FAN_ON_THRESHOLD (50),
+    # then ventilate down to CO_FAN_OFF_THRESHOLD (15). See 4.36.
+    zone_ratio = state.occupancy_ratio(zone_name)
+    forecast = ml_agent.co_ventilation_analysis(co_level, zone_ratio, history)
+    ml_agent.record_ventilation_insight(zone_name, forecast)
+    if forecast["minutes_to_threshold"] <= ml_agent.CO_WARNING_MINUTES:
+        if zone_name not in _co_warned_zones:
+            _co_warned_zones.add(zone_name)
+            try:
+                await manager.broadcast({
+                    "type": "alert", "alert_type": "PREDICTIVE_CO_WARNING",
+                    "zone": zone_name, "minutes_to_threshold": forecast["minutes_to_threshold"],
+                    "predicted_ppm": forecast["predicted_ppm"], "server_time": time.time(),
+                })
+            except Exception:  # noqa: BLE001 - a broadcast failure must not lose the warning
+                log.exception("failed to broadcast CO warning for %s", zone_name)
+    else:
+        _co_warned_zones.discard(zone_name)
+
     for fan_name in state.fans_in_zone(zone_name):
         fan = state.fans[fan_name]
         if fan.broken or fan.under_maintenance or fan_name in state.pending_repairs:

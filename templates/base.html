@@ -35,6 +35,10 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 3v18h18"/><path d="M7 15l4-5 3 3 5-7"/></svg>
         Reports
       </a>
+      <a href="/ml-insights" class="rail-link {% if active == 'ml-insights' %}is-active{% endif %}" {% if active == 'ml-insights' %}aria-current="page"{% endif %}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 2a7 7 0 0 0-7 7c0 2.5 1.2 4 2.2 5.2.6.7 1 1.3 1 2.3v1.5h7.6v-1.5c0-1 .4-1.6 1-2.3C17.8 13 19 11.5 19 9a7 7 0 0 0-7-7z"/><path d="M9.5 21h5"/></svg>
+        ML Insights
+      </a>
       <a href="/tariffs" class="rail-link" data-cap="fin:view" hidden>Tariffs</a>
       <a href="/logs" class="rail-link">Logs</a>
     </nav>
@@ -51,6 +55,16 @@
           <span id="level-pill" class="pill plain" hidden></span>
         </div>
         <div class="topbar-spacer"></div>
+        <div class="bell-wrap">
+          <button id="ml-bell-btn" class="btn ghost icon bell-btn" type="button" aria-label="Notifications" title="Notifications">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+            <span id="ml-bell-badge" class="bell-badge" hidden>0</span>
+          </button>
+          <div id="ml-bell-popover" class="bell-popover" hidden>
+            <div class="bell-popover-head">Notifications</div>
+            <div id="ml-bell-list" class="bell-list"></div>
+          </div>
+        </div>
         <button id="palette-btn" class="search-btn" type="button">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
           <span>Plate, bay, gate…</span><kbd>Ctrl K</kbd>

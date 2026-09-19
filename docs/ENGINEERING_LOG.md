@@ -1262,6 +1262,33 @@ and 19:54, gate6 at 19:44 and 19:49, and gate4 at 19:49.
 
 Full suite: **258 passed**.
 
+### 4.36 Merging main (PRs #5, #6: ML insights, bell/toasts, CO guardrails) into simdev (20 September 2026)
+
+**Conflicts and how they were resolved:**
+- **Fan switching (the one real decision).** main's `co_guardrails` (`2b8a673`)
+  switches fans by an occupancy-dependent ML forecast with a hard ON ceiling of
+  45 ppm. simdev switches on the fixed rule requested in 4.23: ON above 50, OFF
+  below 15.
+  - Resolved to **the fixed 50/15 rule**, the team's explicit requirement.
+  - main's forecast still runs every CO reading for the ML insights page and the
+    early `PREDICTIVE_CO_WARNING` toast, but it does not start fans. The toast
+    text no longer claims "fan starting early".
+  - *If the team prefers the 45 ppm guardrail, revisit here.*
+- **ML repair sweep.** Took main's sweep body (insights, maintenance warnings)
+  into `predictive_sweep_once`, keeping 4.31's gate. It queues repairs only with
+  `ML_PREDICTIVE_REPAIRS=true`, and never gates (4.28).
+  - With the current history main's model gives about 0.69 failure probability,
+    below its 0.90 trigger. A probe of 8 components produced 1 maintenance
+    warning, so no toast flood.
+- **Ghost cars.** main's imputation now returns
+  `{imputed_fee, confidence_score, median_duration}`. simdev uses `imputed_fee`
+  and forwards the other fields on its ghost broadcasts for main's toasts. The
+  red banner stays replaced by the orange gate ring (4.33); main's toast/bell
+  handler for `PREDICTIVE_*` and `GHOST_CAR_RESOLVED` is kept.
+
+**Verification:** full suite on the merged tree: **258 passed**. Two simdev tests
+had stubbed main's old return types, a number, and were updated to the dicts.
+
 ---
 
 ## 5. Edge cases and how they are handled

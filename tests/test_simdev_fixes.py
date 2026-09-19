@@ -116,7 +116,8 @@ STAFF = {"username": "operator", "role": "facility_operator"}
 @pytest.fixture
 def ghost(sim, monkeypatch):
     monkeypatch.setattr(main, "settings", dataclasses.replace(main.settings, exit_charge_delay_s=0.0, min_dwell_time_s=0.0))
-    monkeypatch.setattr(main.ml_agent, "ghost_car_anomaly_imputation", lambda plate, car_type: 4.0)
+    monkeypatch.setattr(main.ml_agent, "ghost_car_anomaly_imputation",
+                        lambda plate, car_type: {"imputed_fee": 4.0, "confidence_score": 0.5, "median_duration": 3.0})
     state.barriers["gate6"] = Barrier("gate6", zone_parent="ZONE3", state=BarrierPosition.OPEN)
     monkeypatch.setattr(main, "_barrier_for_sensor", lambda sensor: "gate6" if sensor == "Exit100" else None)
     monkeypatch.setattr(main, "_persist", REAL_PERSIST)
@@ -316,7 +317,8 @@ def test_the_ml_sweep_queues_no_repairs_by_default(sim, monkeypatch):
     async def queue(component_type, name):
         queued.append(name)
 
-    monkeypatch.setattr(main.ml_agent, "repair_period_prediction", lambda *a: 0.99)
+    monkeypatch.setattr(main.ml_agent, "repair_period_prediction",
+                        lambda *a: {"needs_repair": True, "days_to_failure": 30, "failure_probability": 0.99})
     rows = [{"name": "PM9", "type": "ParkingSpot", "cycle_count": 0, "runtime_seconds": 0.0,
              "broken": False, "under_maintenance": False},
             {"name": "fan9", "type": "ExhaustFan", "cycle_count": 1, "runtime_seconds": 5.0,

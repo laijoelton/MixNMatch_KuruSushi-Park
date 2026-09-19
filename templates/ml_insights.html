@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}ML Insights{% endblock %}
+{% block heading %}ML Insights{% endblock %}
+{% block crumb %}Predictive telemetry · live-updated{% endblock %}
+{% block content %}
+<section class="panel" aria-labelledby="mi-vent-h">
+  <div class="panel-head"><h2 id="mi-vent-h">Ventilation forecast</h2></div>
+  <div class="table-wrap">
+    <table class="table">
+      <thead><tr><th>Zone</th><th>Forecast</th></tr></thead>
+      <tbody id="mi-ventilation"></tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel" data-cap="maint:view" hidden aria-labelledby="mi-comp-h">
+  <div class="panel-head"><h2 id="mi-comp-h">Component health</h2></div>
+  <div class="table-wrap">
+    <table class="table">
+      <thead><tr><th>Component</th><th>Type</th><th class="num">Days to failure</th><th class="num">Failure risk</th></tr></thead>
+      <tbody id="mi-components"></tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel" aria-labelledby="mi-anom-h">
+  <div class="panel-head"><h2 id="mi-anom-h">Anomaly log</h2></div>
+  <div class="table-wrap">
+    <table class="table">
+      <thead><tr><th>Plate</th><th>Gate</th><th class="num">Fee</th><th>Resolved</th></tr></thead>
+      <tbody id="mi-anomalies"></tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script type="module" src="/static/js/pages/ml_insights.js?v={{ asset_version }}"></script>
+{% endblock %}
