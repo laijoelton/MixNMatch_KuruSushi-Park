@@ -27,13 +27,14 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
-from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
-from app import db
+from app import auth, db
+from app.auth import SESSION_COOKIE, ROLE_ADMIN, SessionInfo
 from app.client import client
 from app.config import settings
 from app.layout import load_layout
@@ -279,16 +280,24 @@ async def dispatch_entry(plate: str, gate_name: str, car_type: str = "Normal",
                 "ranked_candidates": ranked[:10], "dispatched": False}
 
     if target is None:
-        state.log_activity(f"No available spot for {plate} at {gate_name} - lot full", level="error")
-        return {"plate": plate, "gate": gate_name, "target": None, "dispatched": False}
+        # Lot (or this car's zone/type) is genuinely full. Leaving the car
+        # idling at the entry earns Penalty_CarLeftFromEntryBecauseNeglected
+        # once the driver gives up - send it straight back out instead.
+        state.log_activity(f"No available spot for {plate} at {gate_name} - lot full, sending to leavepark",
+                           level="error")
+        await act(f"car {plate} -> leavepark (lot full)", lambda: client.car_goto(plate, "leavepark"))
+        state.complete_session(plate)
+        return {"plate": plate, "gate": gate_name, "target": None, "dispatched": False, "reason": "lot_full"}
 
     if not state.reserve_spot(target, plate):
         candidates = [c for c in state.available_spots(car_type=candidate_type) if c != target]
         ranked = rank_spots(gate_name, candidates)
         target = ranked[0][0] if ranked else None
         if target is None or not state.reserve_spot(target, plate):
-            state.log_activity(f"Failed to reserve any spot for {plate}", level="error")
-            return {"plate": plate, "gate": gate_name, "target": None, "dispatched": False}
+            state.log_activity(f"Failed to reserve any spot for {plate} - sending to leavepark", level="error")
+            await act(f"car {plate} -> leavepark (no reservable spot)", lambda: client.car_goto(plate, "leavepark"))
+            state.complete_session(plate)
+            return {"plate": plate, "gate": gate_name, "target": None, "dispatched": False, "reason": "lot_full"}
 
     state.assign_spot(plate, target)
     await act(f"open {gate_name} barrier for {plate}",
@@ -329,14 +338,82 @@ async def assign_specific_spot(plate: str, gate_name: str, spot_name: str,
 
 
 # --------------------------------------------------------------------------- #
+# Auth pages
+# --------------------------------------------------------------------------- #
+# Only the staff surfaces below (operator/admin dashboards, manual control
+# endpoints) sit behind login. The public driver portal (/gate) and its APIs
+# are deliberately left open - a walk-in driver has no staff account.
+def _require_page_user(request: Request) -> SessionInfo:
+    """Like auth.require_staff, but for HTML pages: redirect to /login
+    instead of a bare 401 JSON body a browser tab can't do anything with."""
+    info = auth.sessions.get(request.cookies.get(SESSION_COOKIE))
+    if info is None:
+        raise _LoginRedirect(str(request.url.path))
+    return info
+
+
+class _LoginRedirect(Exception):
+    def __init__(self, next_path: str) -> None:
+        self.next_path = next_path
+
+
+@app.exception_handler(_LoginRedirect)
+async def _login_redirect_handler(request: Request, exc: _LoginRedirect) -> RedirectResponse:
+    return RedirectResponse(f"/login?next={exc.next_path}", status_code=303)
+
+
+@app.get("/login", response_class=HTMLResponse, include_in_schema=False)
+async def login_page(request: Request, next: str = "/", error: Optional[str] = None):
+    if templates is None:
+        raise HTTPException(500, "templates directory missing")
+    existing = auth.sessions.get(request.cookies.get(SESSION_COOKIE))
+    if existing is not None:
+        return RedirectResponse(next or "/", status_code=303)
+    return templates.TemplateResponse(request, "login.html", {
+        "next": next, "error": error, "asset_version": str(int(time.time())),
+    })
+
+
+@app.post("/login", include_in_schema=False)
+async def login_submit(request: Request, username: str = Form(...), password: str = Form(...),
+                       next: str = Form("/")):
+    role = auth.authenticate(username.strip(), password)
+    if role is None:
+        return RedirectResponse(f"/login?next={next}&error=1", status_code=303)
+    session = auth.sessions.create(username.strip(), role)
+    state.log_activity(f"{username} ({role}) logged in")
+    response = RedirectResponse(next or "/", status_code=303)
+    response.set_cookie(SESSION_COOKIE, session.token, httponly=True, samesite="lax",
+                        max_age=int(settings.session_ttl_s))
+    return response
+
+
+@app.post("/logout", include_in_schema=False)
+async def logout(request: Request):
+    token = request.cookies.get(SESSION_COOKIE)
+    info = auth.sessions.get(token)
+    auth.sessions.destroy(token)
+    if info is not None:
+        state.log_activity(f"{info.username} ({info.role}) logged out")
+    response = RedirectResponse("/login", status_code=303)
+    response.delete_cookie(SESSION_COOKIE)
+    return response
+
+
+@app.get("/api/me")
+async def api_me(user: SessionInfo = Depends(auth.require_staff)) -> dict[str, Any]:
+    return {"username": user.username, "role": user.role}
+
+
+# --------------------------------------------------------------------------- #
 # Pages
 # --------------------------------------------------------------------------- #
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
-async def operator_dashboard(request: Request):
+async def operator_dashboard(request: Request, user: SessionInfo = Depends(_require_page_user)):
     if templates is None:
         raise HTTPException(500, "templates directory missing")
     return templates.TemplateResponse(request, "index.html", {
-        "team_name": "KuruSushi-Park", "asset_version": str(int(time.time())),
+        "team_name": "KuruSushi-Park", "asset_version": str(int(time.time())), "user": user,
     })
 
 
@@ -352,14 +429,28 @@ async def gate_portal(request: Request, gate: Optional[str] = Query(None)):
 
 
 @app.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
-async def split_dashboard(request: Request):
+async def split_dashboard(request: Request, user: SessionInfo = Depends(_require_page_user)):
     if templates is None:
         raise HTTPException(500, "templates directory missing")
     gates = state.entry_gates() or [settings.entry_gate]
     return templates.TemplateResponse(request, "dashboard.html", {
         "team_name": "KuruSushi-Park", "gates": gates,
         "default_gate": gates[0] if gates else settings.entry_gate,
-        "asset_version": str(int(time.time())),
+        "asset_version": str(int(time.time())), "user": user,
+    })
+
+
+@app.get("/admin", response_class=HTMLResponse, include_in_schema=False)
+async def admin_dashboard(request: Request):
+    if templates is None:
+        raise HTTPException(500, "templates directory missing")
+    info = auth.sessions.get(request.cookies.get(SESSION_COOKIE))
+    if info is None:
+        raise _LoginRedirect("/admin")
+    if info.role != ROLE_ADMIN:
+        raise HTTPException(403, "admin role required")
+    return templates.TemplateResponse(request, "admin.html", {
+        "team_name": "KuruSushi-Park", "asset_version": str(int(time.time())), "user": info,
     })
 
 
@@ -387,14 +478,38 @@ async def healthz() -> dict[str, Any]:
 
 
 @app.get("/api/history")
-async def get_history(limit: int = 100) -> list[dict[str, Any]]:
-    """Completed parking sessions, for the dashboard history table."""
-    return db.query("SELECT * FROM sessions ORDER BY completed_at DESC LIMIT ?",
-                    (max(1, min(limit, 500)),))
+async def get_history(limit: int = 100, plate: Optional[str] = None,
+                      user: SessionInfo = Depends(auth.require_staff)) -> list[dict[str, Any]]:
+    """Completed parking sessions, for the dashboard history table.
+    Optional ``plate`` does a case-insensitive substring search, so staff can
+    look up "what happened to car X" without scanning the whole log."""
+    limit = max(1, min(limit, 500))
+    if plate:
+        return db.query(
+            "SELECT * FROM sessions WHERE plate LIKE ? ORDER BY completed_at DESC LIMIT ?",
+            (f"%{plate.strip()}%", limit))
+    return db.query("SELECT * FROM sessions ORDER BY completed_at DESC LIMIT ?", (limit,))
+
+
+@app.get("/api/zones")
+async def get_zones(user: SessionInfo = Depends(auth.require_staff)) -> dict[str, Any]:
+    """Occupied/free spots by zone plus that zone's gate status - so staff
+    can see at a glance whether a zone (or the whole lot) is full."""
+    return {"zones": state.zone_occupancy()}
+
+
+@app.get("/api/admin/sessions")
+async def get_admin_sessions(user: SessionInfo = Depends(auth.require_admin)) -> dict[str, Any]:
+    """Who is currently logged in - Admin oversight, not available to Operators."""
+    return {"sessions": [
+        {"username": s.username, "role": s.role, "expires_at": s.expires_at}
+        for s in auth.sessions.active_sessions()
+    ]}
 
 
 @app.get("/api/events")
-async def get_events(limit: int = 50, event_class: Optional[str] = None) -> list[dict[str, Any]]:
+async def get_events(limit: int = 50, event_class: Optional[str] = None,
+                     user: SessionInfo = Depends(auth.require_staff)) -> list[dict[str, Any]]:
     """Raw webhook log, newest first."""
     limit = max(1, min(limit, 500))
     if event_class:
@@ -405,39 +520,39 @@ async def get_events(limit: int = 50, event_class: Optional[str] = None) -> list
 
 
 @app.get("/api/payments")
-async def get_payments(limit: int = 100) -> list[dict[str, Any]]:
+async def get_payments(limit: int = 100, user: SessionInfo = Depends(auth.require_staff)) -> list[dict[str, Any]]:
     return db.query("SELECT * FROM payments ORDER BY server_datetime DESC LIMIT ?",
                     (max(1, min(limit, 500)),))
 
 
 @app.get("/api/signature-report")
-async def get_signature_report() -> dict[str, Any]:
+async def get_signature_report(user: SessionInfo = Depends(auth.require_staff)) -> dict[str, Any]:
     """Which signature recipe the live simulator is actually using."""
     return {"attempts": db.signature_attempts(), "candidates": db.signature_trials()}
 
 
 @app.get("/api/state")
-async def get_state() -> dict[str, Any]:
+async def get_state(user: SessionInfo = Depends(auth.require_staff)) -> dict[str, Any]:
     return state.snapshot()
 
 
 @app.get("/api/spots")
-async def get_spots() -> dict[str, Any]:
+async def get_spots(user: SessionInfo = Depends(auth.require_staff)) -> dict[str, Any]:
     return {"spots": state.snapshot()["spots"], "occupancy": state.occupancy_counts()}
 
 
 @app.get("/api/gates")
-async def get_gates() -> dict[str, Any]:
+async def get_gates(user: SessionInfo = Depends(auth.require_staff)) -> dict[str, Any]:
     return {"gates": state.entry_gates()}
 
 
 @app.get("/api/broken")
-async def get_broken() -> dict[str, Any]:
+async def get_broken(user: SessionInfo = Depends(auth.require_staff)) -> dict[str, Any]:
     return {"components": state.broken_components(), "deferred_repairs": dict(state.deferred_repairs)}
 
 
 @app.get("/api/layout")
-async def get_layout() -> dict[str, Any]:
+async def get_layout(user: SessionInfo = Depends(auth.require_staff)) -> dict[str, Any]:
     """Real simulator pixel-space geometry for the split-dashboard canvas.
 
     Geometry only, sourced from the level file (see app/layout.py) - never
@@ -451,7 +566,7 @@ async def get_layout() -> dict[str, Any]:
 # Manual / operator controls
 # --------------------------------------------------------------------------- #
 @app.post("/api/manual/sync")
-async def manual_sync() -> dict[str, Any]:
+async def manual_sync(user: SessionInfo = Depends(auth.require_staff)) -> dict[str, Any]:
     counts = await sync_from_simulator()
     return {"ok": True, **counts}
 
@@ -464,30 +579,30 @@ class ManualArrivalIn(BaseModel):
 
 
 @app.post("/api/manual/arrival")
-async def manual_arrival(body: ManualArrivalIn) -> dict[str, Any]:
+async def manual_arrival(body: ManualArrivalIn, user: SessionInfo = Depends(auth.require_staff)) -> dict[str, Any]:
     if body.gate not in state.spots:
         raise HTTPException(404, f"unknown gate/spot {body.gate}")
     return await dispatch_entry(body.plate, body.gate, body.car_type, body.dry_run)
 
 
 @app.post("/api/manual/barrier/{name}/open")
-async def manual_barrier_open(name: str) -> dict[str, Any]:
+async def manual_barrier_open(name: str, user: SessionInfo = Depends(auth.require_staff)) -> dict[str, Any]:
     await client.barrier_open(name)
     state.update_barrier_state(name, "Open")
-    state.log_activity(f"Operator opened barrier {name}")
+    state.log_activity(f"{user.username} opened barrier {name}")
     return {"ok": True, "name": name, "state": "Open"}
 
 
 @app.post("/api/manual/barrier/{name}/close")
-async def manual_barrier_close(name: str) -> dict[str, Any]:
+async def manual_barrier_close(name: str, user: SessionInfo = Depends(auth.require_staff)) -> dict[str, Any]:
     await client.barrier_close(name)
     state.update_barrier_state(name, "Closed")
-    state.log_activity(f"Operator closed barrier {name}")
+    state.log_activity(f"{user.username} closed barrier {name}")
     return {"ok": True, "name": name, "state": "Closed"}
 
 
 @app.post("/api/manual/repair/{name}")
-async def manual_repair(name: str) -> dict[str, Any]:
+async def manual_repair(name: str, user: SessionInfo = Depends(auth.require_staff)) -> dict[str, Any]:
     component_type = (
         "ParkingSpot" if name in state.spots
         else "BarrierGate" if name in state.barriers
@@ -497,6 +612,7 @@ async def manual_repair(name: str) -> dict[str, Any]:
     if component_type is None:
         raise HTTPException(404, f"unknown component {name}")
     await _queue_repair(component_type, name)
+    state.log_activity(f"{user.username} queued repair for {name}")
     return {"ok": True, "name": name, "type": component_type, "queued": True}
 
 
@@ -694,11 +810,10 @@ async def _handle_car_spot_action(payload: dict[str, Any]) -> None:
             return
         state.mark_at_exit(plate)
         session.exit_gate = spot_name
-        # Charging inline here is too early - see _charge_at_exit.
+        # Charging inline here is too early - see _charge_at_exit, which logs
+        # its own billing line once it actually computes an amount.
         state.mark_charged(plate)
         asyncio.create_task(_charge_at_exit(plate, spot_name))
-        log.info("billing %s: %.2f min -> parking=%.2f charging=%.2f (type=%s)",
-                 plate, minutes, parking_cost, charging_cost, session.car_type)
         return
 
     if spot_type == "ExitSpot" and direction == "CarOut":

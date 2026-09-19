@@ -66,6 +66,15 @@ class Settings:
     broadcast_interval_s: float
     webhook_debug: bool
 
+    # Staff auth (Admin / Operator roles). Never used for the public /gate
+    # driver portal - only for the operator/admin dashboards and the manual
+    # control endpoints behind them.
+    admin_username: str
+    admin_password: str
+    operator_username: str
+    operator_password: str
+    session_ttl_s: float
+
     @classmethod
     def from_env(cls) -> "Settings":
         return cls(
@@ -140,6 +149,13 @@ class Settings:
 
             broadcast_interval_s=_env_float("BROADCAST_INTERVAL_S", 1.0),
             webhook_debug=_env_bool("WEBHOOK_DEBUG", False),
+
+            # Demo-grade defaults - change these in .env before a real deploy.
+            admin_username=os.environ.get("ADMIN_USERNAME", "admin"),
+            admin_password=os.environ.get("ADMIN_PASSWORD", "admin123"),
+            operator_username=os.environ.get("OPERATOR_USERNAME", "operator"),
+            operator_password=os.environ.get("OPERATOR_PASSWORD", "operator123"),
+            session_ttl_s=_env_float("SESSION_TTL_S", 8 * 3600.0),
         )
 
 

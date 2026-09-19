@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ team_name }} — Admin</title>
+  <link rel="stylesheet" href="/static/css/dashboard.css?v={{ asset_version }}" />
+  <style>
+    table.data-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-family: var(--mono);
+      font-size: 11px;
+    }
+    table.data-table th, table.data-table td {
+      text-align: left;
+      padding: 5px 8px;
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    table.data-table th {
+      color: var(--text-dim);
+      font-weight: 600;
+      text-transform: uppercase;
+      font-size: 10px;
+    }
+    table.data-table tbody tr:hover {
+      background: var(--panel-alt);
+    }
+    .table-wrap {
+      max-height: 320px;
+      overflow: auto;
+    }
+    .zone-full {
+      color: var(--danger);
+      font-weight: 700;
+    }
+    .topbar-user {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 12px;
+      color: var(--text-dim);
+    }
+    .role-badge {
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      background: rgba(79, 209, 197, 0.15);
+      color: var(--accent);
+    }
+  </style>
+</head>
+<body>
+  <div class="hud">
+    <div class="hud-header">
+      <div class="hud-title">
+        <span class="status-dot" id="status-dot"></span>
+        <div>
+          <h1>{{ team_name }} — Admin</h1>
+          <div class="subtitle" id="subtitle">connecting…</div>
+        </div>
+      </div>
+      <div class="row">
+        <div class="topbar-user">
+          {{ user.username }} <span class="role-badge">{{ user.role }}</span>
+        </div>
+        <a class="hint" href="/" style="align-self:center;">Operator dashboard →</a>
+        <a class="hint" href="/dashboard" style="align-self:center;">Split canvas →</a>
+        <form method="post" action="/logout" style="display:inline;">
+          <button type="submit" class="secondary">Log out</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="cards">
+      <div class="card accent"><div class="label">Available</div><div class="value" id="c-available">0</div></div>
+      <div class="card"><div class="label">Occupied</div><div class="value" id="c-occupied">0</div></div>
+      <div class="card warn"><div class="label">Reserved</div><div class="value" id="c-reserved">0</div></div>
+      <div class="card"><div class="label">Active Sessions</div><div class="value" id="c-sessions">0</div></div>
+      <div class="card danger"><div class="label">Penalties</div><div class="value" id="c-penalties">0</div></div>
+      <div class="card danger"><div class="label">Fines</div><div class="value" id="c-fines">0.00</div></div>
+      <div class="card"><div class="label">Completed</div><div class="value" id="c-completed">0</div></div>
+      <div class="card"><div class="label">Suspect Payments</div><div class="value" id="c-suspect">0</div></div>
+    </div>
+
+    <div class="panel">
+      <h2>System status</h2>
+      <div class="mini-cards" id="system-status" style="display:flex; gap:14px; flex-wrap:wrap; font-family:var(--mono); font-size:12px; color:var(--text-dim);"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Occupancy by zone</h2>
+      <div class="table-wrap">
+        <table class="data-table" id="zone-table">
+          <thead>
+            <tr><th>Zone</th><th>Total</th><th>Available</th><th>Occupied</th><th>Reserved</th><th>Broken</th><th>Gates</th><th>Status</th></tr>
+          </thead>
+          <tbody id="zone-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="grid-two">
+      <div class="panel">
+        <h2>Session history</h2>
+        <div class="controls-form" style="grid-template-columns: 1fr auto; margin-bottom:10px;">
+          <input type="text" id="history-search" placeholder="Search by plate…" />
+          <button id="history-search-btn" class="secondary">Search</button>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table" id="history-table">
+            <thead>
+              <tr><th>Plate</th><th>Type</th><th>Spot</th><th>Entry</th><th>Exit</th><th>Min</th>
+                  <th>Park $</th><th>Charge $</th><th>Paid $</th><th>OK</th><th>Completed</th></tr>
+            </thead>
+            <tbody id="history-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="panel stack">
+        <h2>Active staff sessions</h2>
+        <div class="list" id="staff-sessions-list"></div>
+
+        <h2 style="margin-top:8px;">Broken Components</h2>
+        <div class="list" id="broken-list"></div>
+      </div>
+    </div>
+
+    <div class="grid-two">
+      <div class="panel">
+        <h2>Activity Log</h2>
+        <div class="list" id="activity-list"></div>
+      </div>
+      <div class="panel">
+        <h2>Penalty Log</h2>
+        <div class="list" id="penalty-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const statusDot = document.getElementById("status-dot");
+    const subtitle = document.getElementById("subtitle");
+
+    function fmt(n) { return Number(n).toFixed(2); }
+
+    function renderList(el, items, render) {
+      el.innerHTML = "";
+      if (!items.length) {
+        el.innerHTML = '<div class="hint">nothing yet</div>';
+        return;
+      }
+      for (const item of items) {
+        const row = document.createElement("div");
+        row.className = "list-row" + (render.cls ? " " + render.cls(item) : "");
+        row.innerHTML = render.html(item);
+        el.appendChild(row);
+      }
+    }
+
+    function renderZones(zones) {
+      const tbody = document.getElementById("zone-tbody");
+      tbody.innerHTML = "";
+      for (const z of zones) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${z.zone}</td><td>${z.total}</td><td>${z.available}</td><td>${z.occupied}</td>
+          <td>${z.reserved}</td><td>${z.broken}</td><td>${(z.gates || []).join(", ") || "—"}</td>
+          <td class="${z.full ? "zone-full" : ""}">${z.full ? "FULL" : "OK"}</td>`;
+        tbody.appendChild(tr);
+      }
+    }
+
+    function applySnapshot(snap) {
+      const occ = snap.occupancy || {};
+      document.getElementById("c-available").textContent = occ.AVAILABLE || 0;
+      document.getElementById("c-occupied").textContent = occ.OCCUPIED || 0;
+      document.getElementById("c-reserved").textContent = occ.RESERVED || 0;
+      document.getElementById("c-sessions").textContent = (snap.sessions || []).length;
+      document.getElementById("c-penalties").textContent = (snap.penalties || {}).count || 0;
+      document.getElementById("c-fines").textContent = fmt((snap.penalties || {}).total_fines || 0);
+
+      renderZones(snap.zones || []);
+
+      const brokenItems = (snap.spots || []).filter((s) => s.broken || s.under_maintenance)
+        .concat((snap.barriers || []).filter((b) => b.broken || b.under_maintenance))
+        .concat((snap.fans || []).filter((f) => f.broken || f.under_maintenance));
+      renderList(document.getElementById("broken-list"), brokenItems, {
+        html: (c) => `<span>${c.name}</span><span class="badge broken">${c.broken ? "broken" : "maintenance"}</span>`,
+      });
+
+      renderList(document.getElementById("activity-list"), snap.activity || [], {
+        cls: (a) => a.level === "error" ? "error" : a.level === "warn" ? "warn" : "",
+        html: (a) => `<span>${a.message}</span><span class="time">${new Date(a.at * 1000).toLocaleTimeString()}</span>`,
+      });
+
+      renderList(document.getElementById("penalty-list"), (snap.penalties || {}).recent || [], {
+        cls: () => "error",
+        html: (p) => `<span>${p.reason} (${p.type} ${p.component})</span><span class="time">-${fmt(p.fine)}</span>`,
+      });
+    }
+
+    let ws;
+    function connect() {
+      const proto = location.protocol === "https:" ? "wss" : "ws";
+      ws = new WebSocket(`${proto}://${location.host}/ws/live`);
+      ws.onopen = () => { statusDot.classList.add("live"); subtitle.textContent = "live"; };
+      ws.onclose = () => { statusDot.classList.remove("live"); subtitle.textContent = "disconnected — retrying…"; setTimeout(connect, 1500); };
+      ws.onerror = () => ws.close();
+      ws.onmessage = (evt) => applySnapshot(JSON.parse(evt.data));
+    }
+    connect();
+
+    async function loadHealth() {
+      const res = await fetch("/healthz");
+      const data = await res.json();
+      document.getElementById("c-completed").textContent = data.completed_sessions || 0;
+      document.getElementById("c-suspect").textContent = data.suspect_payments || 0;
+      const box = document.getElementById("system-status");
+      box.innerHTML = `
+        <span>autopilot: <b style="color:${data.autopilot ? "var(--ok)" : "var(--danger)"}">${data.autopilot}</b></span>
+        <span>signature mode: <b>${data.signature_mode}</b></span>
+        <span>signature pinned: <b>${data.signature_pinned || "none"}</b></span>
+        <span>events logged: <b>${data.events}</b></span>
+        <span>sequence gaps: <b>${data.sequence_gaps}</b></span>
+        <span>maintenance queue: <b>${(data.maintenance_queue || {}).pending || 0} pending</b></span>`;
+    }
+    loadHealth();
+    setInterval(loadHealth, 5000);
+
+    async function loadStaffSessions() {
+      const res = await fetch("/api/admin/sessions");
+      if (!res.ok) return;
+      const data = await res.json();
+      renderList(document.getElementById("staff-sessions-list"), data.sessions || [], {
+        html: (s) => `<span>${s.username}</span><span class="badge available">${s.role}</span>`,
+      });
+    }
+    loadStaffSessions();
+    setInterval(loadStaffSessions, 10000);
+
+    async function loadHistory(plate) {
+      const url = plate ? `/api/history?limit=100&plate=${encodeURIComponent(plate)}` : "/api/history?limit=50";
+      const res = await fetch(url);
+      const rows = await res.json();
+      const tbody = document.getElementById("history-tbody");
+      tbody.innerHTML = "";
+      if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="11" class="hint">no sessions yet</td></tr>';
+        return;
+      }
+      for (const r of rows) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${r.plate || ""}</td><td>${r.car_type || ""}</td><td>${r.spot || ""}</td>
+          <td>${r.entry_gate || ""}</td><td>${r.exit_gate || ""}</td>
+          <td>${r.minutes != null ? Number(r.minutes).toFixed(0) : ""}</td>
+          <td>${r.parking_cost != null ? fmt(r.parking_cost) : ""}</td>
+          <td>${r.charging_cost != null ? fmt(r.charging_cost) : ""}</td>
+          <td>${r.paid_amount != null ? fmt(r.paid_amount) : ""}</td>
+          <td>${r.payment_ok ? "yes" : "no"}</td>
+          <td>${(r.completed_at || "").replace("T", " ").slice(0, 19)}</td>`;
+        tbody.appendChild(tr);
+      }
+    }
+    loadHistory();
+    document.getElementById("history-search-btn").addEventListener("click", () => {
+      loadHistory(document.getElementById("history-search").value.trim());
+    });
+    document.getElementById("history-search").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") loadHistory(document.getElementById("history-search").value.trim());
+    });
+  </script>
+</body>
+</html>

@@ -17,8 +17,14 @@
         </div>
       </div>
       <div class="row">
-        <button class="secondary" id="btn-sync">Manual Sync</button>
+        <span class="hint" style="align-self:center;">{{ user.username }} ({{ user.role }})</span>
+        {% if user.role == "admin" %}<a class="hint" href="/admin" style="align-self:center;">Admin dashboard →</a>{% endif %}
+        <a class="hint" href="/dashboard" style="align-self:center;">Split canvas →</a>
         <a class="hint" href="/gate" style="align-self:center;">Open gate portal →</a>
+        <button class="secondary" id="btn-sync">Manual Sync</button>
+        <form method="post" action="/logout" style="display:inline;">
+          <button type="submit" class="secondary">Log out</button>
+        </form>
       </div>
     </div>
 
@@ -59,6 +65,11 @@
         <h2 style="margin-top:8px;">Broken Components</h2>
         <div class="list" id="broken-list"></div>
       </div>
+    </div>
+
+    <div class="panel">
+      <h2>Occupancy by zone</h2>
+      <div class="list" id="zone-list"></div>
     </div>
 
     <div class="grid-two">
@@ -127,6 +138,12 @@
         .concat((snap.fans || []).filter((f) => f.broken || f.under_maintenance));
       renderList(document.getElementById("broken-list"), brokenItems, {
         html: (c) => `<span>${c.name}</span><span class="badge broken">${c.broken ? "broken" : "maintenance"}</span>`,
+      });
+
+      renderList(document.getElementById("zone-list"), snap.zones || [], {
+        cls: (z) => z.full ? "error" : "",
+        html: (z) => `<span>${z.zone}: ${z.available} free / ${z.total} (occ ${z.occupied}, resv ${z.reserved}, broken ${z.broken})</span>` +
+                     `<span class="badge ${z.full ? "occupied" : "available"}">${z.full ? "FULL" : "OK"}</span>`,
       });
 
       renderList(document.getElementById("activity-list"), snap.activity || [], {
