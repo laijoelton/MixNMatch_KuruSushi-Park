@@ -21,16 +21,12 @@ from app.config import settings
 
 def _utcnow() -> str:
     """Wall-clock stamp for the dashboard; monotonic time cannot be a date."""
-    return datetime.now(timezone.utc).isoformat()
+    raise NotImplementedError("TODO: reimplement _utcnow")
 
 
 def _extract_plate(entry) -> Optional[str]:
     """A detectedCars list entry may be a bare plate string or an object."""
-    if isinstance(entry, str):
-        return entry
-    if isinstance(entry, dict):
-        return entry.get("plate") or entry.get("CarPlateNumber") or entry.get("name")
-    return None
+    raise NotImplementedError("TODO: reimplement _extract_plate")
 
 
 class SpotStatus(str, Enum):
@@ -77,12 +73,7 @@ class Spot:
 
     @property
     def dispatchable(self) -> bool:
-        return (
-            self.purpose == "Park"
-            and self.status == SpotStatus.AVAILABLE
-            and not self.broken
-            and not self.under_maintenance
-        )
+        raise NotImplementedError("TODO: reimplement dispatchable")
 
 
 @dataclass
@@ -195,19 +186,16 @@ class VehicleSession:
 
     @property
     def is_electric(self) -> bool:
-        return normalize_car_type(self.car_type) == "ev"
+        raise NotImplementedError("TODO: reimplement is_electric")
 
     @property
     def billable_minutes(self) -> float:
-        return self.planned_minutes if self.planned_minutes > 0 else self.measured_minutes
+        raise NotImplementedError("TODO: reimplement billable_minutes")
 
     @property
     def measured_minutes(self) -> float:
         """Minutes between parking and leaving the spot (or now, if still in)."""
-        if self.parked_at is None:
-            return 0.0
-        end = self.left_spot_at if self.left_spot_at is not None else time.monotonic()
-        return max(0.0, (end - self.parked_at) / 60.0)
+        raise NotImplementedError("TODO: reimplement measured_minutes")
 
 
 class _BoundedEventCache:
@@ -219,14 +207,7 @@ class _BoundedEventCache:
         self._lock = threading.RLock()
 
     def seen_before(self, event_id: str) -> bool:
-        with self._lock:
-            if event_id in self._seen:
-                self._seen.move_to_end(event_id)
-                return True
-            self._seen[event_id] = None
-            if len(self._seen) > self._capacity:
-                self._seen.popitem(last=False)
-            return False
+        raise NotImplementedError("TODO: reimplement seen_before")
 
 
 class ParkingState:
@@ -271,120 +252,29 @@ class ParkingState:
         becomes known on the next ``Park/CarIn`` webhook, same as it would for
         a spot the dispatcher did not reserve itself.
         """
-        with self._lock:
-            for item in raw:
-                # The live simulator reports this as either a plate-name list
-                # or a bare occupancy count depending on build - handle both.
-                detected = item.get("detectedCars")
-                if isinstance(detected, list):
-                    occupied = bool(detected)
-                    plate = _extract_plate(detected[0]) if detected else None
-                elif isinstance(detected, (int, float)):
-                    occupied = detected > 0
-                    plate = None
-                else:
-                    occupied = False
-                    plate = None
-
-                broken = bool(item.get("broken", False))
-                under_maintenance = bool(item.get("isUnderMaintenance", False))
-                status = (
-                    SpotStatus.OCCUPIED if occupied
-                    else SpotStatus.BROKEN if broken
-                    else SpotStatus.MAINTENANCE if under_maintenance
-                    else SpotStatus.AVAILABLE
-                )
-                usage = item.get("usageCounter", item.get("UsageCounter", 0))
-                try:
-                    usage = max(0, int(usage or 0))
-                except (TypeError, ValueError):
-                    usage = 0
-                self.spots[item["name"]] = Spot(
-                    name=item["name"],
-                    purpose=item.get("purpose", "Park"),
-                    parking_for_car_type=item.get("parkingForCarType", "Any"),
-                    zone_parent=item.get("zoneParent", ""),
-                    status=status,
-                    broken=broken,
-                    under_maintenance=under_maintenance,
-                    occupant_plate=plate,
-                    is_accessible=bool(item.get("isAccessible", item.get("is_accessible", False)))
-                                  or item.get("parkingForCarType", "").lower() == "accessible",
-                    cycle_count=usage,
-                )
+        raise NotImplementedError("TODO: reimplement load_spots")
 
     def load_barriers(self, raw: list[dict]) -> None:
-        with self._lock:
-            for item in raw:
-                usage = item.get("usageCounter", item.get("UsageCounter", 0))
-                try:
-                    usage = max(0, int(usage or 0))
-                except (TypeError, ValueError):
-                    usage = 0
-                self.barriers[item["name"]] = Barrier(
-                    name=item["name"],
-                    zone_parent=item.get("zoneParent", ""),
-                    state=BarrierPosition(item.get("state", "Closed")),
-                    broken=bool(item.get("broken", False)),
-                    under_maintenance=bool(item.get("isUnderMaintenance", False)),
-                    cycle_count=usage,
-                )
+        raise NotImplementedError("TODO: reimplement load_barriers")
 
     def load_fans(self, raw: list[dict]) -> None:
-        with self._lock:
-            for item in raw:
-                self.fans[item["name"]] = ExhaustFan(
-                    name=item["name"],
-                    zone_parent=item.get("zoneParent", ""),
-                    is_on=bool(item.get("isOn", False)),
-                    turned_on_at=time.monotonic() if item.get("isOn", False) else None,
-                    broken=bool(item.get("broken", False)),
-                    under_maintenance=bool(item.get("isUnderMaintenance", False)),
-                )
+        raise NotImplementedError("TODO: reimplement load_fans")
 
     def load_lights(self, raw: list[dict]) -> None:
-        with self._lock:
-            for item in raw:
-                self.lights[item["name"]] = Light(
-                    name=item["name"],
-                    zone_parent=item.get("zoneParent", ""),
-                    is_on=bool(item.get("isOn", True)),
-                    turned_on_at=time.monotonic() if item.get("isOn", True) else None,
-                    broken=bool(item.get("broken", False)),
-                    under_maintenance=bool(item.get("isUnderMaintenance", False)),
-                )
+        raise NotImplementedError("TODO: reimplement load_lights")
 
     def load_zones(self, raw: list[dict]) -> None:
-        with self._lock:
-            for item in raw:
-                self.zones[item["name"]] = Zone(
-                    name=item["name"],
-                    gas_co_level=float(item.get("gasCarbonMonoxideLevel", 0.0)),
-                    risk=item.get("risk", "Safe"),
-                    danger_level=item.get("risk", "Safe"),
-                )
+        raise NotImplementedError("TODO: reimplement load_zones")
 
     # ------------------------------------------------------------------ #
     # Event dedup / ordering
     # ------------------------------------------------------------------ #
     def is_duplicate(self, event_id: str) -> bool:
-        return self._events.seen_before(event_id)
+        raise NotImplementedError("TODO: reimplement is_duplicate")
 
     def observe_sequence(self, sequence_id: Optional[int]) -> Optional[int]:
         """Record ``sequence_id`` and return the size of any detected gap (0/None if none)."""
-        if sequence_id is None:
-            return None
-        try:
-            sequence_id = int(sequence_id)
-        except (TypeError, ValueError):
-            return None
-        with self._lock:
-            gap = 0
-            if self.last_sequence_id and sequence_id > self.last_sequence_id + 1:
-                gap = sequence_id - self.last_sequence_id - 1
-            if sequence_id > self.last_sequence_id:
-                self.last_sequence_id = sequence_id
-            return gap
+        raise NotImplementedError("TODO: reimplement observe_sequence")
 
     # ------------------------------------------------------------------ #
     # Spot mutations
@@ -398,160 +288,46 @@ class ParkingState:
         itself full while standing empty. Sweeping here (rather than on a
         timer) keeps it lazy and lock-free from the caller's point of view.
         """
-        released: list[str] = []
-        cutoff = time.monotonic() - ttl_seconds
-        with self._lock:
-            for spot in self.spots.values():
-                if (
-                    spot.status == SpotStatus.RESERVED
-                    and spot.reserved_at is not None
-                    and spot.reserved_at < cutoff
-                ):
-                    spot.status = SpotStatus.AVAILABLE
-                    spot.occupant_plate = None
-                    spot.reserved_at = None
-                    released.append(spot.name)
-        return released
+        raise NotImplementedError("TODO: reimplement expire_stale_reservations")
 
     def available_spots(self, car_type: str = "Any") -> list[str]:
-        with self._lock:
-            return [
-                s.name for s in self.spots.values()
-                if s.dispatchable and s.name not in self.pending_repairs
-                and (s.parking_for_car_type in ("Any", car_type))
-            ]
+        raise NotImplementedError("TODO: reimplement available_spots")
 
     def reserve_spot(self, spot_name: str, plate: str) -> bool:
-        with self._lock:
-            spot = self.spots.get(spot_name)
-            if spot is None or not spot.dispatchable or spot_name in self.pending_repairs:
-                return False
-            spot.status = SpotStatus.RESERVED
-            spot.occupant_plate = plate
-            spot.reserved_at = time.monotonic()
-            return True
+        raise NotImplementedError("TODO: reimplement reserve_spot")
 
     def release_reservation(self, spot_name: str, plate: str) -> None:
         """Undo a reservation when the dispatch command did not actually go out."""
-        with self._lock:
-            spot = self.spots.get(spot_name)
-            if spot is None or spot.status != SpotStatus.RESERVED:
-                return
-            if spot.occupant_plate == plate:
-                spot.status = SpotStatus.AVAILABLE
-                spot.occupant_plate = None
-                spot.reserved_at = None
+        raise NotImplementedError("TODO: reimplement release_reservation")
 
     def mark_spot_occupied(self, spot_name: str, plate: str) -> None:
-        with self._lock:
-            spot = self.spots.setdefault(spot_name, Spot(name=spot_name))
-            spot.status = SpotStatus.OCCUPIED
-            spot.occupant_plate = plate
+        raise NotImplementedError("TODO: reimplement mark_spot_occupied")
 
     def mark_spot_vacant(self, spot_name: str) -> None:
-        with self._lock:
-            spot = self.spots.get(spot_name)
-            if spot is None:
-                return
-            spot.occupant_plate = None
-            spot.status = (
-                SpotStatus.BROKEN if spot.broken
-                else SpotStatus.MAINTENANCE if spot.under_maintenance
-                else SpotStatus.AVAILABLE
-            )
+        raise NotImplementedError("TODO: reimplement mark_spot_vacant")
 
     def set_component_broken(self, component_type: str, name: str) -> None:
-        with self._lock:
-            if component_type == "ParkingSpot" and name in self.spots:
-                spot = self.spots[name]
-                spot.broken = True
-                if spot.occupant_plate is None:
-                    spot.status = SpotStatus.BROKEN
-            elif component_type == "BarrierGate" and name in self.barriers:
-                self.barriers[name].broken = True
-            elif component_type == "ExhaustFan" and name in self.fans:
-                self.fans[name].broken = True
-            elif component_type == "Light" and name in self.lights:
-                self.lights[name].broken = True
+        raise NotImplementedError("TODO: reimplement set_component_broken")
 
     def set_component_fixed(self, component_type: str, name: str) -> None:
-        with self._lock:
-            if component_type == "ParkingSpot" and name in self.spots:
-                spot = self.spots[name]
-                spot.broken = False
-                spot.under_maintenance = False
-                spot.cycle_count = 0
-                if spot.occupant_plate is None:
-                    spot.status = SpotStatus.AVAILABLE
-            elif component_type == "BarrierGate" and name in self.barriers:
-                barrier = self.barriers[name]
-                barrier.broken = False
-                barrier.under_maintenance = False
-                barrier.cycle_count = 0
-                barrier.opens_since_repair = 0
-            elif component_type == "ExhaustFan" and name in self.fans:
-                fan = self.fans[name]
-                fan.broken = False
-                fan.under_maintenance = False
-                fan.cycle_count = 0
-                fan.runtime_seconds = 0.0
-                fan.turned_on_at = time.monotonic() if fan.is_on else None
-            elif component_type == "Light" and name in self.lights:
-                light = self.lights[name]
-                light.broken = False
-                light.under_maintenance = False
-                light.cycle_count = 0
-                light.runtime_seconds = 0.0
-                light.turned_on_at = time.monotonic() if light.is_on else None
-            self.deferred_repairs.pop(name, None)
+        raise NotImplementedError("TODO: reimplement set_component_fixed")
 
     def queue_deferred_repair(self, name: str, component_type: str) -> None:
-        with self._lock:
-            self.deferred_repairs[name] = component_type
+        raise NotImplementedError("TODO: reimplement queue_deferred_repair")
 
     def pop_ready_repair(self, name: str) -> Optional[str]:
         """If ``name`` has a pending repair and is now vacant, clear and return its type."""
-        with self._lock:
-            component_type = self.deferred_repairs.get(name)
-            if component_type is None:
-                return None
-            spot = self.spots.get(name)
-            if spot is not None and spot.occupant_plate is not None:
-                return None
-            del self.deferred_repairs[name]
-            return component_type
+        raise NotImplementedError("TODO: reimplement pop_ready_repair")
 
     def update_barrier_state(self, name: str, state_value: str) -> None:
-        with self._lock:
-            barrier = self.barriers.setdefault(name, Barrier(name=name))
-            try:
-                new_state = BarrierPosition(state_value)
-            except ValueError:
-                return
-            # Count a wear cycle each time the barrier actually starts moving,
-            # i.e. transitions into Opening/Closing - not on every repeated
-            # "Open"/"Closed" webhook while it sits still.
-            if new_state in (BarrierPosition.OPENING, BarrierPosition.CLOSING) and barrier.state != new_state:
-                barrier.cycle_count += 1
-            # One open = starts opening, or a webhook reports Open straight from shut.
-            if ((new_state == BarrierPosition.OPENING and barrier.state != BarrierPosition.OPENING)
-                    or (new_state == BarrierPosition.OPEN
-                        and barrier.state in (BarrierPosition.CLOSED, BarrierPosition.CLOSING))):
-                barrier.opens_since_repair += 1
-            barrier.state = new_state
+        raise NotImplementedError("TODO: reimplement update_barrier_state")
 
     def update_zone(self, name: str, co_level: float, danger_level: str) -> None:
-        with self._lock:
-            zone = self.zones.setdefault(name, Zone(name=name))
-            zone.gas_co_level = co_level
-            zone.danger_level = danger_level
-            zone.co_history.append((time.monotonic(), co_level))
+        raise NotImplementedError("TODO: reimplement update_zone")
 
     def co_history(self, zone_name: str) -> list[tuple[float, float]]:
         """Trailing CO readings for a zone, oldest first. Empty if unknown."""
-        with self._lock:
-            zone = self.zones.get(zone_name)
-            return list(zone.co_history) if zone else []
+        raise NotImplementedError("TODO: reimplement co_history")
 
     def occupancy_ratio(self, zone_name: str) -> float:
         """R = (reserved + occupied) / capacity for this zone's parking spots.
@@ -560,30 +336,16 @@ class ParkingState:
         represent load about to land, so counting only OCCUPIED undercounts
         a zone that's about to fill up.
         """
-        with self._lock:
-            spots = [s for s in self.spots.values()
-                     if s.zone_parent == zone_name and s.purpose == "Park"]
-            if not spots:
-                return 0.0
-            loaded = sum(1 for s in spots if s.status in (SpotStatus.OCCUPIED, SpotStatus.RESERVED))
-            return loaded / len(spots)
+        raise NotImplementedError("TODO: reimplement occupancy_ratio")
 
     def fans_in_zone(self, zone_name: str) -> list[str]:
-        with self._lock:
-            return [f.name for f in self.fans.values() if f.zone_parent == zone_name]
+        raise NotImplementedError("TODO: reimplement fans_in_zone")
 
     def lights_in_zone(self, zone_name: str) -> list[str]:
-        with self._lock:
-            return [l.name for l in self.lights.values() if l.zone_parent == zone_name]
+        raise NotImplementedError("TODO: reimplement lights_in_zone")
 
     def zone_names(self) -> list[str]:
-        with self._lock:
-            names = {z for z in self.zones.keys()}
-            names |= {b.zone_parent for b in self.barriers.values() if b.zone_parent}
-            names |= {f.zone_parent for f in self.fans.values() if f.zone_parent}
-            names |= {l.zone_parent for l in self.lights.values() if l.zone_parent}
-            names |= {s.zone_parent for s in self.spots.values() if s.zone_parent}
-            return sorted(names)
+        raise NotImplementedError("TODO: reimplement zone_names")
 
     # ------------------------------------------------------------------ #
     # Wear tracking (Level 2): cycles on barriers/fans/lights, runtime on
@@ -592,345 +354,96 @@ class ParkingState:
     # ------------------------------------------------------------------ #
     def record_barrier_cycle(self, name: str) -> int:
         """Return movement count, already updated by update_barrier_state()."""
-        with self._lock:
-            barrier = self.barriers.setdefault(name, Barrier(name=name))
-            return barrier.cycle_count
+        raise NotImplementedError("TODO: reimplement record_barrier_cycle")
 
     def set_fan_on(self, name: str, on: bool) -> tuple[int, float]:
         """Toggle a fan and update its wear counters. Returns (cycles, runtime_s)."""
-        with self._lock:
-            fan = self.fans.setdefault(name, ExhaustFan(name=name))
-            now = time.monotonic()
-            if on and not fan.is_on:
-                fan.is_on = True
-                fan.cycle_count += 1
-                fan.turned_on_at = now
-            elif not on and fan.is_on:
-                fan.is_on = False
-                fan.cycle_count += 1
-                if fan.turned_on_at is not None:
-                    fan.runtime_seconds += max(0.0, now - fan.turned_on_at) * settings.game_speed
-                fan.turned_on_at = None
-            return fan.cycle_count, fan.runtime_seconds
+        raise NotImplementedError("TODO: reimplement set_fan_on")
 
     def set_light_on(self, name: str, on: bool) -> tuple[int, float]:
-        with self._lock:
-            light = self.lights.setdefault(name, Light(name=name, turned_on_at=None))
-            now = time.monotonic()
-            if on and not light.is_on:
-                light.is_on = True
-                light.cycle_count += 1
-                light.turned_on_at = now
-            elif not on and light.is_on:
-                light.is_on = False
-                light.cycle_count += 1
-                if light.turned_on_at is not None:
-                    light.runtime_seconds += max(0.0, now - light.turned_on_at) * settings.game_speed
-                light.turned_on_at = None
-            return light.cycle_count, light.runtime_seconds
+        raise NotImplementedError("TODO: reimplement set_light_on")
 
     def wear_snapshot(self) -> list[dict[str, Any]]:
         """Live wear counters for every tracked component, for the wear-threshold sweep."""
-        with self._lock:
-            out: list[dict[str, Any]] = []
-            for spot in self.spots.values():
-                if spot.purpose == "Park":
-                    out.append({"name": spot.name, "type": "ParkingSpot",
-                                "cycle_count": spot.cycle_count, "runtime_seconds": 0.0,
-                                "broken": spot.broken, "under_maintenance": spot.under_maintenance})
-            for b in self.barriers.values():
-                out.append({"name": b.name, "type": "BarrierGate",
-                           "cycle_count": b.cycle_count, "runtime_seconds": 0.0,
-                           "broken": b.broken, "under_maintenance": b.under_maintenance})
-            for f in self.fans.values():
-                runtime = f.runtime_seconds
-                if f.is_on and f.turned_on_at is not None:
-                    runtime += max(0.0, time.monotonic() - f.turned_on_at) * settings.game_speed
-                out.append({"name": f.name, "type": "ExhaustFan",
-                           "cycle_count": f.cycle_count, "runtime_seconds": runtime,
-                           "broken": f.broken, "under_maintenance": f.under_maintenance})
-            for l in self.lights.values():
-                runtime = l.runtime_seconds
-                if l.is_on and l.turned_on_at is not None:
-                    runtime += max(0.0, time.monotonic() - l.turned_on_at) * settings.game_speed
-                out.append({"name": l.name, "type": "Light",
-                           "cycle_count": l.cycle_count, "runtime_seconds": runtime,
-                           "broken": l.broken, "under_maintenance": l.under_maintenance})
-            for row in out:
-                row["repair_pending"] = row["name"] in self.pending_repairs or row["name"] in self.deferred_repairs
-                row["repair_supported"] = row["type"] != "Light"
-                row["wear_percent"] = round(100 * max(
-                    row["cycle_count"] / max(1, settings.wear_cycle_threshold),
-                    row["runtime_seconds"] / max(1, settings.wear_runtime_threshold_s)), 1)
-            return out
+        raise NotImplementedError("TODO: reimplement wear_snapshot")
 
     # ------------------------------------------------------------------ #
     # Vehicle sessions
     # ------------------------------------------------------------------ #
     def start_session(self, plate: str, gate: str, car_type: str = "Normal",
                       planned_minutes: float = 0.0) -> VehicleSession:
-        with self._lock:
-            session = self.sessions.get(plate)
-            if session is None:
-                session = VehicleSession(
-                    plate=plate,
-                    entry_gate=gate,
-                    car_type=car_type or "Normal",
-                    planned_minutes=planned_minutes or 0.0,
-                    arrived_wall=_utcnow(),
-                )
-                self.sessions[plate] = session
-            else:
-                session.entry_gate = gate
-                session.phase = SessionPhase.ARRIVED
-                if car_type:
-                    session.car_type = car_type
-                if planned_minutes:
-                    session.planned_minutes = planned_minutes
-            return session
+        raise NotImplementedError("TODO: reimplement start_session")
 
     def set_planned_minutes(self, plate: str, planned_minutes: float) -> None:
         """Record the booked duration; later events repeat it, so keep the last."""
-        if not planned_minutes:
-            return
-        with self._lock:
-            session = self.sessions.get(plate)
-            if session is not None:
-                session.planned_minutes = planned_minutes
+        raise NotImplementedError("TODO: reimplement set_planned_minutes")
 
     def get_session(self, plate: str) -> Optional[VehicleSession]:
-        with self._lock:
-            return self.sessions.get(plate)
+        raise NotImplementedError("TODO: reimplement get_session")
 
     def assign_spot(self, plate: str, spot_name: str) -> None:
-        with self._lock:
-            session = self.sessions.get(plate)
-            if session is not None:
-                session.assigned_spot = spot_name
-                session.phase = SessionPhase.ASSIGNED
-                self.active_dispatches[plate] = spot_name
-                session.zone = self.spots[spot_name].zone_parent
+        raise NotImplementedError("TODO: reimplement assign_spot")
 
     def mark_parked(self, plate: str, spot_name: str) -> None:
-        with self._lock:
-            session = self.sessions.get(plate)
-
-            # If the car ended up somewhere other than the spot we reserved,
-            # free the reservation -- otherwise that spot leaks and the lot
-            # slowly appears full.
-            if session is not None and session.assigned_spot and session.assigned_spot != spot_name:
-                stale = self.spots.get(session.assigned_spot)
-                if stale is not None and stale.occupant_plate == plate:
-                    self.mark_spot_vacant(session.assigned_spot)
-
-            self.mark_spot_occupied(spot_name, plate)
-            if session is not None:
-                session.phase = SessionPhase.PARKED
-                session.assigned_spot = spot_name
-                self.active_dispatches[plate] = spot_name
-                session.zone = self.spots[spot_name].zone_parent
-                # Start the billing clock here, not at the entry sensor.
-                if session.parked_at is None:
-                    self.spots[spot_name].cycle_count += 1
-                    session.parked_at = time.monotonic()
-                    session.parked_wall = _utcnow()
+        raise NotImplementedError("TODO: reimplement mark_parked")
 
     def mark_left_spot(self, plate: str) -> None:
         """Stop the billing clock when the car vacates its spot."""
-        with self._lock:
-            session = self.sessions.get(plate)
-            if session is not None and session.left_spot_at is None:
-                session.left_spot_at = time.monotonic()
-                session.left_spot_wall = _utcnow()
+        raise NotImplementedError("TODO: reimplement mark_left_spot")
 
     def mark_exit_requested(self, plate: str, exit_gate: str) -> None:
-        with self._lock:
-            session = self.sessions.get(plate)
-            if session is not None:
-                session.phase = SessionPhase.EXIT_REQUESTED
-                session.exit_gate = exit_gate
+        raise NotImplementedError("TODO: reimplement mark_exit_requested")
 
     def mark_at_exit(self, plate: str) -> None:
-        with self._lock:
-            session = self.sessions.get(plate)
-            if session is not None:
-                session.phase = SessionPhase.AT_EXIT
+        raise NotImplementedError("TODO: reimplement mark_at_exit")
 
     def mark_charged(self, plate: str) -> None:
-        with self._lock:
-            session = self.sessions.get(plate)
-            if session is not None:
-                session.charged = True
-                session.phase = SessionPhase.CHARGED
+        raise NotImplementedError("TODO: reimplement mark_charged")
 
     def mark_paid(self, plate: str, amount: float) -> bool:
         """Returns True iff a session existed, was charged and not already paid."""
-        with self._lock:
-            session = self.sessions.get(plate)
-            if session is None or not session.charged or session.paid:
-                return False
-            session.paid = True
-            session.payment_suspect = False
-            return True
+        raise NotImplementedError("TODO: reimplement mark_paid")
 
     def complete_session(self, plate: str) -> Optional[VehicleSession]:
         """Remove the session and hand it back so it can be archived to SQLite."""
-        with self._lock:
-            self.active_dispatches.pop(plate, None)
-            return self.sessions.pop(plate, None)
+        raise NotImplementedError("TODO: reimplement complete_session")
 
     # ------------------------------------------------------------------ #
     # Telemetry: penalties, activity log, dashboard snapshot
     # ------------------------------------------------------------------ #
     def entry_gates(self) -> list[str]:
-        with self._lock:
-            return sorted(s.name for s in self.spots.values() if s.purpose == "EntrySpot")
+        raise NotImplementedError("TODO: reimplement entry_gates")
 
     def record_penalty(self, reason: str, fine: float, component_type: str, component_name: str) -> None:
-        with self._lock:
-            self.penalty_count += 1
-            self.total_fines += fine
-            self.penalty_log.appendleft({
-                "reason": reason, "fine": fine, "type": component_type,
-                "component": component_name, "at": time.time(),
-            })
+        raise NotImplementedError("TODO: reimplement record_penalty")
 
     def clear_penalties(self) -> None:
         """Forget recorded fines; paired with an admin clearing the penalties table."""
-        with self._lock:
-            self.penalty_count = 0
-            self.total_fines = 0.0
-            self.penalty_log.clear()
+        raise NotImplementedError("TODO: reimplement clear_penalties")
 
     def reset_for_new_level(self) -> int:
         """Forget the previous level's live park: cars, bays, gates and repair
         bookkeeping. Returns how many vehicle sessions were dropped. Penalties
         and the activity feed are kept - they are the run's record."""
-        with self._lock:
-            dropped = len(self.sessions)
-            for table in (self.sessions, self.active_dispatches, self.spots, self.barriers, self.zones,
-                          self.fans, self.lights, self.pending_repairs, self.deferred_repairs,
-                          self.zone_maintenance, self.stuck_repairs):
-                table.clear()
-            self.neglected_vehicles.clear()
-            return dropped
+        raise NotImplementedError("TODO: reimplement reset_for_new_level")
 
     def clear_neglected(self) -> None:
-        with self._lock:
-            self.neglected_vehicles.clear()
+        raise NotImplementedError("TODO: reimplement clear_neglected")
 
     def log_activity(self, message: str, level: str = "info", capability: str = "logs:view_ops") -> None:
-        with self._lock:
-            self.activity_log.appendleft({"message": message, "level": level, "at": time.time(), "capability": capability})
+        raise NotImplementedError("TODO: reimplement log_activity")
 
     def broken_components(self) -> list[dict[str, Any]]:
-        with self._lock:
-            out: list[dict[str, Any]] = []
-            for s in self.spots.values():
-                repair_pending = s.name in self.pending_repairs
-                if s.broken or s.under_maintenance or repair_pending:
-                    out.append({"name": s.name, "type": "ParkingSpot",
-                               "broken": s.broken, "under_maintenance": s.under_maintenance,
-                               "repair_pending": repair_pending,
-                               "occupied": s.occupant_plate is not None})
-            for b in self.barriers.values():
-                repair_pending = b.name in self.pending_repairs
-                if b.broken or b.under_maintenance or repair_pending:
-                    out.append({"name": b.name, "type": "BarrierGate",
-                               "broken": b.broken, "under_maintenance": b.under_maintenance,
-                               "repair_pending": repair_pending, "occupied": False})
-            for f in self.fans.values():
-                repair_pending = f.name in self.pending_repairs
-                if f.broken or f.under_maintenance or repair_pending:
-                    out.append({"name": f.name, "type": "ExhaustFan",
-                               "broken": f.broken, "under_maintenance": f.under_maintenance,
-                               "repair_pending": repair_pending, "occupied": False})
-            for light in self.lights.values():
-                repair_pending = light.name in self.pending_repairs
-                if light.broken or light.under_maintenance or repair_pending:
-                    out.append({"name": light.name, "type": "Light", "broken": light.broken,
-                                "under_maintenance": light.under_maintenance,
-                                "repair_pending": repair_pending, "occupied": False})
-            return out
+        raise NotImplementedError("TODO: reimplement broken_components")
 
     def occupancy_counts(self) -> dict[str, int]:
-        with self._lock:
-            counts = {status.value: 0 for status in SpotStatus}
-            for s in self.spots.values():
-                if s.purpose == "Park":
-                    counts[s.status.value] += 1
-            return counts
+        raise NotImplementedError("TODO: reimplement occupancy_counts")
 
     def snapshot(self) -> dict[str, Any]:
-        with self._lock:
-            return {
-                "spots": [
-                    {"name": s.name, "purpose": s.purpose, "status": s.status.value,
-                     "broken": s.broken, "under_maintenance": s.under_maintenance,
-                     "repair_pending": s.name in self.pending_repairs,
-                     "occupant_plate": s.occupant_plate, "zone": s.zone_parent,
-                     "car_type": s.parking_for_car_type, "is_accessible": s.is_accessible}
-                    for s in self.spots.values()
-                ],
-                "barriers": [
-                    {"name": b.name, "state": b.state.value, "broken": b.broken,
-                     "under_maintenance": b.under_maintenance, "zone": b.zone_parent,
-                     "repair_pending": b.name in self.pending_repairs,
-                     "main_gate": b.name == settings.main_gate,
-                     "opens_since_repair": b.opens_since_repair,
-                     "operator_override": b.operator_override,
-                     "operator_open": b.operator_open,
-                     "held_plates": sorted(b.held_vehicles),
-                     "repair_stuck": b.name in self.stuck_repairs,
-                     "hold_reason": "Held closed by operator" if b.operator_override else
-                                    "Held open by operator" if b.operator_open else
-                                    "Vehicle awaiting clearance" if b.held_vehicles else ""}
-                    for b in self.barriers.values()
-                ],
-                "fans": [
-                    {"name": f.name, "is_on": f.is_on, "broken": f.broken,
-                     "under_maintenance": f.under_maintenance,
-                     "repair_pending": f.name in self.pending_repairs, "zone": f.zone_parent}
-                    for f in self.fans.values()
-                ],
-                "lights": [
-                    {"name": l.name, "is_on": l.is_on, "zone": l.zone_parent,
-                     "broken": l.broken, "under_maintenance": l.under_maintenance,
-                     "repair_pending": l.name in self.pending_repairs}
-                    for l in self.lights.values()
-                ],
-                "wear": self.wear_snapshot(),
-                "zones": [
-                    {"name": z.name, "co_level": z.gas_co_level, "risk": z.risk,
-                     "danger_level": z.danger_level}
-                    for z in self.zones.values()
-                ],
-                "sessions": [
-                    {"plate": s.plate, "entry_gate": s.entry_gate, "phase": s.phase.value,
-                     "assigned_spot": s.assigned_spot, "exit_gate": s.exit_gate,
-                     "charged": s.charged, "paid": s.paid}
-                    for s in self.sessions.values()
-                ],
-                "occupancy": {status.value: sum(1 for s in self.spots.values()
-                                                if s.purpose == "Park" and s.status == status)
-                             for status in SpotStatus},
-                "penalties": {"count": self.penalty_count, "total_fines": round(self.total_fines, 2),
-                             "recent": list(self.penalty_log)[:20]},
-                "activity": list(self.activity_log)[:30],
-                "neglected_vehicles": list(self.neglected_vehicles),
-                "zone_maintenance": {zone: {"entry": info["entry"], "exit": info["exit"],
-                                            "trigger": info["trigger"], "todo": sorted(info["todo"]),
-                                            "reopened": bool(info.get("reopened"))}
-                                     for zone, info in self.zone_maintenance.items()},
-                "deferred_repairs": dict(self.deferred_repairs),
-                "last_sequence_id": self.last_sequence_id,
-                "uptime_s": round(time.time() - self.started_at, 1),
-            }
+        raise NotImplementedError("TODO: reimplement snapshot")
 
 def normalize_car_type(value: str) -> str:
-    value = (value or "normal").strip().lower()
-    return {"normal": "sedan", "electric": "ev", "van": "suv", "disabled": "accessible",
-            "handicapped": "accessible"}.get(value, value)
+    raise NotImplementedError("TODO: reimplement normalize_car_type")
 
 
 BarrierGate = Barrier

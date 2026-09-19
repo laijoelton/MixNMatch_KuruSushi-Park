@@ -17,3 +17,6 @@ htmlcov/
 rules/*.log
 START.bat
 rules
+
+# Subagent-driven-development scratch workspace
+.superpowers/

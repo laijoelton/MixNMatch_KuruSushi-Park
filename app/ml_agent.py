@@ -74,12 +74,12 @@ def _co_on_threshold(zone_ratio: float) -> float:
     fan is never left waiting past 45ppm, independent of how the dynamic
     formula reads at low occupancy.
     """
-    return min(CO_HARD_ON_CEILING, max(30.0, CO_BREACH_PPM - 20.0 * zone_ratio))
+    raise NotImplementedError("TODO: reimplement _co_on_threshold")
 
 
 def co_off_threshold(zone_ratio: float) -> float:
     """Dynamic OFF edge, kept below the ON edge so hysteresis still holds."""
-    return max(15.0, 30.0 - 15.0 * zone_ratio)
+    raise NotImplementedError("TODO: reimplement co_off_threshold")
 
 
 def _co_trend(history: Sequence[tuple[float, float]]) -> tuple[float, float]:
@@ -89,23 +89,7 @@ def _co_trend(history: Sequence[tuple[float, float]]) -> tuple[float, float]:
     fewer than 3 points there is nothing to fit a trend to, so the rate is
     flat (0.0).
     """
-    points = list(history)
-    if len(points) < 3:
-        return 0.0, (points[-1][1] if points else 0.0)
-    if _NUMPY_AVAILABLE:
-        arr = np.array(points, dtype=float)
-        x, y = arr[:, 0] - arr[0, 0], arr[:, 1]
-        if x[-1] <= 1e-6:  # readings arrived within the same tick - nothing to fit a trend to
-            return 0.0, float(y[-1])
-        try:
-            slope, _intercept = np.polyfit(x, y, 1)
-        except Exception:  # noqa: BLE001 - a degenerate fit must not crash a fan decision
-            return 0.0, float(y[-1])
-        return float(slope), float(y[-1])
-    t0, v0 = points[0]
-    t1, v1 = points[-1]
-    rate = (v1 - v0) / max(t1 - t0, 1e-6)
-    return rate, v1
+    raise NotImplementedError("TODO: reimplement _co_trend")
 
 
 def co_ventilation_analysis(current_co: float, zone_ratio: float, historical_traffic: list) -> dict[str, Any]:
@@ -122,33 +106,12 @@ def co_ventilation_analysis(current_co: float, zone_ratio: float, historical_tra
     `NO_BREACH_PREDICTED_MINUTES` if the trend isn't rising toward it.
     `predicted_ppm` is the forecast reading 10 simulated minutes out.
     """
-    ratio = max(0.0, min(1.0, zone_ratio))
-    on_threshold = _co_on_threshold(ratio)
-    rate, _last = _co_trend(historical_traffic)
-    # 10 simulated minutes of look-ahead, scaled by game speed like every
-    # other wall-clock wait in this project.
-    horizon_s = 600.0 / max(settings.game_speed, 0.1)
-    predicted_ppm = round(current_co + rate * horizon_s, 2)
-
-    if current_co >= CO_BREACH_PPM:
-        minutes_to_threshold = 0
-    elif rate <= 0:
-        minutes_to_threshold = NO_BREACH_PREDICTED_MINUTES
-    else:
-        seconds_needed = (CO_BREACH_PPM - current_co) / rate
-        minutes_to_threshold = max(0, round(seconds_needed * settings.game_speed / 60.0))
-
-    trigger_fan = current_co >= on_threshold or minutes_to_threshold <= CO_WARNING_MINUTES
-    return {
-        "trigger_fan": trigger_fan,
-        "minutes_to_threshold": int(minutes_to_threshold),
-        "predicted_ppm": float(predicted_ppm),
-    }
+    raise NotImplementedError("TODO: reimplement co_ventilation_analysis")
 
 
 def record_ventilation_insight(zone_name: str, result: dict[str, Any]) -> None:
     """Cache the latest per-zone ventilation telemetry for `latest_insights()`."""
-    _latest_ventilation[zone_name] = {"zone": zone_name, **result}
+    raise NotImplementedError("TODO: reimplement record_ventilation_insight")
 
 
 # --------------------------------------------------------------------- #
@@ -156,10 +119,7 @@ def record_ventilation_insight(zone_name: str, result: dict[str, Any]) -> None:
 # --------------------------------------------------------------------- #
 
 def _wear_ratio(cycle_count: int, runtime_seconds: int) -> float:
-    return max(
-        cycle_count / max(settings.wear_cycle_threshold, 1),
-        runtime_seconds / max(settings.wear_runtime_threshold_s, 1.0),
-    )
+    raise NotImplementedError("TODO: reimplement _wear_ratio")
 
 
 def _repair_training_rows() -> list[tuple[float, int]]:
@@ -172,37 +132,11 @@ def _repair_training_rows() -> list[tuple[float, int]]:
     that was then fixed before breaking. Small and coarse, but grounded in
     this park's own history rather than synthetic data.
     """
-    rows = db.query(
-        "SELECT event FROM component_events WHERE event IN ('broken', 'fixed_proactive') "
-        "ORDER BY occurred_at"
-    )
-    samples: list[tuple[float, int]] = []
-    for row in rows:
-        if row["event"] == "broken":
-            samples.append((1.0, 1))
-        else:
-            samples.append((0.85, 0))
-    return samples
+    raise NotImplementedError("TODO: reimplement _repair_training_rows")
 
 
 def _train_repair_model() -> Optional["LogisticRegression"]:
-    if not (_SKLEARN_AVAILABLE and _NUMPY_AVAILABLE):
-        return None
-    samples = _repair_training_rows()
-    if len(samples) < MIN_REPAIR_TRAINING_SAMPLES:
-        return None
-    labels = {label for _, label in samples}
-    if len(labels) < 2:
-        return None  # LogisticRegression needs both classes represented
-    x = np.array([[ratio] for ratio, _ in samples])
-    y = np.array([label for _, label in samples])
-    model = LogisticRegression()
-    try:
-        model.fit(x, y)
-    except Exception:  # noqa: BLE001 - a bad fit must fall back, not crash the sweep
-        log.exception("repair model training failed")
-        return None
-    return model
+    raise NotImplementedError("TODO: reimplement _train_repair_model")
 
 
 def _days_to_failure(component_id: str, ratio: float, probability: float) -> int:
@@ -214,21 +148,7 @@ def _days_to_failure(component_id: str, ratio: float, probability: float) -> int
     heuristic over a fixed window - there's no time-based history yet to
     project from (see the "known limitation" note on `repair_period_prediction`).
     """
-    rows = db.query("SELECT last_repaired_at FROM component_wear WHERE name = ?", (component_id,))
-    last_repaired_at = rows[0]["last_repaired_at"] if rows else None
-    if last_repaired_at and ratio > 0:
-        try:
-            repaired = datetime.fromisoformat(last_repaired_at)
-            if repaired.tzinfo is None:
-                repaired = repaired.replace(tzinfo=timezone.utc)
-            elapsed_days = max((datetime.now(timezone.utc) - repaired).total_seconds() / 86400.0, 1e-6)
-            rate_per_day = ratio / elapsed_days
-            if rate_per_day > 0:
-                remaining = max(0.0, 1.0 - ratio)
-                return max(0, round(remaining / rate_per_day))
-        except (ValueError, TypeError):
-            pass
-    return max(0, round((1.0 - probability) * DAYS_TO_FAILURE_FALLBACK_WINDOW))
+    raise NotImplementedError("TODO: reimplement _days_to_failure")
 
 
 def repair_period_prediction(component_id: str, cycle_count: int, runtime_seconds: int) -> dict[str, Any]:
@@ -248,26 +168,12 @@ def repair_period_prediction(component_id: str, cycle_count: int, runtime_second
     `check_wear` fires anyway - not a regression, just a ceiling on how much
     earlier this can currently catch a failure.
     """
-    ratio = _wear_ratio(cycle_count, runtime_seconds)
-    probability: Optional[float] = None
-    if _repair_model is not None:
-        try:
-            probability = float(_repair_model.predict_proba([[ratio]])[0][1])
-        except Exception:  # noqa: BLE001 - a stale/bad model must not block maintenance
-            log.exception("repair_period_prediction: model inference failed for %s", component_id)
-    if probability is None:
-        probability = 1.0 if ratio >= 0.85 else round(ratio / 0.85, 4)
-    days = _days_to_failure(component_id, ratio, probability)
-    return {
-        "needs_repair": probability > REPAIR_FAILURE_PROBABILITY_THRESHOLD,
-        "days_to_failure": days,
-        "failure_probability": round(probability, 4),
-    }
+    raise NotImplementedError("TODO: reimplement repair_period_prediction")
 
 
 def record_component_insights(rows: list[dict[str, Any]]) -> None:
     """Cache the latest component-health sweep for `latest_insights()`."""
-    _latest_components[:] = rows
+    raise NotImplementedError("TODO: reimplement record_component_insights")
 
 
 # --------------------------------------------------------------------- #
@@ -275,30 +181,7 @@ def record_component_insights(rows: list[dict[str, Any]]) -> None:
 # --------------------------------------------------------------------- #
 
 def _dwell_minutes_stats_for_type(car_type: str) -> tuple[Optional[float], int]:
-    key = normalize_car_type(car_type)
-    rows = db.query(
-        "SELECT minutes FROM sessions WHERE car_type IS NOT NULL AND minutes IS NOT NULL "
-        "AND lower(car_type) = ? ORDER BY minutes",
-        (key,),
-    )
-    values = [float(r["minutes"]) for r in rows if r["minutes"] is not None]
-    if not values:
-        return None, 0
-    sample_count = len(values)
-    if _SKLEARN_AVAILABLE and _NUMPY_AVAILABLE and sample_count >= MIN_GHOST_CAR_SAMPLES_FOR_ISOLATION_FOREST:
-        try:
-            arr = np.array(values, dtype=float).reshape(-1, 1)
-            inliers = IsolationForest(contamination=0.1, random_state=0).fit_predict(arr) == 1
-            filtered = arr[inliers].flatten().tolist()
-            if filtered:
-                values = filtered
-        except Exception:  # noqa: BLE001 - a bad fit must fall back to the raw median
-            log.exception("ghost_car_anomaly_imputation: isolation forest failed for %s", car_type)
-    values.sort()
-    n = len(values)
-    mid = n // 2
-    median = values[mid] if n % 2 else (values[mid - 1] + values[mid]) / 2.0
-    return median, sample_count
+    raise NotImplementedError("TODO: reimplement _dwell_minutes_stats_for_type")
 
 
 def ghost_car_anomaly_imputation(car_plate: str, car_type: str) -> dict[str, Any]:
@@ -319,26 +202,7 @@ def ghost_car_anomaly_imputation(car_plate: str, car_type: str) -> dict[str, Any
     `audit_logs` for traceability, separate from any real charge/payment
     audit trail.
     """
-    minutes, sample_count = _dwell_minutes_stats_for_type(car_type)
-    if minutes is None:
-        minutes = settings.unknown_car_minutes
-        confidence = 0.0
-    else:
-        confidence = round(min(1.0, sample_count / CONFIDENCE_FULL_SAMPLE_SIZE), 2)
-    tariff = tariffs.effective()
-    key = normalize_car_type(car_type)
-    multiplier = float(tariff.get(f"class_multiplier_{key}", 1.0))
-    base = round(max(tariff["minimum_charge"], minutes * tariff["parking_rate_per_minute"]) * multiplier, 2)
-    fee = round(base * tariff["electric_multiplier"], 2) if key == "ev" else base
-    result = {"imputed_fee": fee, "confidence_score": confidence, "median_duration": int(round(minutes))}
-    try:
-        db.record_audit_log(
-            None, "ml_agent", "ghost_car_fee_imputed",
-            json.dumps({"plate": car_plate, "car_type": car_type, **result}),
-        )
-    except Exception:  # noqa: BLE001 - an audit-log failure must not block the estimate
-        log.exception("ghost_car_anomaly_imputation: failed to log imputation for %s", car_plate)
-    return result
+    raise NotImplementedError("TODO: reimplement ghost_car_anomaly_imputation")
 
 
 # --------------------------------------------------------------------- #
@@ -356,14 +220,7 @@ def latest_insights() -> dict[str, Any]:
     detail) happens downstream in `app.policy.project_snapshot`, same as the
     rest of the snapshot.
     """
-    return {
-        "ventilation": list(_latest_ventilation.values()),
-        "components": list(_latest_components),
-        "anomalies": db.query(
-            "SELECT plate, gate, fallback_charge, resolved_at FROM ghost_car_events "
-            "WHERE resolved = 1 ORDER BY resolved_at DESC LIMIT 10"
-        ),
-    }
+    raise NotImplementedError("TODO: reimplement latest_insights")
 
 
 # --------------------------------------------------------------------- #
@@ -381,46 +238,7 @@ async def predictive_sweep_once(
     breakdowns against 1 preventive repair, the model gave ~99% failure for
     every component at any wear and queued them all (4.31). Gates are never
     queued here: app.main._schedule_gate_repairs owns them (4.28)."""
-    global _repair_model
-    _repair_model = _train_repair_model()
-    component_rows: list[dict[str, Any]] = []
-    for row in wear_snapshot():
-        if row["broken"] or row["under_maintenance"] or row["type"] == "Light":
-            _warned_components.discard(row["name"])
-            continue
-        name, component_type = row["name"], row["type"]
-        prediction = repair_period_prediction(name, row["cycle_count"], row["runtime_seconds"])
-        component_rows.append({"name": name, "type": component_type, **prediction})
-
-        if prediction["days_to_failure"] <= MAINTENANCE_WARNING_DAYS:
-            if broadcast is not None and name not in _warned_components:
-                _warned_components.add(name)
-                try:
-                    await broadcast({
-                        "type": "alert", "alert_type": "PREDICTIVE_MAINTENANCE_WARNING",
-                        "component": name, "component_type": component_type,
-                        "days_to_failure": prediction["days_to_failure"],
-                        "failure_probability": prediction["failure_probability"],
-                    })
-                except Exception:  # noqa: BLE001 - a broadcast failure must not lose the sweep
-                    log.exception("failed to broadcast maintenance warning for %s", name)
-        else:
-            _warned_components.discard(name)
-
-        if (not settings.ml_predictive_repairs or component_type == "BarrierGate"
-                or not prediction["needs_repair"]):
-            continue
-        if db.get_meta(f"pending_proactive_repair:{name}") == "1":
-            continue
-        if settings.autopilot:
-            db.set_meta(f"pending_proactive_repair:{name}", "1")
-            db.record_component_event(name, component_type, "repair_triggered_predictive")
-        log.info("ml_agent: %s %s predicted failure probability %.2f - queuing early repair",
-                 component_type, name, prediction["failure_probability"])
-        await queue_repair(component_type, name)
-
-    component_rows.sort(key=lambda c: c["days_to_failure"])
-    record_component_insights(component_rows)
+    raise NotImplementedError("TODO: reimplement predictive_sweep_once")
 
 
 async def run_predictive_loop(
@@ -447,9 +265,4 @@ async def run_predictive_loop(
     recovers so it can fire again on a future decline instead of going
     silent forever.
     """
-    while True:
-        try:
-            await predictive_sweep_once(wear_snapshot, queue_repair, broadcast)
-        except Exception:  # noqa: BLE001 - a bad sweep must not kill the background task
-            log.exception("ml_agent predictive loop tick failed")
-        await asyncio.sleep(interval_s / max(settings.game_speed, 0.1))
+    raise NotImplementedError("TODO: reimplement run_predictive_loop")
