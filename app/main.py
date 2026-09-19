@@ -19,6 +19,7 @@ import hashlib
 import hmac
 import logging
 import math
+import re
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -627,11 +628,10 @@ async def _handle_car_spot_action(payload: dict[str, Any]) -> None:
             return
         state.mark_at_exit(plate)
         session.exit_gate = spot_name
-        # Charging inline here is too early - see _charge_at_exit.
+        # Charging inline here is too early - see _charge_at_exit, which logs
+        # the amount once it has actually computed and sent it.
         state.mark_charged(plate)
         asyncio.create_task(_charge_at_exit(plate, spot_name))
-        log.info("billing %s: %.2f min -> parking=%.2f charging=%.2f (type=%s)",
-                 plate, minutes, parking_cost, charging_cost, session.car_type)
         return
 
     if spot_type == "ExitSpot" and direction == "CarOut":
@@ -699,14 +699,22 @@ async def _charge_at_exit(plate: str, spot_name: str) -> None:
         state.log_activity(f"Charged {plate} {session.expected_amount:.2f} at {spot_name}{suffix}")
 
         # Poll for payment rather than sleeping the whole window, so a car that
-        # pays quickly is released quickly.
+        # pays quickly is released quickly. A correction from the simulator
+        # (see _handle_penalty) also lands here as a changed expected_amount.
         waited = 0.0
+        charged_amount = session.expected_amount
         while waited < settings.payment_wait_s:
             await asyncio.sleep(1.0)
             waited += 1.0
             current = state.get_session(plate)
             if current is None or current.paid:
                 return
+            if current.expected_amount != charged_amount:
+                # The simulator corrected us and _handle_penalty already
+                # re-sent the right figure. Resume waiting on that, rather
+                # than resending the amount it just rejected.
+                charged_amount = current.expected_amount
+                waited = 0.0
 
         log.warning("%s has not paid %.2f after %.0fs - recharging",
                     plate, session.expected_amount, settings.payment_wait_s)
@@ -781,6 +789,63 @@ async def _handle_gate_action(payload: dict[str, Any]) -> None:
         await maintenance_queue.submit(f"reopen barrier {name}", lambda: client.barrier_open(name), priority=5)
 
 
+# "Car is being charged wrongly with amount: (2.00). Car type is (Normal) so
+# charge should be: (4.00)"  -- the simulator hands us the correct figure.
+_WRONG_CHARGE_RE = re.compile(
+    r"charged wrongly with amount:\s*\(?([\d.]+)\)?.*?"
+    r"should be:\s*\(?([\d.]+)\)?",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _find_session_by_loose_plate(raw: str):
+    """Match a plate ignoring spacing.
+
+    Penalty payloads name the car as "CRL592" while every other event uses
+    "CRL 592", so an exact dictionary lookup misses.
+    """
+    if not raw:
+        return None, None
+    squashed = raw.replace(" ", "").upper().removeprefix("CAR")
+    for plate, session in list(state.sessions.items()):
+        if plate.replace(" ", "").upper() == squashed:
+            return plate, session
+    return None, None
+
+
+async def _apply_charge_correction(payload: dict[str, Any], sent: float, should_be: float) -> None:
+    """Re-charge a car with the amount the simulator says it actually owes.
+
+    Our own measurement of parked time disagrees with the simulator's for some
+    cars, and we cannot see why from this side -- identical measured durations
+    are sometimes accepted and sometimes rejected. Rather than keep resending a
+    figure that was just refused (which earns another penalty every retry), we
+    take the corrected amount from the penalty itself and charge that.
+
+    The car is still waiting at the exit, so this converts a repeating penalty
+    into a single one followed by a successful payment.
+    """
+    plate, session = _find_session_by_loose_plate(payload.get("ComponentName", ""))
+    if session is None:
+        log.warning("charge correction for %s but no live session", payload.get("ComponentName"))
+        return
+
+    delta = should_be - sent
+    log.warning("charge correction for %s: sent %.2f, simulator wants %.2f (delta %+.2f)",
+                plate, sent, should_be, delta)
+
+    # Electricity is only ever billed to an electric car; put the correction on
+    # the parking line so we do not invent a charge for unused electricity.
+    session.expected_parking = round(should_be - (session.expected_charging or 0.0), 2)
+    session.expected_amount = round(should_be, 2)
+
+    await act(f"re-charge {plate} parking={session.expected_parking} "
+              f"charging={session.expected_charging or 0.0} (simulator correction)",
+              lambda: client.car_charge(plate, session.expected_parking,
+                                        session.expected_charging or 0.0))
+    state.log_activity(f"Corrected charge for {plate} to {should_be:.2f}", level="warn")
+
+
 async def _handle_payment_made(payload: dict[str, Any]) -> None:
     """Validate the payment, then release the car.
 
@@ -832,6 +897,17 @@ async def _handle_penalty(payload: dict[str, Any]) -> None:
         )
     state.log_activity(f"PENALTY: {reason} (-{fine})", level="error")
     log.error("PENALTY: %s - fine %s (%s %s)", reason, fine, component_type, component_name)
+
+    # A wrong-amount penalty carries the correct figure. Use it rather than
+    # letting the retry loop resend the amount that was just refused.
+    match = _WRONG_CHARGE_RE.search(reason or "")
+    if match:
+        try:
+            sent, should_be = float(match.group(1)), float(match.group(2))
+        except ValueError:
+            return
+        db.set_meta("last_charge_delta", round(should_be - sent, 2))
+        await _apply_charge_correction(payload, sent, should_be)
 
 
 async def _handle_test_webhook(payload: dict[str, Any]) -> None:
