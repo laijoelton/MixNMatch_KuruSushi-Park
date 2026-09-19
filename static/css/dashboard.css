@@ -152,7 +152,7 @@ a {
 
 #twin-wrap {
   width: 100%;
-  aspect-ratio: 16 / 10;
+  aspect-ratio: 4 / 3;
   background: var(--panel-alt);
   border-radius: var(--radius);
   overflow: hidden;
