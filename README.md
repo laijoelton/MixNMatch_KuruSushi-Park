@@ -2,33 +2,34 @@
 
 HackMY IoT 2026 · Track 2: Next-Gen Parking Solutions
 
-**This branch (`feature/dashboard-ui`) layers a live operator HUD and a
-mobile gate portal on top of the `feature/simulator-core` dispatch engine**,
-without changing any of that engine's dispatch, penalty-mitigation or
-webhook logic. `main` is this branch merged in — the full, unified system.
+**Staff-facing dashboards layered on the `feature/simulator-core` dispatch
+engine**, without changing any of that engine's dispatch, penalty-mitigation
+or webhook logic. `main` is the full, unified system.
 
-## Dual Dashboard Suite
+Every page requires a staff sign-in. The only unauthenticated surfaces are
+`/healthz` and `/webhooks/simulator` — the simulator has no cookie to send us.
+
+## Dashboards
 
 | Route | Audience | What it shows |
 |---|---|---|
 | `GET /` | Operator | Dark-mode HUD: telemetry cards (available/occupied/reserved/broken, active sessions, penalty count & fines, maintenance queue depth), an HTML5 Canvas digital twin of the dispatch ring, live barrier list, broken-component list, activity log, penalty log, and manual controls (sync, simulate arrival/dry-run, open/close barriers). |
-| `GET /gate?gate=<name>` | Driver / walk-in | Mobile-first cinema-style grid of every `Park` spot, colored live (green = available, teal = occupied, amber = reserved, gray = broken/maintenance), gate selector, plate entry, and one-tap check-in to a specific chosen bay. |
+| `GET /dashboard` | Operator | Full-width canvas over the real simulator geometry, with animated dispatch paths and per-plate route tracking. |
+| `GET /admin` | All staff | Role-gated console: zones, gate control, earnings, raw event log, session history — each pane rendered only for roles that hold the matching permission. |
 
-Both pages are pure observers: they render whatever `app/state.py::snapshot()`
+All pages are pure observers: they render whatever `app/state.py::snapshot()`
 already holds and push their own explicit actions through the same JSON API
-the headless core exposes (`/api/manual/*`, `/api/gate/checkin`) — they
-never bypass the dispatch/idempotency/penalty-mitigation logic described
-below.
+the headless core exposes (`/api/manual/*`) — they never bypass the
+dispatch/idempotency/penalty-mitigation logic described below.
 
 **Live updates:** `app/ws_manager.py::ConnectionManager` fan-outs one state
 snapshot per tick (`BROADCAST_INTERVAL_S`, default 1s) to every connected
 browser over `/ws/live`. `static/js/canvas_twin.js` projects spots and
 barriers onto the same deterministic sorted-name ring `app/routing.py` uses
 for dispatch, so the twin's layout is numerically the same ring the router
-reasons about — not a cosmetic approximation. `static/js/lot_picker.js`
-renders the cinema grid from the same `spots` array and posts the driver's
-pick to `/api/gate/checkin`, which honours it only if the spot is still
-reservable (race-safe via `ParkingState.reserve_spot`'s lock).
+reasons about — not a cosmetic approximation. Each socket is filtered to the
+permissions of the session that opened it, so a broad feed cannot be used to
+read around a narrower endpoint.
 
 ## System Architecture & Pitch Overview
 
@@ -121,8 +122,7 @@ Webhooks reference.
 | Method & Path | Purpose |
 |---|---|
 | `GET /` | Operator HUD page |
-| `GET /gate` | Mobile gate/check-in portal page |
-| `WS /ws/live` | Live state snapshot stream (both pages) |
+| `WS /ws/live` | Live state snapshot stream, filtered per role |
 | `GET /healthz` | Liveness + counts + maintenance queue stats + connected dashboard clients |
 | `GET /api/state` | Full state snapshot (spots, barriers, zones, fans, sessions, penalties, activity log) |
 | `GET /api/spots` | Spot list + occupancy counts |
@@ -132,7 +132,6 @@ Webhooks reference.
 | `POST /api/manual/arrival` | Manually replay the entry-dispatch path for a plate (`dry_run: true` previews ranking only) |
 | `POST /api/manual/barrier/{name}/open` \| `/close` | Manual barrier control |
 | `POST /api/manual/repair/{name}` | Queue a repair for any component |
-| `POST /api/gate/checkin` | Gate portal: assign the driver's chosen spot and dispatch |
 | `POST /webhooks/simulator` | Inbound event receiver from Grand Park Auto |
 
 ## Setup & Execution Guide
@@ -199,10 +198,9 @@ docker run -p 8080:8080 \
 6. Breaking a component triggers a queued, automatically-applied repair,
    deferred correctly if the affected spot is occupied, and shows up in the
    HUD's broken-components panel until fixed.
-7. Open `http://localhost:8080/gate` on a phone (or resize the browser) —
-   pick a green spot, enter a plate, and check in; the spot should turn
-   amber (reserved) on both the gate portal and the operator HUD within one
-   broadcast tick.
+7. Sign in as each of the four roles in turn (`admin`, `operator`,
+   `accountant`, `engineer`) and confirm `/admin` renders only that role's
+   panes — see `docs/CHALLENGE_CHECKLIST.md` for the permission table.
 
 ## Known hazards (read before a scored run)
 

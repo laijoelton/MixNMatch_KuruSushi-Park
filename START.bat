@@ -149,10 +149,9 @@ echo.
 echo   Dashboard    %DASH_URL%    ^<- split-screen operator view
 echo   Operator HUD %HUD_URL%
 echo   Staff console http://127.0.0.1:8080/admin
-echo   Gate portal  http://127.0.0.1:8080/gate   ^<- drivers, no login
 echo   Health       http://127.0.0.1:8080/healthz
 echo.
-echo   Staff sign-in is required for every page except the gate portal.
+echo   Staff sign-in is required for every page.
 echo   Default accounts ^(change them in .env before a real deploy^):
 echo     admin      / admin123        everything
 echo     operator   / operator123     gates + bays

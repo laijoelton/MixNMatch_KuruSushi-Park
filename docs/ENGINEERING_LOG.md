@@ -426,6 +426,41 @@ endpoint changes.
 sides before `compare_digest` — its `str` form raises `TypeError` on non-ASCII
 input, which would turn a junk username into a 500 instead of a failed login.
 
+### 4.13 Removing the driver-facing bay picker
+
+Two surfaces let a driver pick their own bay: `/gate` (a mobile grid) and a
+phone-frame pane on `/dashboard` backed by `static/js/user_waze_gps.js`.
+
+**Both are now removed**, at the team's call, and the reasoning is worth
+keeping: a driver choosing their own spot *competes with the router that is
+being scored*. `dispatch_entry()` ranks bays by real driving distance;
+`assign_specific_spot()` threw that away and honoured whatever the human
+tapped. Two dispatch paths into the same reservation lock is also twice the
+surface for a race to hide in, for a feature the brief never asks for.
+
+**Removed:** `templates/gate.html`, `static/js/lot_picker.js`,
+`static/js/user_waze_gps.js`, the `/gate` page route, `POST /api/gate/checkin`,
+`POST /api/dispatch`, `assign_specific_spot()` (dead once both callers went),
+the `.phone-*`/`.gps-*` CSS block (236 lines), and the orphaned `.checkin-bar`
+rule.
+
+**One thing that needed care:** `dashboard.html` went back to
+`operator-pane-full`, but that class only set `width: 100%` — the flex column
+layout lived on `.operator-pane`, the class for when there were two panes.
+Swapping without folding those properties across would have collapsed the
+header and canvas. This is the sort of breakage that renders rather than
+errors, so it would have been found by eye or not at all.
+
+**Side effect worth having:** with the public portal gone, *every* page and API
+needs a staff session. The only unauthenticated surfaces left are `/healthz`
+and `/webhooks/simulator`. The "which parts are public and why" carve-out in
+`app/auth.py` is gone with it.
+
+**Verified:** `/gate`, `/api/gate/checkin`, `/api/dispatch` and both deleted
+scripts return `404`; `/dashboard` renders full width loading only
+`operator_canvas.js`; no `href="/gate"` survives in any rendered page; the full
+lifecycle replay still closes with invoice `2.00`.
+
 ---
 
 ## 5. Edge cases and how they are handled
@@ -511,7 +546,6 @@ connected to the real park — stop and fix before letting it run live.
 | Operator HUD | `http://127.0.0.1:8080/` | `lot.view` |
 | Staff console | `http://127.0.0.1:8080/admin` | any staff — panes by permission |
 | Sign-in | `http://127.0.0.1:8080/login` | — |
-| Mobile gate portal | `http://127.0.0.1:8080/gate` | **public, no login** |
 | Health + counters | `http://127.0.0.1:8080/healthz` | public |
 | Session history | `http://127.0.0.1:8080/api/history` | `history.view` |
 | Signature calibration | `http://127.0.0.1:8080/api/signature-report` | `diagnostics.view` |

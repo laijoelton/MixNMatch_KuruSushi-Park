@@ -76,10 +76,14 @@ car released.
 
 | Page | Purpose |
 |---|---|
-| `/dashboard` | Split screen: operator canvas + driver phone GPS view |
+| `/dashboard` | Full-width operator canvas over the real simulator geometry |
 | `/` | Operator HUD — live lot, manual controls |
 | `/admin` | Staff console — panes gated by role |
-| `/gate` | Public driver portal, **no login** |
+
+Every page requires a staff sign-in. A driver-facing bay picker existed
+(`/gate`, plus a phone pane on `/dashboard`) and was removed: letting a driver
+choose their own bay competes with the router that is actually being scored,
+and nothing in the brief asks for it.
 
 ## 6. Keep parking data and the dashboard up to date
 
@@ -123,7 +127,8 @@ Endpoints ask for a **permission**, never a role, so adding a role for level 2
 is one row in `ROLE_PERMISSIONS` with no endpoint changes. Admin is defined as
 `ALL_PERMISSIONS`, so it picks up anything added later automatically.
 
-The gate portal stays public — a walk-in driver has no staff account.
+The only unauthenticated surfaces are `/healthz` and `/webhooks/simulator` —
+the simulator has no cookie to send us.
 
 *Verified offline* — the full access matrix (12 read endpoints × 4 roles, plus
 the control endpoints) behaves exactly as the table says; the live WebSocket

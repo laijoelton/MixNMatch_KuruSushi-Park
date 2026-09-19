@@ -1,9 +1,8 @@
 """Basic staff authentication: two roles, Admin and Operator.
 
-Only the staff-facing surfaces (operator dashboard, admin dashboard, manual
-control endpoints) sit behind this. The public driver portal (``/gate``,
-``/api/gate/checkin``, ``/api/dispatch``) is deliberately left open - a
-walk-in driver has no staff account and was never meant to need one.
+Every page and API sits behind this. The only unauthenticated surfaces are
+``/healthz`` and ``/webhooks/simulator`` - the simulator has no cookie to send
+us, and the health probe carries nothing worth guarding.
 
 Sessions are an in-memory token -> {username, role, expires_at} map, keyed by
 a random token handed to the browser as an ``HttpOnly`` cookie. This is

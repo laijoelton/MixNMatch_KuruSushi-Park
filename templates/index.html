@@ -21,7 +21,6 @@
         {# Every staff role has a console; only the link text differs. #}
         <a class="hint" href="/admin" style="align-self:center;">{{ user.role|capitalize }} console →</a>
         <a class="hint" href="/dashboard" style="align-self:center;">Split canvas →</a>
-        <a class="hint" href="/gate" style="align-self:center;">Open gate portal →</a>
         {% if 'lot.control' in perms or 'maintenance' in perms %}
         <button class="secondary" id="btn-sync">Manual Sync</button>
         {% endif %}

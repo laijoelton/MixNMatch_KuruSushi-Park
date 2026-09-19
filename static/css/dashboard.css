@@ -395,19 +395,6 @@ button.danger {
   vertical-align: middle;
 }
 
-.checkin-bar {
-  position: sticky;
-  bottom: 0;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  box-shadow: var(--shadow);
-}
-
 .status-message {
   font-size: 12px;
   min-height: 16px;

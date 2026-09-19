@@ -3,13 +3,13 @@
 This service is the sole external controller of the closed
 ``ParkingSimulator-win-x64`` binary. It never polls; every mutation to local
 state happens strictly in reaction to an inbound webhook (see ``app/state.py``
-docstring). Two browser-facing surfaces are layered on top of that headless
-core without changing its behaviour:
+docstring). Three staff surfaces are layered on top of that headless core
+without changing its behaviour:
 
 * ``/`` - an operator HUD (live telemetry, digital twin, manual controls).
-* ``/gate`` - a mobile-first cinema-style bay picker for walk-in check-in.
-* ``/dashboard`` - split-screen operator canvas (real simulator geometry,
-  animated dispatch paths) next to a phone-frame driver GPS mockup.
+* ``/dashboard`` - full-width operator canvas over the real simulator
+  geometry, with animated dispatch paths.
+* ``/admin`` - the staff console; which panes render depends on the role.
 
 All three are pure read/observe layers over the same ``ParkingState`` the
 webhook handlers mutate, pushed to connected browsers over ``/ws/live`` (and,
@@ -28,7 +28,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
-from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Form, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -353,36 +353,12 @@ async def dispatch_entry(plate: str, gate_name: str, car_type: str = "Normal",
     return {"plate": plate, "gate": gate_name, "target": target, "dispatched": True}
 
 
-async def assign_specific_spot(plate: str, gate_name: str, spot_name: str,
-                               car_type: str = "Normal") -> dict[str, Any]:
-    """Used by the gate portal: honour the user's explicit pick if it's still valid."""
-    state.start_session(plate, gate=gate_name)
-    if not state.reserve_spot(spot_name, plate):
-        return {"plate": plate, "gate": gate_name, "target": spot_name, "dispatched": False,
-                "reason": "spot no longer available"}
-    state.assign_spot(plate, spot_name)
-    sent = await act(f"car {plate} -> {spot_name} (gate portal pick)",
-                     lambda: client.car_goto(plate, spot_name))
-    if not sent:
-        state.release_reservation(spot_name, plate)
-        state.complete_session(plate)
-        # Distinguish "we chose not to send" from "we tried and it failed" --
-        # a driver at the gate portal being told "autopilot disabled" when the
-        # simulator is simply unreachable sends them looking in the wrong place.
-        reason = ("autopilot disabled - no command sent" if not settings.autopilot
-                  else "simulator did not accept the command")
-        return {"plate": plate, "gate": gate_name, "target": spot_name, "dispatched": False,
-                "reason": reason}
-    state.log_activity(f"Check-in: {plate} chose {spot_name} at {gate_name}")
-    return {"plate": plate, "gate": gate_name, "target": spot_name, "dispatched": True}
-
-
 # --------------------------------------------------------------------------- #
 # Auth pages
 # --------------------------------------------------------------------------- #
-# Only the staff surfaces below (operator/admin dashboards, manual control
-# endpoints) sit behind login. The public driver portal (/gate) and its APIs
-# are deliberately left open - a walk-in driver has no staff account.
+# Every page and API below requires a staff session. The only unauthenticated
+# surfaces left are /healthz and /webhooks/simulator - the simulator has no
+# cookie to send us, and the health probe carries nothing sensitive.
 def _require_page_user(request: Request) -> SessionInfo:
     """Like auth.require_staff, but for HTML pages: redirect to /login
     instead of a bare 401 JSON body a browser tab can't do anything with."""
@@ -482,17 +458,6 @@ async def operator_dashboard(
     return templates.TemplateResponse(request, "index.html", {
         "team_name": "KuruSushi-Park", "asset_version": str(int(time.time())),
         "user": user, "perms": sorted(user.permissions),
-    })
-
-
-@app.get("/gate", response_class=HTMLResponse, include_in_schema=False)
-async def gate_portal(request: Request, gate: Optional[str] = Query(None)):
-    if templates is None:
-        raise HTTPException(500, "templates directory missing")
-    gates = state.entry_gates()
-    selected = gate if gate in gates else (gates[0] if gates else None)
-    return templates.TemplateResponse(request, "gate.html", {
-        "gates": gates, "selected_gate": selected, "asset_version": str(int(time.time())),
     })
 
 
@@ -775,53 +740,7 @@ async def manual_repair(name: str,
 
 
 # --------------------------------------------------------------------------- #
-# Gate portal API
-# --------------------------------------------------------------------------- #
-class CheckinIn(BaseModel):
-    plate: str = Field(..., min_length=1, max_length=16)
-    gate: str = Field(..., min_length=1, max_length=32)
-    spot: str = Field(..., min_length=1, max_length=32)
-    car_type: str = Field("Normal", max_length=16)
-
-
-@app.post("/api/gate/checkin")
-async def gate_checkin(body: CheckinIn) -> dict[str, Any]:
-    if body.gate not in state.spots:
-        raise HTTPException(404, f"unknown gate {body.gate}")
-    if body.spot not in state.spots:
-        raise HTTPException(404, f"unknown spot {body.spot}")
-    result = await assign_specific_spot(body.plate, body.gate, body.spot, body.car_type)
-    if not result["dispatched"]:
-        raise HTTPException(409, result.get("reason", "spot unavailable"))
-    return result
-
-
-class DispatchIn(BaseModel):
-    car_plate: str = Field(..., min_length=1, max_length=16)
-    target_spot_id: str = Field(..., min_length=1, max_length=32)
-    gate: Optional[str] = Field(None, max_length=32)
-    car_type: str = Field("Normal", max_length=16)
-
-
-@app.post("/api/dispatch")
-async def api_dispatch(body: DispatchIn) -> dict[str, Any]:
-    """Split-dashboard entry point: driver picks a bay in the phone GPS view.
-
-    Thin wrapper over the same reserve-then-goto path /api/gate/checkin uses
-    (``assign_specific_spot``), so it is idempotency- and AUTOPILOT-safe.
-    """
-    known_gates = state.entry_gates()
-    gate = body.gate or (known_gates[0] if known_gates else settings.entry_gate)
-    if body.target_spot_id not in state.spots:
-        raise HTTPException(404, f"unknown spot {body.target_spot_id}")
-    result = await assign_specific_spot(body.car_plate, gate, body.target_spot_id, body.car_type)
-    if not result["dispatched"]:
-        raise HTTPException(409, result.get("reason", "spot unavailable"))
-    return result
-
-
-# --------------------------------------------------------------------------- #
-# Live WebSocket feed (operator HUD + gate picker + split dashboard)
+# Live WebSocket feed (operator HUD + split dashboard)
 # --------------------------------------------------------------------------- #
 def _ws_session(ws: WebSocket) -> Optional[SessionInfo]:
     """The staff session behind a WebSocket, or None.

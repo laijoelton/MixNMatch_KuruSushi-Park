@@ -105,9 +105,8 @@ class Settings:
     broadcast_interval_s: float
     webhook_debug: bool
 
-    # Staff auth. Never used for the public /gate driver portal - only for
-    # the staff consoles and the manual control endpoints behind them.
-    # Roles and what each one may do live in app/auth.py:ROLE_PERMISSIONS.
+    # Staff auth. Guards every page and API except /healthz and the inbound
+    # webhook. Roles and what each may do: app/auth.py:ROLE_PERMISSIONS.
     admin_username: str
     admin_password: str
     operator_username: str
