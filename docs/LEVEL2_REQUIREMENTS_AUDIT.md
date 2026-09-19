@@ -13,26 +13,26 @@ Sources: the supplied `Pasted text.txt` checklist and `LEVEL 2 _ Notion.pdf` (bo
 pages inspected). The Level 2 PDF takes precedence, as confirmed by the user.
 Simulator API, Components, Webhooks and Settings PDFs were consulted to resolve
 API details. Execution directives inside the pasted attachment were not adopted:
-work stayed in this workspace on `codex/level2-requirements-audit`, with no commit,
-push, production database change or `.env` edit.
+work stayed in this workspace on `codex/level2-requirements-audit`, with no
+production database change or `.env` edit.
 
 ## Level 2 PDF coverage
 
 | Requirement | Result and evidence |
 |---|---|
-| Continue operations while handling failures | Fixed recovery bugs: live occupied bays survive session restoration/expiry; dispatch retries stop when a bay is no longer reserved safely; paid vehicles resume failed release on recovery or another validated payment without another charge. Confirmed exits are excluded from the missing-exit orphan reaper. `tests/test_recovery_regressions.py`. |
-| Track usage of spots, gates, lights and fans | `ParkingState.wear_snapshot()` and SQLite `component_wear`; fixed double-counted gate movements and runtime to use simulated seconds. Live dashboard now exposes all component types, cycles, runtime, wear and health. |
-| Preventive maintenance before failure | 85% configured threshold, queue deduplication, occupied-bay deferral, pending-bay exclusion, fan stop-before-repair and gate-motion guard. Failed retries no longer block unrelated repairs or permanently suppress future attempts. **Conditional:** configured limits must match actual simulator limits; discovery does not supply a rated lifetime. |
-| Detect, record, track and display unavailable components | Broken/maintenance state, component events, HUD alerts, usage table and `/api/broken`. Added missing light fault tracking and guards against operating unavailable fans/lights. Broken components discovered by synchronization are queued even without a new broken webhook. |
+| Continue operations while handling failures | Fixed recovery bugs: live occupied bays survive session restoration/expiry; dispatch retries stop when a bay is no longer reserved safely; paid vehicles resume failed release on recovery or another validated payment without another charge. Confirmed exits are excluded from the missing-exit orphan reaper. Handler failures remain durable and retry on signed redelivery instead of being acknowledged as processed. `tests/test_recovery_regressions.py`, `tests/test_level2_submission_hardening.py`. |
+| Track usage of spots, gates, lights and fans | `ParkingState.wear_snapshot()` and SQLite `component_wear`; fixed double-counted gate movements, imported simulator usage counters, and runtime to use simulated seconds. The Level 2 offline seed includes all lights. Live dashboard exposes all component types, cycles, runtime, wear and health. |
+| Preventive maintenance before failure | 85% configured threshold, queue deduplication, occupied-bay deferral, pending-bay exclusion, fan stop-before-repair and gate-motion guard. Preventive work waits while a gate is operationally held or a fan is needed for unsafe CO. Failed retries no longer block unrelated repairs or permanently suppress future attempts. **Conditional:** configured limits must match actual simulator limits; discovery does not supply a rated lifetime. |
+| Detect, record, track and display unavailable components | Broken/maintenance/queued state, component events, HUD alerts, usage table and `/api/broken`. Queued work is shown as out of service before the simulator reports maintenance. Added missing light fault tracking and guards against operating unavailable fans/lights. Broken components discovered by synchronization are queued even without a new broken webhook. |
 | Monitor CO and operate exhaust fans | Per-zone readings and >50/<30 hysteresis in `_handle_carbon_monoxide_event`; broken, queued and repairing fans are excluded. Repaired fans reconsider the most recent zone reading. Safe readings below the off threshold must actually arrive; no REST polling is introduced to synthesize them. |
-| Estimate stays and charge vehicle types | Planned duration by default, measured fallback, explicit class normalization/multipliers, EV split, rounding and effective tariff at charge time. Existing billing tests retained. **Live EV tariff/split confirmation remains required.** |
-| Store events and important activities | SQLite events, sessions, payments, penalties, rejected webhooks, login attempts, repair lifecycle and administrative audit records. Accepted webhook EventId deduplication remains durable. |
+| Estimate stays and charge vehicle types | Planned duration by default, measured fallback, rejection of non-finite/non-positive planned values, explicit class normalization/multipliers, EV split, rounding and effective tariff at charge time. History stores and displays the measured simulated parked duration separately from the booking. **Live EV tariff/split confirmation remains required.** |
+| Store events and important activities | SQLite events, sessions, payments, penalties, rejected webhooks, login attempts, repair lifecycle and administrative audit records. Accepted webhook EventId deduplication remains durable; failed accepted events stay unprocessed and visible until successful redelivery. |
 | RBAC for repairs and financial reports | Explicit four-role capability sets. Only admin holds `maint:control`; admin/auditor see financial reports; auditor alone among nonadmins may edit tariffs. Runtime route coverage, negative request pairs and HTTP/WS projection tests. |
 | Record successes/failures and show last three after login | Login success displays the previous three attempts before continuing to dashboard. Fixed whitespace usernames splitting authentication from history. Tests cover canonical history and successful/failed attempts. |
 | Signed webhooks only; log unsigned calls | Fixed-protocol MD5 sorted-value signature enforcement; missing/invalid signature returns 401 and stores rejection. Automated signature tests pass. Complete real simulator payloads remain an integration check. |
 | Audit important changes, repairs and events | Administrative before/after audit, durable operational webhooks and component events. Repair start/failure records added. Failed user creation now rolls back instead of poisoning later SQLite transactions. |
 | Penalties on dedicated page | `/penalties`, authorized financial API and reason filter already existed; retained and browser/page-route checked. |
-| Dynamic daily report | Existing zone aggregation retained; report now refreshes through dashboard WebSocket ticks and a manual button. Penalties use webhook UTC receipt date consistently with recorded operational activity, with simulator-date fallback for legacy rows lacking the source event. Date basis is explicit. |
+| Dynamic daily report | Existing zone aggregation retained; report refreshes through dashboard WebSocket ticks and a manual button. Paid revenue uses the verified payment receipt date, while repair costs and fines are deducted from net revenue. Penalties use webhook UTC receipt date consistently with recorded operational activity, with simulator-date fallback for legacy rows lacking the source event. Date basis is explicit. |
 | Unregistered car parked without either sensor, then exits | Durable ghost alert, mapped exit hold, median/default estimate, staff override and validated payment before release. Existing ghost/fake-payment regressions retained. |
 
 Lights expose on/off endpoints but **no repair endpoint** in the supplied API
@@ -92,15 +92,26 @@ repair command is sent.
 16. Daily reports were loaded once, mixed clocks for fines and clipped controls at narrow widths.
 17. Simulator HTTP timeouts and empty-level recovery cooldown were not scaled.
 18. Barrier repair completion did not resume paused assigned-entry or paid-exit flows.
+19. Invalid planned durations such as `nan`, infinity and negatives could poison billing.
+20. Live synchronization discarded broken/maintenance bay status, usage counters and zone risk.
+21. Restart lost the last sequence and durable penalty totals, and did not resume an unattempted exit invoice.
+22. Handler exceptions marked accepted webhooks processed and returned `200`, preventing safe redelivery.
+23. Failed/full entry arrivals could disappear from tracking or be counted as completed throughput; unknown entry departures leaked memory.
+24. History showed booked time as the actual stay and classified every unpaid archive as suspect.
+25. Daily and all-time net revenue omitted recorded repair costs and used the wrong clock for paid revenue.
+26. Preventive work could interrupt a held gate or safety-critical fan, while queued components still appeared healthy.
+27. The Level 2 fallback seed omitted lights and component usage counters.
+28. Malformed JSON produced a server error and numeric-string sequence IDs were not normalized consistently.
+29. Holding an already closed exit gate issued a redundant close command and false wear cycle.
 
 ## Verification and limits
 
-Baseline: 136 cases, 135 passed and 1 failed. Final suite: **160 passed**, with two
-dependency deprecation warnings. New regression tests were observed failing before
-the corresponding backend fixes. `python -m compileall -q app tests`, all 24 Node
-JavaScript syntax checks and `git diff --check` passed. Browser checks are recorded
-in `ENGINEERING_LOG.md` section 4.16. The existing entrance retry fixture now creates
-the actual bay reservation required by the strengthened dispatch safety guard.
+Baseline: 136 cases, 135 passed and 1 failed. Final suite: **185 passed**, with two
+dependency deprecation warnings. The submission-hardening regressions were observed
+failing before the corresponding fixes. `python -m compileall -q app tests scripts`,
+Ruff fatal/error/late-binding checks, dependency consistency, all JavaScript syntax
+checks and `git diff --check` passed. Browser checks are recorded in
+`ENGINEERING_LOG.md` sections 4.16-4.17.
 
 Browser verification used a separate SQLite file under `tmp/`, AUTOPILOT=false,
 an unreachable simulator endpoint, and the Level 2 seed. Verified login history,

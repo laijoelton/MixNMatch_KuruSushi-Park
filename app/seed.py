@@ -49,6 +49,7 @@ def load_level(level: str) -> dict[str, list[dict[str, Any]]] | None:
             "detectedCars": [],
             "broken": False,
             "isUnderMaintenance": False,
+            "usageCounter": s.get("UsageCounter", 0),
         }
         for s in raw.get("ParkingSpots", [])
     ]
@@ -59,6 +60,7 @@ def load_level(level: str) -> dict[str, list[dict[str, Any]]] | None:
             "broken": False,
             "isUnderMaintenance": False,
             "state": g.get("State", "Closed"),
+            "usageCounter": g.get("UsageCounter", 0),
         }
         for g in raw.get("Gates", [])
     ]
@@ -76,9 +78,20 @@ def load_level(level: str) -> dict[str, list[dict[str, Any]]] | None:
         {"name": z["Name"], "gasCarbonMonoxideLevel": 0, "risk": "Safe"}
         for z in raw.get("Zones", [])
     ]
+    lights = [
+        {
+            "name": light["Name"],
+            "zoneParent": light.get("ZoneParent", ""),
+            "group": light.get("Group", ""),
+            "isOn": bool(light.get("IsOn", True)),
+            "broken": False,
+            "isUnderMaintenance": False,
+        }
+        for light in raw.get("Lights", [])
+    ]
 
     log.info(
-        "seed: loaded %s from %s (%d spots, %d gates, %d fans, %d zones)",
-        level, source, len(spots), len(barriers), len(fans), len(zones),
+        "seed: loaded %s from %s (%d spots, %d gates, %d fans, %d lights, %d zones)",
+        level, source, len(spots), len(barriers), len(fans), len(lights), len(zones),
     )
-    return {"spots": spots, "barriers": barriers, "fans": fans, "zones": zones}
+    return {"spots": spots, "barriers": barriers, "fans": fans, "lights": lights, "zones": zones}

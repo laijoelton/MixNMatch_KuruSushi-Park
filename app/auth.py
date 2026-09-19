@@ -26,7 +26,7 @@ from starlette.responses import JSONResponse, RedirectResponse
 
 from app import db  # noqa: F401 - importing db creates the data directory
 from app.config import settings
-from app.policy import ROLES, allowed, capabilities, has, required_capabilities
+from app.policy import ROLES, allowed, has, required_capabilities
 
 log = logging.getLogger("dashboard.auth")
 

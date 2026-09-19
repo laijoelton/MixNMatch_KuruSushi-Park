@@ -129,7 +129,8 @@ async def gate_bays() -> list[dict[str, Any]]:
     snapshot = state.snapshot()
     bays = [
         {"name": s["name"], "zone": s["zone"], "car_type": s["car_type"],
-         "available": s["status"] == "AVAILABLE" and not s["broken"] and not s["under_maintenance"]}
+         "available": s["status"] == "AVAILABLE" and not s["broken"] and not s["under_maintenance"]
+                      and not s["repair_pending"]}
         for s in snapshot["spots"] if s["purpose"] == "Park"
     ]
     return sorted(bays, key=lambda b: (b["zone"], _natural_key(b["name"])))
@@ -202,11 +203,16 @@ async def stats(request: Request) -> dict[str, Any]:
         (SELECT COUNT(*) FROM payments WHERE valid = 0)       AS suspect_payments,
         (SELECT COUNT(*) FROM penalties)                      AS penalty_count,
         (SELECT COALESCE(SUM(fine_amount), 0) FROM penalties) AS total_fines,
-        (SELECT COUNT(*) FROM sequence_gaps)                  AS sequence_gaps""")[0]
+        (SELECT COUNT(*) FROM sequence_gaps)                  AS sequence_gaps,
+        (SELECT COUNT(*) FROM events WHERE processed = 0)     AS unprocessed_events""")[0]
     if has(user, "fin:view"):
         revenue = db.query("SELECT COALESCE(SUM(amount), 0) AS r FROM payments WHERE valid = 1")[0]["r"]
+        repair_costs = db.query(
+            "SELECT COALESCE(SUM(amount), 0) AS r FROM component_events "
+            "WHERE event IN ('fixed_proactive', 'fixed_reactive')")[0]["r"]
         out["revenue"] = round(revenue, 2)
-        out["net"] = round(revenue - out["total_fines"], 2)
+        out["repair_costs"] = round(repair_costs, 2)
+        out["net"] = round(revenue - out["total_fines"] - repair_costs, 2)
         out["fines_by_reason"] = db.query(
             "SELECT reason, COUNT(*) AS count, SUM(fine_amount) AS total FROM penalties "
             "GROUP BY reason ORDER BY total DESC LIMIT 10")

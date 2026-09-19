@@ -93,6 +93,7 @@ FINANCIAL_KEYS = frozenset({
     "total_fines", "suspect_payments", "penalty_count", "fines_by_reason", "penalties",
     "parkingcost", "chargingcost",
     "repaircost", "repair_cost",
+    "repair_costs", "repair_cost_total",
 })
 
 

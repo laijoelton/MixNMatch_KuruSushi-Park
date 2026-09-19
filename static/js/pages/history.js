@@ -108,7 +108,7 @@ async function load() {
       h("td", { class: "num", style: "text-align:left", text: row.spot || "—" }),
       h("td", { text: dateTime(row.arrived_at) }),
       h("td", { text: dateTime(row.left_spot_at || row.completed_at) }),
-      h("td", { class: "num", text: row.planned_minutes != null ? `${row.planned_minutes} min` : row.minutes != null ? `${Number(row.minutes).toFixed(1)} min` : "—" }),
+      h("td", { class: "num", text: row.minutes != null ? `${Number(row.minutes).toFixed(1)} min` : "—" }),
       canFinance ? h("td", { class: "num", text: money((row.parking_cost || 0) + (row.charging_cost || 0)) }) : null,
       canFinance ? h("td", { class: "num", text: money(row.paid_amount) }) : null,
       canFinance ? h("td", {}, statusTag(row)) : null));
@@ -130,6 +130,7 @@ async function showTimeline(row) {
       detailList([
         ["Bay", row.spot || "—"],
         ["Entry → exit", `${row.entry_gate || "—"} → ${row.exit_gate || "—"}`],
+        ["Actual parked time", row.minutes != null ? `${Number(row.minutes).toFixed(1)} min` : "—"],
         ["Booked stay", row.planned_minutes != null ? `${row.planned_minutes} min` : "—"],
         canFinance ? ["Charged", money((row.parking_cost || 0) + (row.charging_cost || 0))] : null,
         canFinance ? ["Paid", money(row.paid_amount)] : null,

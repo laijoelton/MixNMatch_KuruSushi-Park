@@ -399,6 +399,48 @@ visibility and 390px report layout. No live simulator mutation, production datab
 change, `.env` edit or application dependency added. Pytest was missing from this
 checkout and was installed in its existing Python 3.13 development environment.
 
+### 4.17 Final Level 2 submission hardening (19 September 2026)
+
+**Symptoms:** malformed or non-finite planned durations could reach billing;
+startup synchronization flattened broken/maintenance bays to available and ignored
+simulator usage counters; a restart lost sequence/penalty observability and an
+unattempted exit invoice; failed accepted webhooks were acknowledged as processed.
+Unserved arrivals were inconsistently retained, queued preventive work could
+interrupt equipment still needed for operations, and queued repairs could appear
+healthy in the live UI.
+
+**Root causes:** input coercion accepted any `float`; discovery loaders derived bay
+state only from occupancy; several important counters existed only in memory; the
+webhook error path used the same processed marker as success; and repair queue state
+was enforced in control paths without being projected into snapshots. Reporting also
+mixed booked and observed duration, treated every unpaid archive as suspect, omitted
+repair costs from net revenue, and dated revenue by the event receive date instead
+of the verified payment receipt.
+
+**Fix:** planned minutes now require a finite positive value. Live discovery imports
+fault state, risk and usage counters, while startup restores sequence and penalty
+totals. Exit-confirmed invoices resume after restart. Handler failures stay durable,
+return `500`, appear in health/alerts, and retry on a signed redelivery with the same
+EventId. Arrival failures remain trackable, successful turn-aways become neglect
+records instead of completed sessions, and unknown entrance departures no longer
+leak memory. Preventive repairs wait for held/moving gates and safety-critical fans;
+pending work is presented as unavailable in snapshots, alerts, drawers and
+`/api/broken`. History separates actual simulated parked time from booked time and
+distinguishes unpaid from suspect payments. Daily/all-time net revenue deducts repair
+costs and daily paid revenue uses the payment receipt date. The Level 2 fallback seed
+now includes all lights and usage counters.
+
+**Verification:** focused submission-hardening regressions: 25 passed. Complete
+suite: **185 passed** with two dependency deprecation warnings. Compileall, Ruff
+fatal/error/late-binding checks, dependency consistency, JavaScript parsing and
+`git diff --check` passed. Browser QA used `AUTOPILOT=false`, an unreachable
+simulator URL and a disposable Level 2 database. It confirmed 90 parking bays,
+7 gates, 12 fans, 30 lights, the previous-three-login display, the unprocessed
+webhook alert, repair-cost net revenue (20.00 - 7.50 = 12.50), and distinct actual
+4.3-minute versus booked 10-minute history values. Browser console errors: none.
+
+---
+
 ## 5. Edge cases and how they are handled
 
 | Edge case | Handling |
@@ -416,7 +458,7 @@ checkout and was installed in its existing Python 3.13 development environment.
 | Simulator not running at startup | Listener still comes up; seeds from `lvl1.json` and logs loudly |
 | Dispatcher started before a level was running | First car event triggers one sync (lock + 10 s cooldown); dashboard alert until bays are known |
 | Simulator returns an unexpected shape | `detectedCars` accepts list or int |
-| Handler throws | Caught, recorded on the event row, returns `200` — a bad event must never kill the receiver |
+| Handler throws | Caught and retained as unprocessed; returns `500` so a signed redelivery retries the same durable EventId |
 | Dry-run must not mutate state | Reservation rolled back when no command was sent |
 
 ---

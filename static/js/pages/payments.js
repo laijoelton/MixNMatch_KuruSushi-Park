@@ -23,7 +23,7 @@ const kpi = (label) => {
   return { el, value, sub };
 };
 const revenue = kpi("Revenue (verified)");
-const net = kpi("Net after fines");
+const net = kpi("Net after fines and repairs");
 const suspect = kpi("Suspect payments");
 const fines = kpi("Fines");
 

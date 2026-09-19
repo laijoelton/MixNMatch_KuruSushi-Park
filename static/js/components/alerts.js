@@ -14,17 +14,21 @@ export function deriveAlerts(snapshot, stats, { isAdmin } = {}) {
   for (const gate of snapshot.barriers || []) {
     if (gate.broken) add(`gate-broken-${gate.name}`, "bad", `Gate ${gate.name} is broken`, "Repair it — it cannot open or close", { kind: "gate", name: gate.name });
     else if (gate.under_maintenance) add(`gate-maint-${gate.name}`, "warn", `Gate ${gate.name} under repair`, "Do not operate until fixed", { kind: "gate", name: gate.name });
+    else if (gate.repair_pending) add(`gate-pending-${gate.name}`, "warn", `Gate ${gate.name} repair queued`, "Excluded from operation until the repair starts", { kind: "gate", name: gate.name });
   }
   for (const spot of snapshot.spots || []) {
     if (spot.purpose !== "Park") continue;
     if (spot.broken) add(`bay-broken-${spot.name}`, "bad", `Bay ${spot.name} is broken`, spot.occupant_plate ? "Repair waits until the car leaves" : "Queue a repair", { kind: "spot", name: spot.name });
     else if (spot.under_maintenance) add(`bay-maint-${spot.name}`, "warn", `Bay ${spot.name} under repair`, "Excluded from dispatch", { kind: "spot", name: spot.name });
+    else if (spot.repair_pending) add(`bay-pending-${spot.name}`, "warn", `Bay ${spot.name} repair queued`, "Excluded from dispatch until the repair starts", { kind: "spot", name: spot.name });
   }
   for (const [name] of Object.entries(snapshot.deferred_repairs || {})) {
     add(`deferred-${name}`, "warn", `Repair pending: ${name}`, "Starts automatically when the bay is empty", { kind: "spot", name });
   }
   for (const fan of snapshot.fans || []) {
     if (fan.broken) add(`fan-${fan.name}`, "bad", `Fan ${fan.name} is broken`, `Zone ${fan.zone || "—"} ventilation reduced`, { kind: "fan", name: fan.name });
+    else if (fan.under_maintenance) add(`fan-maint-${fan.name}`, "warn", `Fan ${fan.name} under repair`, "Unavailable for ventilation control", { kind: "fan", name: fan.name });
+    else if (fan.repair_pending) add(`fan-pending-${fan.name}`, "warn", `Fan ${fan.name} repair queued`, "Unavailable until the repair starts", { kind: "fan", name: fan.name });
   }
   for (const light of snapshot.lights || []) {
     if (light.broken || light.under_maintenance) add(`light-${light.name}`, "warn", `Light ${light.name} unavailable`, "Inspect the fixture; simulator has no light repair command", null);
@@ -61,6 +65,10 @@ export function deriveAlerts(snapshot, stats, { isAdmin } = {}) {
   if (stats?.sequence_gaps > 0) {
     add("gaps", "warn", `${stats.sequence_gaps} gap${stats.sequence_gaps > 1 ? "s" : ""} in the event stream`,
       "Some webhooks never arrived — consider a manual sync", isAdmin ? { kind: "page", href: "/admin" } : null);
+  }
+  if (stats?.unprocessed_events > 0) {
+    add("unprocessed", "bad", `${stats.unprocessed_events} accepted webhook${stats.unprocessed_events > 1 ? "s" : ""} need processing`,
+      "A handler failed; the event remains retryable and is preserved in the event log", isAdmin ? { kind: "page", href: "/logs" } : null);
   }
 
   return alerts.sort((a, b) => RANK[a.sev] - RANK[b.sev]);

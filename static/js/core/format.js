@@ -45,7 +45,7 @@ export function naturalCompare(a, b) {
 }
 
 export function spotState(spot) {
-  if (spot.broken || spot.under_maintenance || spot.status === "BROKEN" || spot.status === "MAINTENANCE") return "fault";
+  if (spot.broken || spot.under_maintenance || spot.repair_pending || spot.status === "BROKEN" || spot.status === "MAINTENANCE") return "fault";
   if (spot.status === "OCCUPIED") return "occupied";
   if (spot.status === "RESERVED") return "reserved";
   return "free";
@@ -54,7 +54,7 @@ export function spotState(spot) {
 export const SPOT_STATE_LABEL = { free: "Free", occupied: "Occupied", reserved: "Reserved", fault: "Out of service" };
 
 export function gateState(barrier) {
-  if (barrier.broken || barrier.under_maintenance) return "fault";
+  if (barrier.broken || barrier.under_maintenance || barrier.repair_pending) return "fault";
   if (barrier.state === "Open") return "open";
   if (barrier.state === "Closed") return "closed";
   return "moving";

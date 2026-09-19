@@ -151,7 +151,7 @@ async def schedule_lights(raw: str, parking_state, simulator, act) -> None:
             continue
         action = simulator.light_on if desired else simulator.light_off
         if await act(f"light {light.name} {'ON' if desired else 'OFF'} (server hour {hour})",
-                     lambda n=light.name: action(n)):
+                     lambda n=light.name, fn=action: fn(n)):
             cycles, runtime = parking_state.set_light_on(light.name, desired)
             db.sync_component_wear(light.name, "Light", cycles, runtime)
             db.record_component_event(light.name, "Light", "on" if desired else "off")
