@@ -1,4 +1,5 @@
 import { api } from "../core/api.js";
+import { wireClear } from "../core/clear.js";
 import { h } from "../core/dom.js";
 import { initShell } from "../core/shell.js";
 await initShell();
@@ -11,4 +12,5 @@ async function load() {
 }
 form.onsubmit = event => { event.preventDefault(); load(); };
 form.onreset = () => setTimeout(load, 0);
+wireClear("clear-data", "penalties", "penalty", load);
 await load();

@@ -7,5 +7,6 @@ _TMP = Path(tempfile.mkdtemp(prefix="pg-tests-"))
 os.environ["DATABASE_PATH"] = str(_TMP / "test.db")
 os.environ["AUTOPILOT"] = "false"
 os.environ["SEED_FROM_LEVEL"] = ""
+os.environ["SIMULATOR_LOG"] = ""  # never follow the real simulator console in tests
 os.environ["DASHBOARD_ADMIN_PASSWORD"] = "admin123"
 os.environ["DASHBOARD_OPERATOR_PASSWORD"] = "operator123"

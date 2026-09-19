@@ -32,10 +32,10 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
-from app import auth, dashboard_api, db, ml_agent, tariffs
+from app import auth, dashboard_api, db, ml_agent, simlog, tariffs, zones
 from app.client import client
 from app.config import settings
-from app.layout import load_layout, running_level
+from app.layout import announce_level, load_layout, running_level
 from app.queue_worker import maintenance_queue, schedule_lights
 from app.routing import load_distance_table, rank_spots, ring
 from app.seed import load_level
@@ -78,7 +78,8 @@ def _planned_of(payload: dict[str, Any]) -> float:
     not the wall-clock time we observe.
     """
     try:
-        return float(payload.get("PlannedParkingDurationInMinutes") or 0)
+        value = float(payload.get("PlannedParkingDurationInMinutes") or 0)
+        return value if math.isfinite(value) and value > 0 else 0.0
     except (TypeError, ValueError):
         return 0.0
 
@@ -138,7 +139,7 @@ async def _sync_if_no_live_bays() -> None:
     if _live_bays_synced:
         return
     async with _traffic_sync_lock:  # a burst of arrivals triggers one sync, not one each
-        if _live_bays_synced or time.monotonic() - _last_traffic_sync < TRAFFIC_SYNC_COOLDOWN_S:
+        if _live_bays_synced or time.monotonic() - _last_traffic_sync < TRAFFIC_SYNC_COOLDOWN_S / max(settings.game_speed, 0.1):
             return
         _last_traffic_sync = time.monotonic()
         try:
@@ -157,8 +158,11 @@ async def _sync_if_no_live_bays() -> None:
 GATE_OPEN_WAIT_S = 5.0
 ENTRY_RETRY_S = 8.0
 _left_entry: set[str] = set()   # plates seen driving off their entry spot
+_waiting_at: dict[str, str] = {}  # plate -> zone sensor it has reached (two-hop leg 2)
+_holding_gate: dict[str, str] = {}  # plate -> zone entry gate opened for it, until it drives through
 _entry_watchers: set[asyncio.Task] = set()
 _dispatch_tasks: dict[str, asyncio.Task] = {}
+_webhook_events_in_progress: set[str] = set()
 
 
 async def _wait_for_barrier_open(name: str) -> bool:
@@ -190,6 +194,115 @@ def _barrier_for_sensor(sensor: str) -> Optional[str]:
     return next(iter(state.barriers)) if len(state.barriers) == 1 else None
 
 
+# --------------------------------------------------------------------------- #
+# Zone gates: closed by default, opened per car, closed once it has passed.
+# On Level 2 every car crosses ENTRY1 (and then ENTRY2/3 on its way down the
+# road), so the gate to open is the *target zone's* entry gate - not the one
+# nearest the sensor the car first tripped. The main gate is operator-only.
+# --------------------------------------------------------------------------- #
+_gates_closed_for_level = False
+
+
+def _zone_entry_gate(zone: str, sensor: str) -> Optional[str]:
+    layout = load_layout(running_level() or "lvl1")
+    positions = {n: (g["x"], g["y"]) for n, g in layout.get("gates", {}).items()}
+    entries = [(s["x"], s["y"]) for s in layout.get("spots", {}).values() if s.get("purpose") == "EntrySpot"]
+    gate = zones.entry_gate_for_zone(zone, state.barriers.values(), positions, entries,
+                                     exclude={settings.main_gate})
+    return gate or _barrier_for_sensor(sensor)
+
+
+def _entry_gate_for_session(session) -> Optional[str]:
+    spot = state.spots.get(session.assigned_spot or "")
+    return _zone_entry_gate(spot.zone_parent if spot else "", session.entry_gate)
+
+
+def _gate_usable(name: Optional[str]) -> bool:
+    barrier = state.barriers.get(name or "")
+    return barrier is None or not (barrier.operator_override or barrier.held_vehicles or barrier.broken
+                                   or barrier.under_maintenance or barrier.name in state.pending_repairs)
+
+
+def _gates_in_use() -> set[str]:
+    """Gates a car still has to drive through: its zone entry gate until it
+    parks, and its exit gate from payment until it has left the facility."""
+    used: set[Optional[str]] = set(_holding_gate.values())
+    for session in list(state.sessions.values()):
+        if session.paid and session.exit_gate:
+            used.add(_barrier_for_sensor(session.exit_gate))
+    return {name for name in used if name}
+
+
+async def _close_idle_gates(*, include_main: bool = False) -> None:
+    in_use = _gates_in_use()
+    for name, barrier in list(state.barriers.items()):
+        if (name in in_use or (name == settings.main_gate and not include_main)
+                or barrier.state not in (BarrierPosition.OPEN, BarrierPosition.OPENING)
+                or barrier.broken or barrier.under_maintenance or name in state.pending_repairs):
+            continue
+        if await act(f"close idle gate {name}", lambda n=name: client.barrier_close(n)):
+            state.update_barrier_state(name, "Closing")
+            db.sync_component_wear(name, "BarrierGate", state.record_barrier_cycle(name), 0)
+
+
+async def _close_idle_gates_later(delay_s: Optional[float] = None) -> None:
+    delay_s = settings.gate_close_delay_s if delay_s is None else delay_s
+    await asyncio.sleep(delay_s / max(settings.game_speed, 0.1))
+    await _close_idle_gates()
+
+
+async def _close_gates_for_level_start() -> None:
+    """Every gate, main gate included, starts closed - once per running level,
+    so a later manual sync never shuts the main gate on the operator."""
+    global _gates_closed_for_level
+    if _gates_closed_for_level:
+        return
+    _gates_closed_for_level = True
+    await _close_idle_gates(include_main=True)
+    state.log_activity("Level start: all gates closed; open the main gate to admit cars")
+
+
+# The simulator needs a moment after "Load Game" before list-* return the new
+# bays. Loading is real time, not simulated time, so this does not scale with
+# game speed; the retries stop at the first sync that sees bays.
+LEVEL_SYNC_RETRY_S = 1.0
+LEVEL_SYNC_ATTEMPTS = 15
+
+
+async def _on_level_loaded(level: str) -> None:
+    """The simulator console printed ``Load Game./settings/<level>.json``.
+
+    Everything live from the previous level is gone in the simulator, so drop
+    it here too: unfinished sessions (they would otherwise sit "charged at the
+    exit" forever and keep exit gates in use), operator and ghost holds, and
+    the gate/bay model. Then sync once - the docs' "once per level loading" -
+    which closes every gate, main gate included.
+    """
+    global _live_bays_synced, _gates_closed_for_level
+    for task in list(_entry_watchers):
+        task.cancel()
+    _dispatch_tasks.clear()
+    _left_entry.clear()
+    _waiting_at.clear()
+    _holding_gate.clear()
+    db.reset_live_level()
+    dropped = state.reset_for_new_level()
+    announce_level(level)
+    _live_bays_synced = False
+    _gates_closed_for_level = False
+    state.log_activity(f"Simulator loaded {level}: previous level cleared "
+                       f"({dropped} unfinished vehicle{'s' if dropped != 1 else ''} dropped, gate holds released)")
+    for _ in range(LEVEL_SYNC_ATTEMPTS):
+        await asyncio.sleep(LEVEL_SYNC_RETRY_S)
+        try:
+            await sync_from_simulator()
+        except Exception as exc:  # noqa: BLE001 - the simulator may still be loading
+            log.warning("sync after %s load failed: %s", level, exc)
+        if _live_bays_synced:
+            return
+    state.log_activity(f"{level} loaded but no bays were returned yet; the first car will sync it", level="warn")
+
+
 def _spawn(coro) -> asyncio.Task:
     task = asyncio.create_task(coro)
     _entry_watchers.add(task)
@@ -197,11 +310,13 @@ def _spawn(coro) -> asyncio.Task:
     return task
 
 
-def _start_dispatch_retry(plate: str, spot: str) -> None:
+def _start_dispatch_retry(plate: str, spot: str, sensor: Optional[str] = None) -> None:
     existing = _dispatch_tasks.get(plate)
     if existing and not existing.done():
-        return
-    task = _spawn(_resend_if_still_at_entry(plate, spot, initial=True))
+        if sensor is None:
+            return
+        existing.cancel()   # the car moved on to its zone sensor: that leg is over
+    task = _spawn(_resend_if_still_at_entry(plate, spot, initial=True, sensor=sensor))
     _dispatch_tasks[plate] = task
     def finished(completed):
         if _dispatch_tasks.get(plate) is completed:
@@ -209,31 +324,86 @@ def _start_dispatch_retry(plate: str, spot: str) -> None:
     task.add_done_callback(finished)
 
 
-async def _resend_if_still_at_entry(plate: str, spot: str, *, initial: bool = False) -> None:
+def _zone_sensor(gate: Optional[str]) -> Optional[str]:
+    """The entry sensor standing in front of ``gate`` (ENTRY3 for gate5)."""
+    if not gate:
+        return None
+    layout = load_layout(running_level() or "lvl1")
+    for name, spot in layout.get("spots", {}).items():
+        if spot.get("purpose") == "EntrySpot" and _barrier_for_sensor(name) == gate:
+            return name
+    return None
+
+
+async def _open_gate_and_wait(gate_name: str, why: str) -> None:
+    """Open ``gate_name`` and wait for its Open report. The simulator plans a
+    route when the goto arrives and treats a closed or rising gate as a wall:
+    "Paths found: 0" at an entrance, "No valid escape spot found" at an exit."""
+    barrier = state.barriers.get(gate_name)
+    if barrier is None:
+        return
+    if barrier.state not in (BarrierPosition.OPEN, BarrierPosition.OPENING):
+        if await act(f"open {gate_name} {why}", lambda: client.barrier_open(gate_name)):
+            state.update_barrier_state(gate_name, "Opening")
+            db.sync_component_wear(gate_name, "BarrierGate", state.record_barrier_cycle(gate_name), 0)
+    await _wait_for_barrier_open(gate_name)
+
+
+# A car sent to its zone's sensor normally pulls off ENTRY1 within ~3 s (seen
+# 1.1-2.9 s live). Resend the hop this many times before concluding the
+# simulator refused it and falling back to opening the zone gate at ENTRY1.
+HOP_ATTEMPTS = 5
+
+
+async def _resend_if_still_at_entry(plate: str, spot: str, *, initial: bool = False,
+                                    sensor: Optional[str] = None) -> None:
+    """Get a car from the entry sensor it is waiting at (``sensor``, default
+    its first one) to ``spot``, resending while it has not driven off.
+
+    The simulator only accepts a goto from a car waiting at an entry or exit
+    sensor. If the zone's gate is not in front of this sensor (a ZONE3 car at
+    ENTRY1), the car is first sent to the zone's own sensor with the gate still
+    closed; ``_handle_car_spot_action`` resumes it from there.
+    """
     session = state.get_session(plate)
     if session is None:
         return
     identity = session.session_id
+    here = sensor or session.entry_gate
+    gate_name = _entry_gate_for_session(session)
+    via = _zone_sensor(gate_name) if gate_name in state.barriers else None
+    hop = bool(settings.zone_gate_at_sensor and via and via != here and _barrier_for_sensor(here) != gate_name)
+    plan = ["hop"] * HOP_ATTEMPTS + ["direct"] * settings.entry_max_attempts if hop \
+        else ["direct"] * settings.entry_max_attempts
     delay_s = max(0.4, 1.0 / max(settings.game_speed, 1.0))
-    for attempt in range(settings.entry_max_attempts):
+    for attempt, how in enumerate(plan):
         if attempt or not initial:
             await asyncio.sleep(delay_s)
         session = state.get_session(plate)
         if (session is None or session.session_id != identity or session.entry_departed
                 or plate in _left_entry or session.phase != SessionPhase.ASSIGNED
-                or session.assigned_spot != spot):
+                or session.assigned_spot != spot or _waiting_at.get(plate, session.entry_gate) != here):
+            return   # gone, or now waiting at another sensor that has its own leg
+        target = state.spots.get(spot)
+        if (target is None or target.status != SpotStatus.RESERVED or target.occupant_plate != plate
+                or target.broken or target.under_maintenance or spot in state.pending_repairs):
+            state.log_activity(f"Dispatch paused for {plate}: bay {spot} is no longer safely reserved", level="warn")
             return
-        gate_name = _barrier_for_sensor(session.entry_gate)
-        barrier = state.barriers.get(gate_name)
-        if barrier:
-            if barrier.operator_override or barrier.held_vehicles or barrier.broken or barrier.under_maintenance:
-                return
-            if barrier.state not in (BarrierPosition.OPEN, BarrierPosition.OPENING):
-                if await act(f"open {gate_name} for {plate}", lambda: client.barrier_open(gate_name)):
-                    state.update_barrier_state(gate_name, "Opening")
-                    db.sync_component_wear(gate_name, "BarrierGate", state.record_barrier_cycle(gate_name), 0)
+        if not _gate_usable(gate_name):
+            return
+        if how == "hop":
+            session.staged_via = via
+            await act(f"car {plate} -> {via} on the way to {spot} (attempt {attempt + 1})",
+                      lambda: client.car_goto(plate, via))
+            continue
+        if session.staged_via and session.staged_via != here:
+            session.staged_via = None
+            state.log_activity(f"{plate} would not drive to {via}; opening {gate_name} from {here} instead", level="warn")
+        if gate_name:
+            _holding_gate[plate] = gate_name
+        await _open_gate_and_wait(gate_name, f"for {plate}")
         await act(f"car {plate} -> {spot} (attempt {attempt + 1})", lambda: client.car_goto(plate, spot))
-    state.log_activity(f"{plate} still at entrance after {settings.entry_max_attempts} attempts", level="warn")
+    state.log_activity(f"{plate} still at {here} after {len(plan)} attempts", level="warn")
 
 
 def _persist(plate: str) -> None:
@@ -263,7 +433,10 @@ def restore_sessions() -> None:
         if session.assigned_spot:
             state.active_dispatches[session.plate] = session.assigned_spot
             spot = state.spots.get(session.assigned_spot)
-            if spot and session.left_spot_at is None and spot.occupant_plate in (None, session.plate):
+            # A live occupancy count is authoritative even if its vehicle identity
+            # is unknown. Downgrading it to RESERVED lets expiry free a full bay.
+            if (spot and spot.dispatchable and session.left_spot_at is None
+                    and spot.occupant_plate in (None, session.plate)):
                 spot.occupant_plate = session.plate
                 spot.status = SpotStatus.OCCUPIED if session.parked_at else SpotStatus.RESERVED
                 spot.reserved_at = session.created_at if not session.parked_at else None
@@ -271,10 +444,24 @@ def restore_sessions() -> None:
     state.neglected_vehicles.extend(db.query("SELECT * FROM neglected_vehicles ORDER BY occurred_at DESC LIMIT 100"))
 
 
+def restore_operational_observability() -> None:
+    """Restore durable counters that otherwise reset and hide problems on restart."""
+    sequence = db.query("SELECT COALESCE(MAX(sequence_id), 0) AS n FROM events")[0]["n"]
+    try:
+        state.last_sequence_id = max(state.last_sequence_id, int(sequence or 0))
+    except (TypeError, ValueError):
+        pass
+    counters = db.counters()
+    state.penalty_count = int(counters["penalties"] or 0)
+    state.total_fines = float(counters["total_fines"] or 0.0)
+
+
 async def reap_orphans() -> None:
     now = time.monotonic()
+    expired = False
     for plate, session in list(state.sessions.items()):
-        if session.left_spot_at is not None and now - session.left_spot_at > settings.orphan_timeout_s / settings.game_speed:
+        if (session.left_spot_at is not None and not session.exit_confirmed
+                and now - session.left_spot_at > settings.orphan_timeout_s / settings.game_speed):
             state.log_activity(f"Orphan session archived: {plate} left a bay but no final exit was observed", level="warn")
             _archive(plate)
         elif session.parked_at is None and not session.exit_confirmed and now - session.created_at > settings.reservation_ttl_s / settings.game_speed:
@@ -285,6 +472,9 @@ async def reap_orphans() -> None:
             if session.assigned_spot:
                 state.release_reservation(session.assigned_spot, plate)
             _archive(plate)
+            expired = True
+    if expired:
+        await _close_idle_gates()   # nobody is coming through that zone gate any more
 
 
 async def sync_from_simulator() -> dict[str, int]:
@@ -320,9 +510,9 @@ async def sync_from_simulator() -> dict[str, int]:
     for row in db.component_wear_rows():
         component = state.barriers.get(row["name"]) or state.fans.get(row["name"]) or state.lights.get(row["name"]) or state.spots.get(row["name"])
         if component:
-            component.cycle_count = row["cycle_count"]
+            component.cycle_count = max(component.cycle_count, row["cycle_count"])
             if hasattr(component, "runtime_seconds"):
-                component.runtime_seconds = row["runtime_seconds"]
+                component.runtime_seconds = max(component.runtime_seconds, row["runtime_seconds"])
     for row in state.wear_snapshot():
         if not row["under_maintenance"]:
             db.set_meta(f"pending_proactive_repair:{row['name']}", "0")
@@ -341,6 +531,8 @@ async def sync_from_simulator() -> dict[str, int]:
               "zones": len(state.zones), "fans": len(state.fans)}
     state.log_activity(f"Manual sync: {counts['spots']} spots, {counts['barriers']} barriers, "
                        f"{counts['zones']} zones, {counts['fans']} fans")
+    if _live_bays_synced:
+        await _close_gates_for_level_start()
     await _ensure_barriers_open()
     return counts
 
@@ -350,13 +542,20 @@ async def _ensure_barriers_open() -> None:
     for session in list(state.sessions.values()):
         if session.phase == SessionPhase.ASSIGNED and not session.entry_departed:
             _start_dispatch_retry(session.plate, session.assigned_spot)
+        elif session.exit_confirmed and not session.charge_attempted and not session.paid:
+            _spawn(_charge_at_exit(session.plate, session.exit_gate or ""))
+        elif session.paid and not session.released:
+            await _release_paid(session)
 
 
 async def check_wear() -> None:
     await reap_orphans()
     for row in state.wear_snapshot():
         db.sync_component_wear(row["name"], row["type"], row["cycle_count"], row["runtime_seconds"])
-        if row["broken"] or row["under_maintenance"] or row["type"] == "Light":
+        if row["under_maintenance"] or row["type"] == "Light":
+            continue
+        if row["broken"]:
+            await _queue_repair(row["type"], row["name"])
             continue
         if row["cycle_count"] < 0.85 * settings.wear_cycle_threshold and row["runtime_seconds"] < 0.85 * settings.wear_runtime_threshold_s:
             continue
@@ -407,6 +606,7 @@ async def _broadcast_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    restore_operational_observability()
     restore_sessions()
     client.on_reconnect = sync_from_simulator
     try:
@@ -426,6 +626,7 @@ async def lifespan(app: FastAPI):
                 state.load_barriers(seeded["barriers"])
                 state.load_zones(seeded["zones"])
                 state.load_fans(seeded["fans"])
+                state.load_lights(seeded["lights"])
                 ring.rebuild(list(state.spots.keys()) + list(state.barriers.keys()))
                 log.warning("running on SEEDED layout from %s - NOT live simulator state",
                             settings.seed_from_level)
@@ -448,6 +649,9 @@ async def lifespan(app: FastAPI):
         name="dispatcher-ml-predictive",
     )
     background_tasks = (broadcaster, wear_checker, environment, predictive)
+    if settings.simulator_log:
+        background_tasks += (asyncio.create_task(simlog.follow(settings.simulator_log, _on_level_loaded),
+                                                 name="dispatcher-level-watch"),)
     try:
         yield
     finally:
@@ -485,17 +689,38 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR)) if TEMPLATES_DIR.exist
 # --------------------------------------------------------------------------- #
 # Dispatch core (shared by the real webhook path and the manual/dry-run path)
 # --------------------------------------------------------------------------- #
+def _retire_previous_visit(plate: str) -> None:
+    """A plate at the entrance whose session already parked, reached an exit or
+    was billed is a *new* visit - the simulator recycles plates from a fixed
+    list. Reusing the old session made the new car inherit ``charged``/``paid``
+    (no invoice at the exit, so it escaped) and its old bay (so the entrance
+    short-circuit never dispatched it). A car still driving to its bay keeps
+    its session: it trips ENTRY2/ENTRY3 on the way down the road.
+    """
+    session = state.get_session(plate)
+    if session is None or not (session.parked_at is not None or session.exit_confirmed
+                               or session.charge_attempted or session.paid):
+        return
+    if session.assigned_spot:
+        state.release_reservation(session.assigned_spot, plate)
+    state.log_activity(f"{plate} is back at the entrance: previous visit closed, new visit started")
+    _archive(plate)
+
+
 async def dispatch_entry(plate: str, gate_name: str, car_type: str = "Normal",
                          dry_run: bool = False, planned_minutes: float = 0.0,
                          target_spot: Optional[str] = None) -> dict[str, Any]:
+    if not dry_run:
+        _retire_previous_visit(plate)
     assigned = state.active_dispatches.get(plate)
     if assigned:
         log.info("idempotent dispatch short-circuit: %s already assigned %s", plate, assigned)
         return {"plate": plate, "gate": gate_name, "target": assigned, "dispatched": True, "duplicate": True}
-    barrier = state.barriers.get(_barrier_for_sensor(gate_name))
-    if barrier and (barrier.operator_override or barrier.held_vehicles or barrier.broken or barrier.under_maintenance):
-        return {"plate": plate, "gate": gate_name, "target": None, "dispatched": False,
-                "reason": "Held closed by operator" if barrier.operator_override else "Barrier unavailable"}
+    session = None
+    if not dry_run:
+        session = state.start_session(plate, gate=gate_name, car_type=car_type,
+                                      planned_minutes=planned_minutes)
+        _persist(plate)
     await reap_orphans()
     kind = normalize_car_type(car_type)
     candidate_type = "Electric" if kind == "ev" else "Accessible" if kind == "accessible" else "Any"
@@ -503,16 +728,26 @@ async def dispatch_entry(plate: str, gate_name: str, car_type: str = "Normal",
     if kind == "accessible":
         accessible = [n for n in candidates if state.spots[n].is_accessible]
         candidates = accessible or candidates
-    ranked = rank_spots(gate_name, candidates)
-    target = target_spot if target_spot in candidates else (ranked[0][0] if ranked and not target_spot else None)
+    # A zone whose entry gate is held, broken or under repair cannot take the car.
+    zone_gate = {z: _zone_entry_gate(z, gate_name) for z in {state.spots[n].zone_parent for n in candidates}}
+    reachable = [n for n in candidates if _gate_usable(zone_gate[state.spots[n].zone_parent])]
+    if candidates and not reachable:
+        held = any(state.barriers[g].operator_override for g in zone_gate.values() if g in state.barriers)
+        return {"plate": plate, "gate": gate_name, "target": None, "dispatched": False,
+                "reason": "Held closed by operator" if held else "Barrier unavailable"}
+    # Balance load: the zone with the lowest (occupied + reserved + broken +
+    # under repair) / bays ratio, then the nearest suitable bay inside it.
+    ratios = zones.zone_ratios(state.spots.values(), state.pending_repairs)
+    zone = zones.pick_zone({state.spots[n].zone_parent for n in reachable}, ratios)
+    ranked = rank_spots(gate_name, [n for n in reachable if state.spots[n].zone_parent == zone])
+    target = target_spot if target_spot in reachable else (ranked[0][0] if ranked and not target_spot else None)
     result = {"plate": plate, "gate": gate_name, "target": target, "dispatched": False}
     if dry_run:
         return {**result, "ranked_candidates": ranked[:10]}
     if target is None:
         if not target_spot and _live_bays_synced:
             if await act(f"car {plate} -> leavepark (lot full)", lambda: client.car_goto(plate, "leavepark")):
-                if state.get_session(plate):
-                    _archive(plate)
+                _record_neglect_and_discard(plate, "Turned away because no compatible bay was available")
             return {**result, "turned_away": True}
         return {**result, "reason": "spot unavailable"}
     if not settings.autopilot:
@@ -520,12 +755,18 @@ async def dispatch_entry(plate: str, gate_name: str, car_type: str = "Normal",
         return {**result, "reason": "autopilot disabled - no command sent"}
     if not state.reserve_spot(target, plate):
         return {**result, "reason": "spot no longer available"}
-    state.start_session(plate, gate=gate_name, car_type=car_type, planned_minutes=planned_minutes)
+    if session is None:
+        session = state.start_session(plate, gate=gate_name, car_type=car_type,
+                                      planned_minutes=planned_minutes)
     state.assign_spot(plate, target)
     _left_entry.discard(plate)
+    _waiting_at.pop(plate, None)
+    _holding_gate.pop(plate, None)
     _persist(plate)
     _start_dispatch_retry(plate, target)
-    state.log_activity(f"Dispatched {plate} from {gate_name} to {target}")
+    zone = state.spots[target].zone_parent
+    note = f" ({zone} was {ratios.get(zone, 0):.0%} full)" if zone else ""
+    state.log_activity(f"Dispatched {plate} from {gate_name} to {target}{note}")
     return {**result, "dispatched": True}
 
 
@@ -568,6 +809,7 @@ async def split_dashboard() -> RedirectResponse:
 # --------------------------------------------------------------------------- #
 @app.get("/healthz")
 async def healthz() -> dict[str, Any]:
+    counters = db.counters()
     return {
         "ok": True,
         "autopilot": settings.autopilot,
@@ -582,7 +824,8 @@ async def healthz() -> dict[str, Any]:
         "last_sequence_id": state.last_sequence_id,
         "maintenance_queue": maintenance_queue.stats,
         "ws_clients": manager.count,
-        "events": db.counters()["events"],
+        "events": counters["events"],
+        "unprocessed_events": counters["unprocessed_events"],
     }
 
 
@@ -680,7 +923,7 @@ async def manual_barrier_open(name: str, user: dict = Depends(auth.require_capab
     barrier = state.barriers.get(name)
     if barrier is None:
         raise HTTPException(404, "unknown barrier")
-    if barrier.broken or barrier.under_maintenance or barrier.held_vehicles:
+    if barrier.broken or barrier.under_maintenance or barrier.held_vehicles or name in state.pending_repairs:
         raise HTTPException(409, "Barrier unavailable or vehicle awaiting clearance")
     before = barrier.operator_override
     barrier.operator_override = False
@@ -706,15 +949,17 @@ async def manual_barrier_close(name: str, user: dict = Depends(auth.require_capa
     barrier = state.barriers.get(name)
     if barrier is None:
         raise HTTPException(404, "unknown barrier")
-    if barrier.broken or barrier.under_maintenance:
+    if barrier.broken or barrier.under_maintenance or name in state.pending_repairs:
         raise HTTPException(409, "Barrier unavailable")
     before = barrier.operator_override
     barrier.operator_override = True
     db.set_meta(f"gate_override:{name}", "1")
-    sent = await act(f"operator holds {name} closed", lambda: client.barrier_close(name))
-    if sent:
-        state.update_barrier_state(name, "Closing")
-        db.sync_component_wear(name, "BarrierGate", state.record_barrier_cycle(name), 0)
+    sent = False
+    if barrier.state not in (BarrierPosition.CLOSED, BarrierPosition.CLOSING):
+        sent = await act(f"operator holds {name} closed", lambda: client.barrier_close(name))
+        if sent:
+            state.update_barrier_state(name, "Closing")
+            db.sync_component_wear(name, "BarrierGate", state.record_barrier_cycle(name), 0)
     auth.record_audit(user["username"], "POST", f"/api/barriers/{name}/close", 200, name,
                       {"before": {"operator_override": before}, "after": {"operator_override": True}})
     return {"ok": True, "name": name, "sent": sent, "operator_override": True}
@@ -743,6 +988,8 @@ async def manual_repair(name: str, user: dict = Depends(auth.require_maintenance
 async def manual_fan_on(name: str, user: dict = Depends(auth.require_maintenance)) -> dict[str, Any]:
     if name not in state.fans:
         raise HTTPException(404, f"unknown fan {name}")
+    if state.fans[name].broken or state.fans[name].under_maintenance or name in state.pending_repairs:
+        raise HTTPException(409, "Fan unavailable")
     if not await act("manual fan on " + name, lambda: client.fan_on(name)):
         return {"ok": False, "sent": False, "name": name}
     cycles, runtime = state.set_fan_on(name, True)
@@ -756,6 +1003,8 @@ async def manual_fan_on(name: str, user: dict = Depends(auth.require_maintenance
 async def manual_fan_off(name: str, user: dict = Depends(auth.require_maintenance)) -> dict[str, Any]:
     if name not in state.fans:
         raise HTTPException(404, f"unknown fan {name}")
+    if state.fans[name].broken or state.fans[name].under_maintenance or name in state.pending_repairs:
+        raise HTTPException(409, "Fan unavailable")
     if not await act("manual fan off " + name, lambda: client.fan_off(name)):
         return {"ok": False, "sent": False, "name": name}
     cycles, runtime = state.set_fan_on(name, False)
@@ -767,6 +1016,11 @@ async def manual_fan_off(name: str, user: dict = Depends(auth.require_maintenanc
 
 @app.post("/api/manual/light/{name}/on")
 async def manual_light_on(name: str, user: dict = Depends(auth.require_staff)) -> dict[str, Any]:
+    light = state.lights.get(name)
+    if light is None:
+        raise HTTPException(404, "Unknown light")
+    if light.broken or light.under_maintenance:
+        raise HTTPException(409, "Light unavailable")
     if not await act("manual light on " + name, lambda: client.light_on(name)):
         return {"ok": False, "sent": False, "name": name}
     cycles, runtime = state.set_light_on(name, True)
@@ -778,6 +1032,11 @@ async def manual_light_on(name: str, user: dict = Depends(auth.require_staff)) -
 
 @app.post("/api/manual/light/{name}/off")
 async def manual_light_off(name: str, user: dict = Depends(auth.require_staff)) -> dict[str, Any]:
+    light = state.lights.get(name)
+    if light is None:
+        raise HTTPException(404, "Unknown light")
+    if light.broken or light.under_maintenance:
+        raise HTTPException(409, "Light unavailable")
     if not await act("manual light off " + name, lambda: client.light_off(name)):
         return {"ok": False, "sent": False, "name": name}
     cycles, runtime = state.set_light_on(name, False)
@@ -878,13 +1137,15 @@ async def daily_report(user: dict = Depends(auth.require_staff)) -> dict[str, An
     )[0]["n"]
 
     preventive = db.query(
-        "SELECT COUNT(*) AS n FROM component_events WHERE event = 'repair_triggered_proactive' AND date(occurred_at) = date('now')"
+        "SELECT COUNT(*) AS n FROM component_events WHERE event = 'fixed_proactive' AND date(occurred_at) = date('now')"
     )[0]["n"]
     reactive = db.query(
         "SELECT COUNT(*) AS n FROM component_events WHERE event = 'broken' AND date(occurred_at) = date('now')"
     )[0]["n"]
 
     out: dict[str, Any] = {
+        "date_basis": "UTC receipt date",
+        "report_date": datetime.now(timezone.utc).date().isoformat(),
         "throughput_by_zone": throughput_by_zone,
         "energy_conserved_wh_estimate": energy_conserved_wh_estimate,
         "energy_conserved_note": "Estimate: light-off actions x assumed wattage x tick interval - not a real meter.",
@@ -896,12 +1157,21 @@ async def daily_report(user: dict = Depends(auth.require_staff)) -> dict[str, An
     }
 
     if has(user, "fin:view"):
-        paid = db.query("SELECT COALESCE(SUM(paid_amount), 0) AS r FROM sessions WHERE payment_ok = 1 AND date(completed_at) = date('now')")[0]["r"]
-        fines = db.query("SELECT COALESCE(SUM(fine_amount), 0) AS f FROM penalties WHERE date(server_datetime) = date('now')")[0]["f"]
+        paid = db.query("""SELECT COALESCE(SUM(p.amount), 0) AS r
+            FROM payments p LEFT JOIN events e ON e.event_id = p.event_id
+            WHERE p.valid = 1 AND date(COALESCE(e.received_at, p.server_datetime)) = date('now')""")[0]["r"]
+        fines = db.query("""SELECT COALESCE(SUM(p.fine_amount), 0) AS f
+            FROM penalties p LEFT JOIN events e ON e.event_id = p.event_id
+            WHERE date(COALESCE(e.received_at, p.server_datetime)) = date('now')""")[0]["f"]
+        repair_costs = db.query("""SELECT COALESCE(SUM(amount), 0) AS r
+            FROM component_events
+            WHERE event IN ('fixed_proactive', 'fixed_reactive')
+              AND date(occurred_at) = date('now')""")[0]["r"]
         out["revenue"] = {
             "paid_total": round(paid, 2),
             "penalty_total": round(fines, 2),
-            "net_revenue": round(paid - fines, 2),
+            "repair_cost_total": round(repair_costs, 2),
+            "net_revenue": round(paid - fines - repair_costs, 2),
         }
 
     return out
@@ -990,7 +1260,10 @@ async def ws_telemetry(ws: WebSocket):
 # --------------------------------------------------------------------------- #
 @app.post("/webhooks/simulator")
 async def simulator_webhook(request: Request) -> JSONResponse:
-    payload = await request.json()
+    try:
+        payload = await request.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise HTTPException(400, "Webhook must contain valid JSON") from None
     if not isinstance(payload, dict):
         raise HTTPException(400, "Webhook must be an object")
     signature = payload.get("Signature")
@@ -1007,12 +1280,18 @@ async def simulator_webhook(request: Request) -> JSONResponse:
     is_new = db.record_event(payload, sig.ok)
     event_id = payload.get("EventId")
     if not is_new:
-        return JSONResponse({"status": "duplicate", "event_id": event_id})
+        status = db.event_status(event_id) if event_id else None
+        if not status or status["processed"] or event_id in _webhook_events_in_progress:
+            return JSONResponse({"status": "duplicate", "event_id": event_id})
 
     if event_id:
         state.is_duplicate(event_id)  # keep the hot-path cache aligned
 
     sequence_id = payload.get("SequenceId")
+    try:
+        sequence_id = int(sequence_id) if sequence_id is not None else None
+    except (TypeError, ValueError):
+        sequence_id = None
     gap = state.observe_sequence(sequence_id)
     if gap:
         log.warning("webhook sequence gap detected: %d missing event(s) before SequenceId=%s", gap, sequence_id)
@@ -1026,20 +1305,24 @@ async def simulator_webhook(request: Request) -> JSONResponse:
 
     event_class = payload.get("EventClass", "")
     handler = _HANDLERS.get(event_class)
-    if handler is None:
-        log.info("unhandled EventClass=%s (EventId=%s)", event_class, event_id)
-        db.mark_processed(event_id, "unhandled event class")
-        return JSONResponse({"status": "ignored", "event_class": event_class})
-
+    if event_id:
+        _webhook_events_in_progress.add(event_id)
     try:
-        await handler(payload)
-        db.mark_processed(event_id)
-    except Exception as exc:  # noqa: BLE001 - a bad event must never crash the receiver
-        log.exception("handler failed for EventClass=%s EventId=%s", event_class, event_id)
-        db.mark_processed(event_id, str(exc))
-        return JSONResponse({"status": "error", "event_class": event_class}, status_code=200)
-
-    return JSONResponse({"status": "processed", "event_class": event_class})
+        if handler is None:
+            log.info("unhandled EventClass=%s (EventId=%s)", event_class, event_id)
+            db.mark_processed(event_id, "unhandled event class")
+            return JSONResponse({"status": "ignored", "event_class": event_class})
+        try:
+            await handler(payload)
+            db.mark_processed(event_id)
+        except Exception as exc:  # noqa: BLE001 - retain failed events for redelivery
+            log.exception("handler failed for EventClass=%s EventId=%s", event_class, event_id)
+            db.mark_failed(event_id, str(exc))
+            return JSONResponse({"status": "error", "event_class": event_class}, status_code=500)
+        return JSONResponse({"status": "processed", "event_class": event_class})
+    finally:
+        if event_id:
+            _webhook_events_in_progress.discard(event_id)
 
 
 # --------------------------------------------------------------------------- #
@@ -1047,7 +1330,7 @@ async def simulator_webhook(request: Request) -> JSONResponse:
 # --------------------------------------------------------------------------- #
 async def _queue_repair(component_type: str, name: str) -> None:
     component = state.spots.get(name) or state.barriers.get(name) or state.fans.get(name)
-    if component and component.under_maintenance:
+    if name in state.pending_repairs or (component and component.under_maintenance):
         return
     if component_type == "ParkingSpot":
         action: Callable[[], Awaitable[None]] = lambda: client.spot_repair(name)
@@ -1062,15 +1345,42 @@ async def _queue_repair(component_type: str, name: str) -> None:
         if spot and (spot.occupant_plate or spot.status in (SpotStatus.OCCUPIED, SpotStatus.RESERVED)):
             state.queue_deferred_repair(name, component_type)
             return
+    state.pending_repairs[name] = component_type
+
+    async def dropped():
+        state.pending_repairs.pop(name, None)
+        db.set_meta(f"pending_proactive_repair:{name}", "0")
+        db.record_component_event(name, component_type, "repair_failed")
+        state.log_activity(f"Repair failed for {name}; will retry on the next maintenance sweep",
+                           level="error", capability="logs:view_maint")
+
     async def guarded_repair():
         component = state.spots.get(name) or state.barriers.get(name) or state.fans.get(name)
         if component and component.under_maintenance:
+            state.pending_repairs.pop(name, None)
             return
         if component_type == "ParkingSpot":
             spot = state.spots.get(name)
             if spot and (spot.occupant_plate or spot.status in (SpotStatus.OCCUPIED, SpotStatus.RESERVED)):
                 state.queue_deferred_repair(name, component_type)
+                state.pending_repairs.pop(name, None)
                 return
+        if component_type == "BarrierGate" and component and not component.broken:
+            if component.state in (BarrierPosition.OPENING, BarrierPosition.CLOSING):
+                raise RuntimeError("wait for gate movement to finish before repair")
+            if component.operator_override or component.held_vehicles:
+                raise RuntimeError("gate is in operational use; postpone preventive repair")
+        if component_type == "ExhaustFan" and component and component.is_on and not component.broken:
+            zone = state.zones.get(component.zone_parent)
+            if zone and zone.gas_co_level >= settings.co_fan_off_threshold:
+                raise RuntimeError("fan is required for unsafe CO; postpone preventive repair")
+            stopped = await act(f"stop fan {name} before repair", lambda: client.fan_off(name))
+            if settings.autopilot and not stopped:
+                raise RuntimeError("could not stop fan before repair")
+            if stopped:
+                cycles, runtime = state.set_fan_on(name, False)
+                db.sync_component_wear(name, component_type, cycles, runtime)
+                db.record_component_event(name, component_type, "off")
         sent = await act(f"repair {component_type}:{name}", action)
         if settings.autopilot and not sent:
             raise RuntimeError("repair command failed")
@@ -1078,7 +1388,15 @@ async def _queue_repair(component_type: str, name: str) -> None:
             component = state.spots.get(name) or state.barriers.get(name) or state.fans.get(name)
             if component:
                 component.under_maintenance = True
-    await maintenance_queue.submit(f"repair {component_type}:{name}", guarded_repair, priority=10)
+                if component_type == "ParkingSpot":
+                    component.status = SpotStatus.MAINTENANCE
+            db.record_component_event(name, component_type, "repair_started")
+        state.pending_repairs.pop(name, None)
+    try:
+        await maintenance_queue.submit(f"repair {component_type}:{name}", guarded_repair, priority=10, on_drop=dropped)
+    except Exception:
+        await dropped()
+        raise
 
 
 # --------------------------------------------------------------------------- #
@@ -1090,17 +1408,37 @@ async def _handle_car_spot_action(payload: dict[str, Any]) -> None:
     spot_type = payload.get("SpotType", "")
     direction = payload.get("Direction", "")
 
+    if spot_type == "EntrySpot" and direction == "CarIn":
+        _retire_previous_visit(plate)
     if spot_type == "EntrySpot" and direction == "CarIn" and plate in state.active_dispatches:
+        session = state.get_session(plate)
+        if session is not None and session.staged_via == spot_name and session.phase == SessionPhase.ASSIGNED:
+            # The car has reached its zone's own sensor and is waiting at the
+            # closed zone gate: open it now and send the car on to its bay.
+            _waiting_at[plate] = spot_name
+            _left_entry.discard(plate)
+            session.entry_departed = False
+            _persist(plate)
+            _start_dispatch_retry(plate, session.assigned_spot, sensor=spot_name)
+            return
         log.info("idempotent entrance short-circuit for %s (%s)", plate, state.active_dispatches[plate])
         return
     await _sync_if_no_live_bays()
 
     if spot_type == "EntrySpot" and direction == "CarOut":
-        _left_entry.add(plate)
         session = state.get_session(plate)
         if session:
+            if session.assigned_spot is None:
+                _record_neglect_and_discard(plate, "Left entrance while access was unavailable")
+                return
+            _left_entry.add(plate)
             session.entry_departed = True
             _persist(plate)
+            if _holding_gate.get(plate) and _holding_gate[plate] == _barrier_for_sensor(spot_name):
+                # Out of the box in front of its gate: the car is going through.
+                # Close behind it unless the next car already holds the gate.
+                _holding_gate.pop(plate, None)
+                _spawn(_close_idle_gates_later(settings.entry_gate_close_delay_s))
         return
 
     if spot_type == "EntrySpot" and direction == "CarIn":
@@ -1121,6 +1459,8 @@ async def _handle_car_spot_action(payload: dict[str, Any]) -> None:
         state.mark_parked(plate, spot_name)
         _persist(plate)
         state.log_activity(f"{plate} parked at {spot_name}")
+        _holding_gate.pop(plate, None)   # backstop if the sensor exit was missed
+        await _close_idle_gates()
         return
 
     if spot_type == "Park" and direction == "CarOut":
@@ -1160,6 +1500,7 @@ async def _handle_car_spot_action(payload: dict[str, Any]) -> None:
         _archive(plate)
         state.log_activity(f"{plate} left the facility via {spot_name}")
         log.info("%s left the facility via %s", plate, spot_name)
+        _spawn(_close_idle_gates_later())   # no sensor past the exit gate: give the car time to clear it
         return
 
 
@@ -1184,15 +1525,32 @@ def _archive(plate: str) -> None:
         "arrived_at": session.arrived_wall or None,
         "parked_at": session.parked_wall or None,
         "left_spot_at": session.left_spot_wall or None,
-        "minutes": session.billable_minutes,
+        "minutes": round(session.measured_minutes * settings.game_speed, 2),
         "planned_minutes": session.planned_minutes,
         "parking_cost": session.expected_parking,
         "charging_cost": session.expected_charging,
         "paid_amount": session.expected_amount if session.paid else None,
-        "payment_ok": int(session.paid),
+        "payment_ok": 1 if session.paid else 0 if session.payment_suspect else None,
     })
     state.complete_session(plate)
     _left_entry.discard(plate)
+    _waiting_at.pop(plate, None)
+    _holding_gate.pop(plate, None)
+
+
+def _record_neglect_and_discard(plate: str, reason: str) -> None:
+    """Persist an unserved arrival without counting it as completed throughput."""
+    session = state.get_session(plate)
+    if session is None:
+        return
+    db.record_neglect(session, reason)
+    state.neglected_vehicles.appendleft({"plate": plate, "gate": session.entry_gate, "reason": reason})
+    state.log_activity(f"Neglected vehicle {plate}: {reason}", level="warn")
+    state.complete_session(plate)
+    db.delete_active_session(session.session_id)
+    _left_entry.discard(plate)
+    _waiting_at.pop(plate, None)
+    _holding_gate.pop(plate, None)
 
 
 async def _charge_at_exit(plate: str, spot_name: str) -> None:
@@ -1232,7 +1590,8 @@ async def _hold_exit(plate: str, sensor: str) -> None:
     barrier = state.barriers[name]
     barrier.held_vehicles.add(plate)
     db.set_meta(f"gate_holds:{name}", json.dumps(sorted(barrier.held_vehicles)))
-    if not barrier.broken and not barrier.under_maintenance:
+    if (not barrier.broken and not barrier.under_maintenance and name not in state.pending_repairs
+            and barrier.state not in (BarrierPosition.CLOSED, BarrierPosition.CLOSING)):
         if await act(f"hold exit {name} for {plate}", lambda: client.barrier_close(name)):
             state.update_barrier_state(name, "Closing")
             db.sync_component_wear(name, "BarrierGate", state.record_barrier_cycle(name), 0)
@@ -1298,13 +1657,26 @@ async def _handle_component_fixed(payload: dict[str, Any]) -> None:
     component_type = payload["Type"]
     name = payload["Name"]
     state.set_component_fixed(component_type, name)
+    state.pending_repairs.pop(name, None)
     db.mark_component_repaired(name)
     was_proactive = db.get_meta(f"pending_proactive_repair:{name}") == "1"
     db.set_meta(f"pending_proactive_repair:{name}", "0")
+    try:
+        repair_cost = float(payload.get("RepairCost")) if payload.get("RepairCost") is not None else None
+    except (TypeError, ValueError):
+        repair_cost = None
     db.record_component_event(name, component_type,
-                              "fixed_proactive" if was_proactive else "fixed_reactive")
+                              "fixed_proactive" if was_proactive else "fixed_reactive",
+                              amount=repair_cost)
     state.log_activity(f"{component_type} {name} fixed", capability="logs:view_maint")
     log.info("component fixed: %s %s", component_type, name)
+    if component_type == "ExhaustFan" and name in state.fans:
+        zone = state.zones.get(state.fans[name].zone_parent)
+        if zone:
+            await _handle_carbon_monoxide_event({"ZoneName": zone.name,
+                "CarbonMonoxideLevel": zone.gas_co_level, "DangerLevel": zone.danger_level})
+    elif component_type == "BarrierGate":
+        await _ensure_barriers_open()
 
 
 async def _handle_carbon_monoxide_event(payload: dict[str, Any]) -> None:
@@ -1325,7 +1697,7 @@ async def _handle_carbon_monoxide_event(payload: dict[str, Any]) -> None:
     zone_ratio = state.occupancy_ratio(zone_name)
     for fan_name in state.fans_in_zone(zone_name):
         fan = state.fans[fan_name]
-        if fan.broken or fan.under_maintenance:
+        if fan.broken or fan.under_maintenance or fan_name in state.pending_repairs:
             continue
         if not fan.is_on and ml_agent.co_ventilation_analysis(co_level, zone_ratio, history):
             if await act(f"fan {fan_name} ON (zone {zone_name} CO={co_level:.1f})",
@@ -1347,10 +1719,17 @@ async def _handle_gate_action(payload: dict[str, Any]) -> None:
     name = payload["Name"]
     action = payload.get("Action", "")
     state.update_barrier_state(name, action)
+    if name in state.barriers:
+        db.sync_component_wear(name, "BarrierGate", state.barriers[name].cycle_count, 0)
 
     barrier = state.barriers.get(name)
     if barrier and action == "Open" and (barrier.operator_override or barrier.held_vehicles):
-        await act(f"enforce hold on {name}", lambda: client.barrier_close(name))
+        if barrier.broken or barrier.under_maintenance or name in state.pending_repairs:
+            state.log_activity(f"Cannot enforce hold on unavailable gate {name}", level="error")
+            return
+        if await act(f"enforce hold on {name}", lambda n=name: client.barrier_close(n)):
+            state.update_barrier_state(name, "Closing")
+            db.sync_component_wear(name, "BarrierGate", state.record_barrier_cycle(name), 0)
 
 
 # "Car is being charged wrongly with amount: (2.00). Car type is (Normal) so
@@ -1406,6 +1785,9 @@ async def _handle_payment_made(payload: dict[str, Any]) -> None:
         )
 
     if not valid:
+        if session:
+            session.payment_suspect = True
+            _persist(plate)
         shown = "unknown" if expected is None else f"{expected:.2f}"
         state.log_activity(f"SUSPECT PAYMENT {plate}: expected {shown}, got {amount:.2f}", level="warn", capability="logs:view_fin")
         if session and session.exit_gate:
@@ -1415,6 +1797,11 @@ async def _handle_payment_made(payload: dict[str, Any]) -> None:
                     plate, amount, shown)
         return
 
+    if session.paid:
+        # Payment is durable before release. A duplicate can safely resume a
+        # failed release without issuing a second invoice or recording payment twice.
+        await _release_paid(session)
+        return
     if not state.mark_paid(plate, amount):
         log.warning("unsolicited or duplicate payment_made for %s (amount %.2f) - ignored", plate, amount)
         return
@@ -1424,22 +1811,38 @@ async def _handle_payment_made(payload: dict[str, Any]) -> None:
     await _release_paid(session)
 
 
+_releases_in_progress: set[str] = set()
+
+
 async def _release_paid(session) -> None:
-    if session.released or not session.paid:
+    if session.released or not session.paid or session.session_id in _releases_in_progress:
         return
+    # Recovery may run recursively inside a simulator request after HTTP 401.
+    # Do not wait for that same request, or start a competing release command.
+    _releases_in_progress.add(session.session_id)
+    try:
+        await _send_paid_release(session)
+    finally:
+        _releases_in_progress.discard(session.session_id)
+
+
+async def _send_paid_release(session) -> None:
     plate = session.plate
     gate = _barrier_for_sensor(session.exit_gate or "")
     if gate:
         barrier = state.barriers[gate]
         barrier.held_vehicles.discard(plate)
         db.set_meta(f"gate_holds:{gate}", json.dumps(sorted(barrier.held_vehicles)))
-        if barrier.operator_override or barrier.held_vehicles or barrier.broken or barrier.under_maintenance:
+        if barrier.operator_override or barrier.held_vehicles or barrier.broken or barrier.under_maintenance or gate in state.pending_repairs:
             return
         if barrier.state not in (BarrierPosition.OPEN, BarrierPosition.OPENING):
             if not await act(f"release paid vehicle at {gate}", lambda: client.barrier_open(gate)):
                 return
             state.update_barrier_state(gate, "Opening")
             db.sync_component_wear(gate, "BarrierGate", state.record_barrier_cycle(gate), 0)
+        # leavepark is routed at once; sent while the gate is still rising the
+        # simulator finds "No valid escape spot" and the paid car sits there.
+        await _wait_for_barrier_open(gate)
     if await act(f"car {plate} -> leavepark", lambda: client.car_goto(plate, "leavepark")):
         session.released = True
         _persist(plate)

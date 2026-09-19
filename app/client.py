@@ -15,7 +15,8 @@ log = logging.getLogger("dispatcher.client")
 
 class SimulatorClient:
     def __init__(self) -> None:
-        self._http = httpx.AsyncClient(base_url=settings.simulator_base_url, timeout=settings.request_timeout_s)
+        self._http = httpx.AsyncClient(base_url=settings.simulator_base_url,
+                                      timeout=settings.request_timeout_s / max(settings.game_speed, 0.1))
         self._token: Optional[str] = None
         self._token_obtained_at: float = 0.0
         self._login_lock = asyncio.Lock()

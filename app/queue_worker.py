@@ -29,6 +29,7 @@ class _Task:
     label: str = field(compare=False)
     action: Callable[[], Awaitable[None]] = field(compare=False)
     attempts: int = field(default=0, compare=False)
+    on_drop: Optional[Callable[[], Awaitable[None]]] = field(default=None, compare=False)
 
 
 class PriorityTaskQueue:
@@ -52,6 +53,7 @@ class PriorityTaskQueue:
         self._stopping = False
         self._completed = 0
         self._dropped = 0
+        self._retries: set[asyncio.Task] = set()
 
     def start(self) -> None:
         if self._worker is None:
@@ -70,11 +72,16 @@ class PriorityTaskQueue:
             except asyncio.CancelledError:
                 pass
             self._worker = None
+        for retry in self._retries:
+            retry.cancel()
+        await asyncio.gather(*self._retries, return_exceptions=True)
+        self._retries.clear()
 
-    async def submit(self, label: str, action: Callable[[], Awaitable[None]], priority: int = 50) -> None:
+    async def submit(self, label: str, action: Callable[[], Awaitable[None]], priority: int = 50,
+                     on_drop: Optional[Callable[[], Awaitable[None]]] = None) -> None:
         async with self._condition:
             heapq.heappush(self._heap, _Task(priority=priority, sequence=next(self._counter),
-                                             label=label, action=action))
+                                             label=label, action=action, on_drop=on_drop))
             self._condition.notify()
 
     def __len__(self) -> int:
@@ -82,7 +89,14 @@ class PriorityTaskQueue:
 
     @property
     def stats(self) -> dict[str, int]:
-        return {"pending": len(self._heap), "completed": self._completed, "dropped": self._dropped}
+        return {"pending": len(self._heap) + len(self._retries), "completed": self._completed, "dropped": self._dropped}
+
+    async def _retry_later(self, task: _Task) -> None:
+        await asyncio.sleep(self._retry_delay_s / max(settings.game_speed, 0.1))
+        async with self._condition:
+            if not self._stopping:
+                heapq.heappush(self._heap, task)
+                self._condition.notify()
 
     async def _run(self) -> None:
         while not self._stopping:
@@ -103,13 +117,17 @@ class PriorityTaskQueue:
                 log.warning("maintenance task failed (%d/%d): %s - %s",
                            task.attempts, self._max_attempts, task.label, exc)
                 if task.attempts < self._max_attempts:
-                    await asyncio.sleep(self._retry_delay_s / max(settings.game_speed, 0.1))
-                    async with self._condition:
-                        heapq.heappush(self._heap, task)
-                        self._condition.notify()
+                    retry = asyncio.create_task(self._retry_later(task))
+                    self._retries.add(retry)
+                    retry.add_done_callback(self._retries.discard)
                 else:
                     self._dropped += 1
                     log.error("maintenance task dropped after %d attempts: %s", task.attempts, task.label)
+                    if task.on_drop:
+                        try:
+                            await task.on_drop()
+                        except Exception:
+                            log.exception("maintenance drop callback failed: %s", task.label)
 
 
 maintenance_queue = PriorityTaskQueue()
@@ -129,11 +147,11 @@ async def schedule_lights(raw: str, parking_state, simulator, act) -> None:
     from app import db
     desired = not (settings.day_start_hour <= hour < settings.night_start_hour)
     for light in list(parking_state.lights.values()):
-        if light.is_on == desired:
+        if light.is_on == desired or light.broken or light.under_maintenance:
             continue
         action = simulator.light_on if desired else simulator.light_off
         if await act(f"light {light.name} {'ON' if desired else 'OFF'} (server hour {hour})",
-                     lambda n=light.name: action(n)):
+                     lambda n=light.name, fn=action: fn(n)):
             cycles, runtime = parking_state.set_light_on(light.name, desired)
             db.sync_component_wear(light.name, "Light", cycles, runtime)
             db.record_component_event(light.name, "Light", "on" if desired else "off")

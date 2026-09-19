@@ -45,7 +45,16 @@ if not exist "%VENV_PY%" (
     goto :fail
   )
 ) else (
-  echo  [1/5] Virtual environment found.
+  echo  [1/5] Virtual environment found - checking dependencies...
+  REM Re-run on every start: an existing .venv never picks up packages added
+  REM to requirements.txt later - numpy and scikit-learn for app\ml_agent.py
+  REM were missed this way. pip exits quickly when everything is already there.
+  REM No parentheses in these comments: inside this block cmd would read one
+  REM as the end of the else branch.
+  "%VENV_PY%" -m pip install -q -r requirements.txt
+  if errorlevel 1 (
+    echo  [i] Dependency check failed - continuing; optional features may be off.
+  )
 )
 
 if not exist ".env" (
@@ -73,7 +82,19 @@ if not errorlevel 1 (
 ) else (
   REM /D: the simulator reads settings\ relative to its working directory and
   REM crashes on startup (0xE0434352) if launched from the project folder.
-  start "Grand Park Auto Simulator" /D "ParkingSimulator-win-x64\ParkingSimulator-win-x64" "%SIM_EXE%"
+  REM Its console is tee'd to data\simulator.log (still shown in its window):
+  REM the "Load Game./settings/lvlN.json" line is the only signal that a level
+  REM was loaded, and the dispatcher follows that file to reset for it.
+  if not exist data mkdir data
+  if exist "data\simulator.log" del "data\simulator.log" >nul 2>&1
+  start "Grand Park Auto Simulator" /D "ParkingSimulator-win-x64\ParkingSimulator-win-x64" powershell -NoProfile -ExecutionPolicy Bypass -Command "& '.\ParkingSimulator.exe' | Tee-Object -FilePath '%CD%\data\simulator.log'"
+  call :sleep 4
+  tasklist /fi "imagename eq ParkingSimulator.exe" 2>nul | findstr /i /c:"ParkingSimulator.exe" >nul
+  if errorlevel 1 (
+    echo        [i] simulator did not stay up with its console captured - relaunching
+    echo            it plainly. Level loads will then only be noticed at the first car.
+    start "Grand Park Auto Simulator" /D "ParkingSimulator-win-x64\ParkingSimulator-win-x64" "%SIM_EXE%"
+  )
 )
 
 echo        waiting for the REST API on :9898 ...

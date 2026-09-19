@@ -243,6 +243,23 @@ def mark_processed(event_id: Optional[str], error: Optional[str] = None) -> None
         _conn.commit()
 
 
+def mark_failed(event_id: Optional[str], error: str) -> None:
+    """Keep a failed accepted event retryable while retaining its error."""
+    if not event_id:
+        return
+    with _lock:
+        _conn.execute(
+            "UPDATE events SET processed = 0, process_error = ? WHERE event_id = ?",
+            (error, event_id),
+        )
+        _conn.commit()
+
+
+def event_status(event_id: str) -> Optional[dict[str, Any]]:
+    rows = query("SELECT processed, process_error FROM events WHERE event_id = ?", (event_id,))
+    return rows[0] if rows else None
+
+
 def record_sequence_gap(expected: int, received: int, missing: int) -> None:
     with _lock:
         _conn.execute(
@@ -519,6 +536,26 @@ def save_active_session(session) -> None:
             (session.plate, session.session_id, json.dumps(asdict(session)), int(session.charge_attempted)))
 
 
+def reset_live_level() -> None:
+    """A new level: drop unfinished sessions, operator holds and ghost-car holds
+    from the previous one. Completed history, payments and penalties stay.
+
+    Holds are cleared by key pattern, not by the gates currently in memory: a
+    dispatcher started before the level was clicked has no gates loaded yet.
+    """
+    with _lock, _conn:
+        _conn.execute("DELETE FROM active_sessions")
+        _conn.execute("UPDATE ghost_car_events SET resolved = 1, resolved_by = 'level reload', resolved_at = ? "
+                      "WHERE resolved = 0", (_utcnow(),))
+        _conn.execute("UPDATE meta SET value = '0' WHERE key LIKE 'gate\\_override:%' ESCAPE '\\'")
+        _conn.execute("UPDATE meta SET value = '[]' WHERE key LIKE 'gate\\_holds:%' ESCAPE '\\'")
+
+
+def delete_active_session(session_id: str) -> None:
+    with _lock, _conn:
+        _conn.execute("DELETE FROM active_sessions WHERE session_id = ?", (session_id,))
+
+
 def claim_charge(session) -> bool:
     """Commit the once-only claim before any network I/O, including after a crash."""
     with _lock, _conn:
@@ -541,5 +578,6 @@ def counters() -> dict[str, Any]:
              (SELECT COUNT(*) FROM penalties)  AS penalties,
              (SELECT COALESCE(SUM(fine_amount), 0) FROM penalties) AS total_fines,
              (SELECT COUNT(*) FROM payments WHERE valid = 0)       AS suspect_payments,
-             (SELECT COUNT(*) FROM sequence_gaps)                  AS sequence_gaps"""
+             (SELECT COUNT(*) FROM sequence_gaps)                  AS sequence_gaps,
+             (SELECT COUNT(*) FROM events WHERE processed = 0)     AS unprocessed_events"""
     )[0]

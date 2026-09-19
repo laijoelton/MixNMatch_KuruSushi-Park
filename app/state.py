@@ -119,6 +119,8 @@ class Light:
     cycle_count: int = 0
     runtime_seconds: float = 0.0
     turned_on_at: Optional[float] = field(default_factory=time.monotonic)
+    broken: bool = False
+    under_maintenance: bool = False
 
 
 @dataclass
@@ -148,8 +150,12 @@ class VehicleSession:
     charge_attempted: bool = False
     zone: str = ""
     entry_departed: bool = False
+    # The zone's own entry sensor the car was sent to first (ENTRY3 for a
+    # ZONE3 bay); its gate opens only once the car is waiting there.
+    staged_via: Optional[str] = None
     exit_confirmed: bool = False
     released: bool = False
+    payment_suspect: bool = False
 
     # What the driver booked. The simulator bills this, not the wall-clock
     # time we observe -- see compute_charge().
@@ -224,6 +230,7 @@ class ParkingState:
         self.neglected_vehicles: deque = deque(maxlen=100)
         self.last_sequence_id: int = 0
         self.deferred_repairs: dict[str, str] = {}
+        self.pending_repairs: dict[str, str] = {}
         self.penalty_count: int = 0
         self.total_fines: float = 0.0
         self.penalty_log: deque = deque(maxlen=200)
@@ -260,28 +267,48 @@ class ParkingState:
                     occupied = False
                     plate = None
 
+                broken = bool(item.get("broken", False))
+                under_maintenance = bool(item.get("isUnderMaintenance", False))
+                status = (
+                    SpotStatus.OCCUPIED if occupied
+                    else SpotStatus.BROKEN if broken
+                    else SpotStatus.MAINTENANCE if under_maintenance
+                    else SpotStatus.AVAILABLE
+                )
+                usage = item.get("usageCounter", item.get("UsageCounter", 0))
+                try:
+                    usage = max(0, int(usage or 0))
+                except (TypeError, ValueError):
+                    usage = 0
                 self.spots[item["name"]] = Spot(
                     name=item["name"],
                     purpose=item.get("purpose", "Park"),
                     parking_for_car_type=item.get("parkingForCarType", "Any"),
                     zone_parent=item.get("zoneParent", ""),
-                    status=SpotStatus.OCCUPIED if occupied else SpotStatus.AVAILABLE,
-                    broken=bool(item.get("broken", False)),
-                    under_maintenance=bool(item.get("isUnderMaintenance", False)),
+                    status=status,
+                    broken=broken,
+                    under_maintenance=under_maintenance,
                     occupant_plate=plate,
                     is_accessible=bool(item.get("isAccessible", item.get("is_accessible", False)))
                                   or item.get("parkingForCarType", "").lower() == "accessible",
+                    cycle_count=usage,
                 )
 
     def load_barriers(self, raw: list[dict]) -> None:
         with self._lock:
             for item in raw:
+                usage = item.get("usageCounter", item.get("UsageCounter", 0))
+                try:
+                    usage = max(0, int(usage or 0))
+                except (TypeError, ValueError):
+                    usage = 0
                 self.barriers[item["name"]] = Barrier(
                     name=item["name"],
                     zone_parent=item.get("zoneParent", ""),
                     state=BarrierPosition(item.get("state", "Closed")),
                     broken=bool(item.get("broken", False)),
                     under_maintenance=bool(item.get("isUnderMaintenance", False)),
+                    cycle_count=usage,
                 )
 
     def load_fans(self, raw: list[dict]) -> None:
@@ -304,6 +331,8 @@ class ParkingState:
                     zone_parent=item.get("zoneParent", ""),
                     is_on=bool(item.get("isOn", True)),
                     turned_on_at=time.monotonic() if item.get("isOn", True) else None,
+                    broken=bool(item.get("broken", False)),
+                    under_maintenance=bool(item.get("isUnderMaintenance", False)),
                 )
 
     def load_zones(self, raw: list[dict]) -> None:
@@ -313,6 +342,7 @@ class ParkingState:
                     name=item["name"],
                     gas_co_level=float(item.get("gasCarbonMonoxideLevel", 0.0)),
                     risk=item.get("risk", "Safe"),
+                    danger_level=item.get("risk", "Safe"),
                 )
 
     # ------------------------------------------------------------------ #
@@ -324,6 +354,10 @@ class ParkingState:
     def observe_sequence(self, sequence_id: Optional[int]) -> Optional[int]:
         """Record ``sequence_id`` and return the size of any detected gap (0/None if none)."""
         if sequence_id is None:
+            return None
+        try:
+            sequence_id = int(sequence_id)
+        except (TypeError, ValueError):
             return None
         with self._lock:
             gap = 0
@@ -364,13 +398,14 @@ class ParkingState:
         with self._lock:
             return [
                 s.name for s in self.spots.values()
-                if s.dispatchable and (s.parking_for_car_type in ("Any", car_type))
+                if s.dispatchable and s.name not in self.pending_repairs
+                and (s.parking_for_car_type in ("Any", car_type))
             ]
 
     def reserve_spot(self, spot_name: str, plate: str) -> bool:
         with self._lock:
             spot = self.spots.get(spot_name)
-            if spot is None or not spot.dispatchable:
+            if spot is None or not spot.dispatchable or spot_name in self.pending_repairs:
                 return False
             spot.status = SpotStatus.RESERVED
             spot.occupant_plate = plate
@@ -417,6 +452,8 @@ class ParkingState:
                 self.barriers[name].broken = True
             elif component_type == "ExhaustFan" and name in self.fans:
                 self.fans[name].broken = True
+            elif component_type == "Light" and name in self.lights:
+                self.lights[name].broken = True
 
     def set_component_fixed(self, component_type: str, name: str) -> None:
         with self._lock:
@@ -439,6 +476,13 @@ class ParkingState:
                 fan.cycle_count = 0
                 fan.runtime_seconds = 0.0
                 fan.turned_on_at = time.monotonic() if fan.is_on else None
+            elif component_type == "Light" and name in self.lights:
+                light = self.lights[name]
+                light.broken = False
+                light.under_maintenance = False
+                light.cycle_count = 0
+                light.runtime_seconds = 0.0
+                light.turned_on_at = time.monotonic() if light.is_on else None
             self.deferred_repairs.pop(name, None)
 
     def queue_deferred_repair(self, name: str, component_type: str) -> None:
@@ -517,10 +561,9 @@ class ParkingState:
     # this only holds the live counters the dashboard reads.
     # ------------------------------------------------------------------ #
     def record_barrier_cycle(self, name: str) -> int:
-        """One open/close command was actually sent. Returns the new count."""
+        """Return movement count, already updated by update_barrier_state()."""
         with self._lock:
             barrier = self.barriers.setdefault(name, Barrier(name=name))
-            barrier.cycle_count += 1
             return barrier.cycle_count
 
     def set_fan_on(self, name: str, on: bool) -> tuple[int, float]:
@@ -536,7 +579,7 @@ class ParkingState:
                 fan.is_on = False
                 fan.cycle_count += 1
                 if fan.turned_on_at is not None:
-                    fan.runtime_seconds += max(0.0, now - fan.turned_on_at)
+                    fan.runtime_seconds += max(0.0, now - fan.turned_on_at) * settings.game_speed
                 fan.turned_on_at = None
             return fan.cycle_count, fan.runtime_seconds
 
@@ -552,7 +595,7 @@ class ParkingState:
                 light.is_on = False
                 light.cycle_count += 1
                 if light.turned_on_at is not None:
-                    light.runtime_seconds += max(0.0, now - light.turned_on_at)
+                    light.runtime_seconds += max(0.0, now - light.turned_on_at) * settings.game_speed
                 light.turned_on_at = None
             return light.cycle_count, light.runtime_seconds
 
@@ -572,17 +615,23 @@ class ParkingState:
             for f in self.fans.values():
                 runtime = f.runtime_seconds
                 if f.is_on and f.turned_on_at is not None:
-                    runtime += max(0.0, time.monotonic() - f.turned_on_at)
+                    runtime += max(0.0, time.monotonic() - f.turned_on_at) * settings.game_speed
                 out.append({"name": f.name, "type": "ExhaustFan",
                            "cycle_count": f.cycle_count, "runtime_seconds": runtime,
                            "broken": f.broken, "under_maintenance": f.under_maintenance})
             for l in self.lights.values():
                 runtime = l.runtime_seconds
                 if l.is_on and l.turned_on_at is not None:
-                    runtime += max(0.0, time.monotonic() - l.turned_on_at)
+                    runtime += max(0.0, time.monotonic() - l.turned_on_at) * settings.game_speed
                 out.append({"name": l.name, "type": "Light",
                            "cycle_count": l.cycle_count, "runtime_seconds": runtime,
-                           "broken": False, "under_maintenance": False})
+                           "broken": l.broken, "under_maintenance": l.under_maintenance})
+            for row in out:
+                row["repair_pending"] = row["name"] in self.pending_repairs or row["name"] in self.deferred_repairs
+                row["repair_supported"] = row["type"] != "Light"
+                row["wear_percent"] = round(100 * max(
+                    row["cycle_count"] / max(1, settings.wear_cycle_threshold),
+                    row["runtime_seconds"] / max(1, settings.wear_runtime_threshold_s)), 1)
             return out
 
     # ------------------------------------------------------------------ #
@@ -691,6 +740,7 @@ class ParkingState:
             if session is None or not session.charged or session.paid:
                 return False
             session.paid = True
+            session.payment_suspect = False
             return True
 
     def complete_session(self, plate: str) -> Optional[VehicleSession]:
@@ -715,6 +765,29 @@ class ParkingState:
                 "component": component_name, "at": time.time(),
             })
 
+    def clear_penalties(self) -> None:
+        """Forget recorded fines; paired with an admin clearing the penalties table."""
+        with self._lock:
+            self.penalty_count = 0
+            self.total_fines = 0.0
+            self.penalty_log.clear()
+
+    def reset_for_new_level(self) -> int:
+        """Forget the previous level's live park: cars, bays, gates and repair
+        bookkeeping. Returns how many vehicle sessions were dropped. Penalties
+        and the activity feed are kept - they are the run's record."""
+        with self._lock:
+            dropped = len(self.sessions)
+            for table in (self.sessions, self.active_dispatches, self.spots, self.barriers, self.zones,
+                          self.fans, self.lights, self.pending_repairs, self.deferred_repairs):
+                table.clear()
+            self.neglected_vehicles.clear()
+            return dropped
+
+    def clear_neglected(self) -> None:
+        with self._lock:
+            self.neglected_vehicles.clear()
+
     def log_activity(self, message: str, level: str = "info", capability: str = "logs:view_ops") -> None:
         with self._lock:
             self.activity_log.appendleft({"message": message, "level": level, "at": time.time(), "capability": capability})
@@ -723,20 +796,30 @@ class ParkingState:
         with self._lock:
             out: list[dict[str, Any]] = []
             for s in self.spots.values():
-                if s.broken or s.under_maintenance:
+                repair_pending = s.name in self.pending_repairs
+                if s.broken or s.under_maintenance or repair_pending:
                     out.append({"name": s.name, "type": "ParkingSpot",
                                "broken": s.broken, "under_maintenance": s.under_maintenance,
+                               "repair_pending": repair_pending,
                                "occupied": s.occupant_plate is not None})
             for b in self.barriers.values():
-                if b.broken or b.under_maintenance:
+                repair_pending = b.name in self.pending_repairs
+                if b.broken or b.under_maintenance or repair_pending:
                     out.append({"name": b.name, "type": "BarrierGate",
                                "broken": b.broken, "under_maintenance": b.under_maintenance,
-                               "occupied": False})
+                               "repair_pending": repair_pending, "occupied": False})
             for f in self.fans.values():
-                if f.broken or f.under_maintenance:
+                repair_pending = f.name in self.pending_repairs
+                if f.broken or f.under_maintenance or repair_pending:
                     out.append({"name": f.name, "type": "ExhaustFan",
                                "broken": f.broken, "under_maintenance": f.under_maintenance,
-                               "occupied": False})
+                               "repair_pending": repair_pending, "occupied": False})
+            for light in self.lights.values():
+                repair_pending = light.name in self.pending_repairs
+                if light.broken or light.under_maintenance or repair_pending:
+                    out.append({"name": light.name, "type": "Light", "broken": light.broken,
+                                "under_maintenance": light.under_maintenance,
+                                "repair_pending": repair_pending, "occupied": False})
             return out
 
     def occupancy_counts(self) -> dict[str, int]:
@@ -753,6 +836,7 @@ class ParkingState:
                 "spots": [
                     {"name": s.name, "purpose": s.purpose, "status": s.status.value,
                      "broken": s.broken, "under_maintenance": s.under_maintenance,
+                     "repair_pending": s.name in self.pending_repairs,
                      "occupant_plate": s.occupant_plate, "zone": s.zone_parent,
                      "car_type": s.parking_for_car_type, "is_accessible": s.is_accessible}
                     for s in self.spots.values()
@@ -760,6 +844,8 @@ class ParkingState:
                 "barriers": [
                     {"name": b.name, "state": b.state.value, "broken": b.broken,
                      "under_maintenance": b.under_maintenance, "zone": b.zone_parent,
+                     "repair_pending": b.name in self.pending_repairs,
+                     "main_gate": b.name == settings.main_gate,
                      "operator_override": b.operator_override,
                      "hold_reason": "Held closed by operator" if b.operator_override else
                                     "Vehicle awaiting clearance" if b.held_vehicles else ""}
@@ -767,11 +853,14 @@ class ParkingState:
                 ],
                 "fans": [
                     {"name": f.name, "is_on": f.is_on, "broken": f.broken,
-                     "under_maintenance": f.under_maintenance, "zone": f.zone_parent}
+                     "under_maintenance": f.under_maintenance,
+                     "repair_pending": f.name in self.pending_repairs, "zone": f.zone_parent}
                     for f in self.fans.values()
                 ],
                 "lights": [
-                    {"name": l.name, "is_on": l.is_on, "zone": l.zone_parent}
+                    {"name": l.name, "is_on": l.is_on, "zone": l.zone_parent,
+                     "broken": l.broken, "under_maintenance": l.under_maintenance,
+                     "repair_pending": l.name in self.pending_repairs}
                     for l in self.lights.values()
                 ],
                 "wear": self.wear_snapshot(),

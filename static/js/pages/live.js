@@ -89,6 +89,7 @@ subscribe(async (snap) => {
   alerts.update(deriveAlerts(snap, stats, { isAdmin }));
   vehicles.update(snap.sessions || []);
   feed.update(snap.activity || []);
+  renderWear(snap.wear || []);
   updateFullBanner(snap);
   if (drawerTarget && isDrawerOpen()) showDetails(drawerTarget.kind, drawerTarget.name, { refresh: true });
 });
@@ -151,6 +152,7 @@ function spotView(snap, name) {
   let blocked = null;
   if (occupied) blocked = "A car holds this bay — repairing it now is penalised.";
   else if (spot.under_maintenance) blocked = "Already under repair.";
+  else if (spot.repair_pending) blocked = "Repair already queued.";
 
   const repair = h("button", { class: `btn ${spot.broken ? "primary" : ""}`, type: "button", disabled: Boolean(blocked),
     text: spot.broken ? "Repair bay" : "Preventive repair",
@@ -159,7 +161,7 @@ function spotView(snap, name) {
   return {
     kicker: "Parking bay",
     title: name,
-    signature: JSON.stringify([state, spot.occupant_plate, spot.broken, spot.under_maintenance, session?.phase]),
+    signature: JSON.stringify([state, spot.occupant_plate, spot.broken, spot.under_maintenance, spot.repair_pending, session?.phase]),
     body: detailList([
       ["Status", h("span", { class: `tag ${state === "free" ? "free" : state === "fault" ? "fault" : state === "reserved" ? "reserved" : ""}`, text: SPOT_STATE_LABEL[state] })],
       ["Type", `${TYPE_GLYPH[spot.car_type] ? TYPE_GLYPH[spot.car_type] + " " : ""}${spot.car_type || "Any"}`],
@@ -167,10 +169,20 @@ function spotView(snap, name) {
       ["Vehicle", spot.occupant_plate ? plate(spot.occupant_plate) : "—"],
       session ? ["Stay", PHASE_LABEL[session.phase] || session.phase] : null,
       session ? ["Entered via", session.entry_gate || "—"] : null,
-      ["Condition", spot.broken ? "Broken" : spot.under_maintenance ? "Under repair" : "Good"],
+      ["Condition", spot.broken ? "Broken" : spot.under_maintenance ? "Under repair" : spot.repair_pending ? "Repair queued" : "Good"],
     ]),
     actions: canRepair ? [repair, reasonLine(blocked)] : [],
   };
+}
+
+function renderWear(rows) {
+  const host = document.getElementById("wear-rows");
+  const sorted = [...rows].sort((a, b) => Number(b.broken) - Number(a.broken) || b.wear_percent - a.wear_percent || a.name.localeCompare(b.name));
+  host.replaceChildren(...sorted.map(row => h("tr", {},
+    ...[row.name, row.type, row.broken ? "Broken" : row.under_maintenance ? "Under repair" : row.repair_pending ? "Repair queued" : "Available",
+      row.cycle_count, (row.runtime_seconds / 3600).toFixed(2), row.repair_supported ? `${row.wear_percent}%` : "Tracked only"]
+      .map(text => h("td", { text })))));
+  if (!sorted.length) host.replaceChildren(h("tr", {}, h("td", { colspan: 6, text: "No component usage received yet." })));
 }
 
 function gateView(snap, name) {
@@ -178,24 +190,24 @@ function gateView(snap, name) {
   if (!gate) return null;
   const state = gateState(gate);
   const out = state === "fault";
-  const reason = out ? "Operating a gate that is broken or under repair is penalised." : null;
+  const reason = out ? (gate.repair_pending ? "This gate is unavailable while its repair is queued." : "Operating a gate that is broken or under repair is penalised.") : null;
   const call = (verb) => api(`/api/manual/barrier/${encodeURIComponent(name)}/${verb}`, { method: "POST" });
 
-  const openBtn = h("button", { class: "btn", type: "button", text: "Open", disabled: out || gate.state === "Open",
+  const openBtn = h("button", { class: "btn", type: "button", text: "Open / release hold", disabled: out || (gate.state === "Open" && !gate.operator_override),
     onclick: () => runAction(openBtn, () => call("open"), `Opening ${name}`) });
-  const closeBtn = h("button", { class: "btn", type: "button", text: "Close", disabled: out || gate.state === "Closed",
+  const closeBtn = h("button", { class: "btn", type: "button", text: "Hold closed", disabled: out || (gate.state === "Closed" && gate.operator_override),
     onclick: () => runAction(closeBtn, () => call("close"), `Closing ${name}`) });
   const repairBtn = h("button", { class: `btn ${gate.broken ? "primary" : "ghost"}`, type: "button", text: "Repair",
-    disabled: gate.under_maintenance,
+    disabled: gate.under_maintenance || gate.repair_pending,
     onclick: () => runAction(repairBtn, () => api(`/api/manual/repair/${encodeURIComponent(name)}`, { method: "POST" }), `Repair queued for ${name}`) });
 
   return {
     kicker: "Barrier gate",
     title: name,
-    signature: JSON.stringify([gate.state, gate.broken, gate.under_maintenance, gate.hold_reason]),
+    signature: JSON.stringify([gate.state, gate.broken, gate.under_maintenance, gate.repair_pending, gate.hold_reason]),
     body: detailList([
       ["Position", h("span", { class: `tag ${state === "open" ? "free" : state === "fault" ? "fault" : state === "moving" ? "reserved" : ""}`, text: gate.state })],
-      ["Condition", gate.broken ? "Broken" : gate.under_maintenance ? "Under repair" : "Good"],
+      ["Condition", gate.broken ? "Broken" : gate.under_maintenance ? "Under repair" : gate.repair_pending ? "Repair queued" : "Good"],
       ["Zone", gate.zone || "Perimeter"],
       ["Service state", gate.hold_reason || GATE_STATE_LABEL[state]],
     ]),
@@ -207,15 +219,15 @@ function fanView(snap, name) {
   const fan = (snap.fans || []).find((x) => x.name === name);
   if (!fan) return null;
   const zone = (snap.zones || []).find((z) => z.name === fan.zone);
-  const repairBtn = h("button", { class: "btn", type: "button", text: "Repair", disabled: fan.under_maintenance,
+  const repairBtn = h("button", { class: "btn", type: "button", text: "Repair", disabled: fan.under_maintenance || fan.repair_pending,
     onclick: () => runAction(repairBtn, () => api(`/api/manual/repair/${encodeURIComponent(name)}`, { method: "POST" }), `Repair queued for ${name}`) });
   return {
     kicker: "Exhaust fan",
     title: name,
-    signature: JSON.stringify([fan.is_on, fan.broken, fan.under_maintenance, zone?.co_level]),
+    signature: JSON.stringify([fan.is_on, fan.broken, fan.under_maintenance, fan.repair_pending, zone?.co_level]),
     body: detailList([
       ["Running", fan.is_on ? "Yes" : "No"],
-      ["Condition", fan.broken ? "Broken" : fan.under_maintenance ? "Under repair" : "Good"],
+      ["Condition", fan.broken ? "Broken" : fan.under_maintenance ? "Under repair" : fan.repair_pending ? "Repair queued" : "Good"],
       ["Zone", fan.zone || "—"],
       ["Zone CO", zone ? `${Number(zone.co_level).toFixed(1)} (${zone.danger_level || "Safe"})` : "—"],
     ]),

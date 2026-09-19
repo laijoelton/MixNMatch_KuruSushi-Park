@@ -8,7 +8,7 @@ from typing import Any
 CAPABILITIES = frozenset({
     "ops:view", "ops:control_gates", "ops:control_dispatch", "maint:view", "maint:control",
     "fin:view", "fin:write_tariff", "logs:view_ops", "logs:view_maint", "logs:view_fin",
-    "logs:view_audit", "logs:flush", "admin:users", "admin:schema",
+    "logs:view_audit", "logs:flush", "admin:users", "admin:schema", "admin:reset",
 })
 ROLE_CAPABILITIES = {
     "admin": CAPABILITIES,
@@ -57,6 +57,7 @@ _routes("PATCH", ("/api/admin/users/[0-9]+",), "admin:users")
 _routes("DELETE", ("/api/admin/users/[0-9]+",), "admin:users")
 _routes("GET", ("/api/admin/audit", "/api/signature-report"), "logs:view_audit")
 _routes("DELETE", ("/api/logs",), "logs:flush")
+_routes("DELETE", ("/api/admin/data/[a-z]+",), "admin:reset")
 _routes("GET", ("/docs", "/docs/oauth2-redirect", "/redoc", "/openapi.json", "/api/admin/schema"), "admin:schema")
 _routes("POST", ("/api/admin/schema",), "admin:schema")
 
@@ -93,6 +94,7 @@ FINANCIAL_KEYS = frozenset({
     "total_fines", "suspect_payments", "penalty_count", "fines_by_reason", "penalties",
     "parkingcost", "chargingcost",
     "repaircost", "repair_cost",
+    "repair_costs", "repair_cost_total",
 })
 
 

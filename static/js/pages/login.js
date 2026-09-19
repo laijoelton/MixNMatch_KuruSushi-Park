@@ -32,7 +32,7 @@ form.addEventListener("submit", async (event) => {
     const title = document.createElement("h2"); title.textContent = "Recent sign-in attempts"; panel.append(title);
     for (const attempt of result.prior_attempts || []) {
       const row = document.createElement("p");
-      row.textContent = `${attempt.occurred_at} ? ${attempt.ip || "Unknown IP"} ? ${attempt.success ? "Successful" : "Failed"}`;
+      row.textContent = `${attempt.occurred_at} · ${attempt.ip || "Unknown IP"} · ${attempt.success ? "Successful" : "Failed"}`;
       panel.append(row);
     }
     if (!result.prior_attempts.length) { const p = document.createElement("p"); p.textContent = "No previous attempts."; panel.append(p); }

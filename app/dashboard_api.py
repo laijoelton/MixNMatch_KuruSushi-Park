@@ -83,10 +83,11 @@ class LoginIn(BaseModel):
 @router.post("/api/auth/login")
 async def login(body: LoginIn, request: Request, response: Response) -> dict[str, Any]:
     ip = request.client.host if request.client else None
-    user = auth.authenticate(body.username, body.password)
+    username = body.username.strip()
+    user = auth.authenticate(username, body.password)
 
-    prior = db.prior_login_attempts(body.username, limit=3)
-    db.record_login_attempt(body.username, ip, user is not None)
+    prior = db.prior_login_attempts(username, limit=3)
+    db.record_login_attempt(username, ip, user is not None)
 
     if user is None:
         raise HTTPException(401, "Invalid username or password")
@@ -128,7 +129,8 @@ async def gate_bays() -> list[dict[str, Any]]:
     snapshot = state.snapshot()
     bays = [
         {"name": s["name"], "zone": s["zone"], "car_type": s["car_type"],
-         "available": s["status"] == "AVAILABLE" and not s["broken"] and not s["under_maintenance"]}
+         "available": s["status"] == "AVAILABLE" and not s["broken"] and not s["under_maintenance"]
+                      and not s["repair_pending"]}
         for s in snapshot["spots"] if s["purpose"] == "Park"
     ]
     return sorted(bays, key=lambda b: (b["zone"], _natural_key(b["name"])))
@@ -201,11 +203,16 @@ async def stats(request: Request) -> dict[str, Any]:
         (SELECT COUNT(*) FROM payments WHERE valid = 0)       AS suspect_payments,
         (SELECT COUNT(*) FROM penalties)                      AS penalty_count,
         (SELECT COALESCE(SUM(fine_amount), 0) FROM penalties) AS total_fines,
-        (SELECT COUNT(*) FROM sequence_gaps)                  AS sequence_gaps""")[0]
+        (SELECT COUNT(*) FROM sequence_gaps)                  AS sequence_gaps,
+        (SELECT COUNT(*) FROM events WHERE processed = 0)     AS unprocessed_events""")[0]
     if has(user, "fin:view"):
         revenue = db.query("SELECT COALESCE(SUM(amount), 0) AS r FROM payments WHERE valid = 1")[0]["r"]
+        repair_costs = db.query(
+            "SELECT COALESCE(SUM(amount), 0) AS r FROM component_events "
+            "WHERE event IN ('fixed_proactive', 'fixed_reactive')")[0]["r"]
         out["revenue"] = round(revenue, 2)
-        out["net"] = round(revenue - out["total_fines"], 2)
+        out["repair_costs"] = round(repair_costs, 2)
+        out["net"] = round(revenue - out["total_fines"] - repair_costs, 2)
         out["fines_by_reason"] = db.query(
             "SELECT reason, COUNT(*) AS count, SUM(fine_amount) AS total FROM penalties "
             "GROUP BY reason ORDER BY total DESC LIMIT 10")
@@ -347,6 +354,32 @@ async def flush_logs(request: Request, tab: str):
     auth.record_audit(request.state.user["username"], "DELETE", "/api/logs", 200, tab,
                       {"before": "retained", "after": "flushed"})
     return {"ok": True}
+
+
+# Admin-only "clear this page". Only finished records go: cars still on site
+# (active_sessions and in-memory sessions) must keep their billing state, and
+# the events table stays because it is the EventId de-duplication record.
+_CLEARABLE = {
+    "history": ("sessions", "neglected_vehicles"),
+    "payments": ("payments",),
+    "penalties": ("penalties",),
+}
+
+
+@router.delete("/api/admin/data/{section}")
+async def clear_section(request: Request, section: str):
+    tables = _CLEARABLE.get(section)
+    if tables is None:
+        raise HTTPException(404, "Unknown section")
+    with db._lock, db._conn:
+        removed = sum(db._conn.execute(f"DELETE FROM {table}").rowcount for table in tables)
+    if section == "history":
+        state.clear_neglected()
+    elif section == "penalties":
+        state.clear_penalties()
+    auth.record_audit(request.state.user["username"], "DELETE", f"/api/admin/data/{section}", 200, section,
+                      {"before": {"rows": removed}, "after": {"rows": 0}})
+    return {"ok": True, "section": section, "removed": removed}
 
 
 @router.get("/api/admin/schema")

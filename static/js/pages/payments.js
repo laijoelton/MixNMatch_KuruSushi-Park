@@ -1,4 +1,5 @@
 import { api } from "../core/api.js";
+import { wireClear } from "../core/clear.js";
 import { clear, emptyState, h, plate, setText } from "../core/dom.js";
 import { dateTime, money } from "../core/format.js";
 import { initShell } from "../core/shell.js";
@@ -23,7 +24,7 @@ const kpi = (label) => {
   return { el, value, sub };
 };
 const revenue = kpi("Revenue (verified)");
-const net = kpi("Net after fines");
+const net = kpi("Net after fines and repairs");
 const suspect = kpi("Suspect payments");
 const fines = kpi("Fines");
 
@@ -90,5 +91,6 @@ async function load() {
   }
 }
 
+wireClear("clear-data", "payments", "payment", load);
 await load();
 setInterval(load, REFRESH_MS);

@@ -26,7 +26,7 @@ from starlette.responses import JSONResponse, RedirectResponse
 
 from app import db  # noqa: F401 - importing db creates the data directory
 from app.config import settings
-from app.policy import ROLES, allowed, capabilities, has, required_capabilities
+from app.policy import ROLES, allowed, has, required_capabilities
 
 log = logging.getLogger("dashboard.auth")
 
@@ -94,9 +94,8 @@ def _all(sql: str, params: tuple = ()) -> list[dict[str, Any]]:
 
 
 def _write(sql: str, params: tuple = ()) -> sqlite3.Cursor:
-    with _lock:
+    with _lock, _conn:
         cur = _conn.execute(sql, params)
-        _conn.commit()
         return cur
 
 

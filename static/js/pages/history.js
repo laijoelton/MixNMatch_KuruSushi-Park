@@ -1,4 +1,5 @@
 import { api } from "../core/api.js";
+import { wireClear } from "../core/clear.js";
 import { clear, h, plate } from "../core/dom.js";
 import { detailList, openDrawer } from "../core/drawer.js";
 import { dateTime, money } from "../core/format.js";
@@ -108,7 +109,7 @@ async function load() {
       h("td", { class: "num", style: "text-align:left", text: row.spot || "—" }),
       h("td", { text: dateTime(row.arrived_at) }),
       h("td", { text: dateTime(row.left_spot_at || row.completed_at) }),
-      h("td", { class: "num", text: row.planned_minutes != null ? `${row.planned_minutes} min` : row.minutes != null ? `${Number(row.minutes).toFixed(1)} min` : "—" }),
+      h("td", { class: "num", text: row.minutes != null ? `${Number(row.minutes).toFixed(1)} min` : "—" }),
       canFinance ? h("td", { class: "num", text: money((row.parking_cost || 0) + (row.charging_cost || 0)) }) : null,
       canFinance ? h("td", { class: "num", text: money(row.paid_amount) }) : null,
       canFinance ? h("td", {}, statusTag(row)) : null));
@@ -130,6 +131,7 @@ async function showTimeline(row) {
       detailList([
         ["Bay", row.spot || "—"],
         ["Entry → exit", `${row.entry_gate || "—"} → ${row.exit_gate || "—"}`],
+        ["Actual parked time", row.minutes != null ? `${Number(row.minutes).toFixed(1)} min` : "—"],
         ["Booked stay", row.planned_minutes != null ? `${row.planned_minutes} min` : "—"],
         canFinance ? ["Charged", money((row.parking_cost || 0) + (row.charging_cost || 0))] : null,
         canFinance ? ["Paid", money(row.paid_amount)] : null,
@@ -171,5 +173,6 @@ form.addEventListener("submit", (event) => { event.preventDefault(); page = 1; l
 form.addEventListener("reset", () => setTimeout(() => { status = ""; refreshChips(); page = 1; load(); }));
 prev.addEventListener("click", () => { page -= 1; load(); });
 next.addEventListener("click", () => { page += 1; load(); });
+wireClear("clear-data", "history", "history", () => { page = 1; return load(); });
 
 load();

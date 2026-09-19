@@ -70,6 +70,9 @@ def test_all_runtime_routes_have_explicit_policy():
     ("maintenance_technician", "POST", "/api/manual/repair/S1"),
     ("auditor", "POST", "/api/admin/users"),
     ("auditor", "DELETE", "/api/logs"),
+    ("auditor", "DELETE", "/api/admin/data/payments"),
+    ("facility_operator", "DELETE", "/api/admin/data/history"),
+    ("maintenance_technician", "DELETE", "/api/admin/data/penalties"),
 ])
 def test_negative_routes(role, method, path):
     assert client(role).request(method, path, json={}).status_code == 403
@@ -222,3 +225,25 @@ def test_all_new_pages_and_assets_render():
                 assert c.get(path).status_code == 200
     for name in ("logs", "tariffs", "reports", "penalties"):
         assert TestClient(main.app).get(f"/static/js/pages/{name}.js").status_code == 200
+
+
+def test_admin_clears_one_section_and_leaves_live_cars_alone():
+    with db._lock, db._conn:
+        db._conn.execute("INSERT INTO penalties (event_id, reason, fine_amount, type, component_name, server_datetime) "
+                         "VALUES (?, 'Car escaped without paying', 10, 'Car', 'CLR 001', '2026-09-19 23:00:00')", (uuid.uuid4().hex,))
+        db._conn.execute("INSERT INTO sessions (plate, car_type, completed_at) VALUES ('CLR 002', 'Normal', '2026-09-19T15:00:00+00:00')")
+        db._conn.execute("INSERT INTO active_sessions (plate, session_id, payload, charge_attempted) VALUES ('CLR 003', ?, '{}', 0)",
+                         (uuid.uuid4().hex,))
+    main.state.record_penalty("Car escaped without paying", 10.0, "Car", "CLR 001")
+    admin = client("admin")
+    result = admin.delete("/api/admin/data/penalties").json()
+    assert result["ok"] and result["removed"] >= 1
+    assert db.query("SELECT COUNT(*) AS n FROM penalties")[0]["n"] == 0
+    assert main.state.penalty_count == 0 and main.state.total_fines == 0 and not main.state.penalty_log
+    assert db.query("SELECT COUNT(*) AS n FROM sessions WHERE plate = 'CLR 002'")[0]["n"] == 1
+    assert admin.delete("/api/admin/data/history").json()["ok"]
+    assert db.query("SELECT COUNT(*) AS n FROM sessions")[0]["n"] == 0
+    assert db.query("SELECT COUNT(*) AS n FROM active_sessions WHERE plate = 'CLR 003'")[0]["n"] == 1
+    assert admin.delete("/api/admin/data/events").status_code == 404
+    audit = auth._all("SELECT path FROM audit_log WHERE path LIKE '/api/admin/data/%'", ())
+    assert {"/api/admin/data/penalties", "/api/admin/data/history"} <= {row["path"] for row in audit}

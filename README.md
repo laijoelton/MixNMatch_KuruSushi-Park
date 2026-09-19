@@ -21,7 +21,7 @@ first start (change them with the env vars below, or from the Admin page):
 |---|---|---|
 | `/` | All staff | **Live operations.** Digital twin drawn from the simulator's own level file (real coordinates, any level; zoom, pan, zone focus), KPIs, *Needs attention* inbox (faults, CO, fake payments, full lot, missed events), vehicles on site, humanised event feed, per-zone occupancy by car type with gate status. Click a bay, gate or fan for details and Open / Close / Repair — actions that would earn a penalty (operating a broken gate, repairing an occupied bay) are disabled with the reason shown. |
 | `/history` | All staff | Completed stays searchable by plate (with or without the space), bay, payment status and date; paginated in SQL; each row opens that car's raw event timeline. |
-| `/payments` | Auditor, Admin | Revenue, net after fines, every payment with a Verified / Suspect verdict and why, fines by reason. |
+| `/payments` | Auditor, Admin | Revenue, net after fines and repair costs, every payment with a Verified / Suspect verdict and why, fines by reason. |
 | `/admin` | Admin | Accounts (last admin and self-deletion are refused), audit trail of every change made through the dashboard, manual resync and simulated arrival behind confirmations. |
 | `/gate` | Public kiosk | Driver check-in: vehicle type, only bays that suit it are selectable. |
 | `/login` | Public | Sign-in. |
@@ -103,11 +103,12 @@ exclusively by `POST /webhooks/simulator`.
 | `penalty`                   | counted, fined, logged for observability       | — |
 | `test_webhook`              | acknowledged                                    | — |
 
-**Idempotency & ordering:** every payload's `EventId` is checked against a
-bounded FIFO cache (`app/state.py::_BoundedEventCache`) before any handler
-runs; duplicates are dropped. `SequenceId` is tracked to detect and log gaps
-(missed webhook deliveries), without blocking processing of the event that
-arrived.
+**Idempotency & ordering:** every accepted payload is persisted before its
+handler runs. `EventId` is the SQLite primary key, so completed duplicates are
+dropped durably across restarts. A failed handler returns `500` and leaves its
+event unprocessed, allowing a redelivery with the same ID to retry it safely.
+`SequenceId` is normalized and tracked to detect and log gaps without blocking
+the event that arrived.
 
 **Spot fault avoidance:** `state.available_spots()` filters out any spot
 that is not `AVAILABLE`, or is `broken`/`under_maintenance`, before routing
@@ -145,7 +146,7 @@ recipe and secret settings do not disable enforcement.
 | `GET /api/state` | Full state snapshot (spots, barriers, zones, fans, sessions, penalties, activity log) |
 | `GET /api/spots` | Spot list + occupancy counts |
 | `GET /api/gates` | Known entry-spot names |
-| `GET /api/broken` | Currently broken/under-maintenance components + deferred repairs |
+| `GET /api/broken` | Broken, under-maintenance, or queued components + deferred occupied-bay repairs |
 | `POST /api/manual/sync` | One-shot, operator-triggered re-sync of spots/barriers/zones/fans |
 | `POST /api/manual/arrival` | Manually replay the entry-dispatch path for a plate (`dry_run: true` previews ranking only) |
 | `POST /api/manual/barrier/{name}/open` \| `/close` | Manual barrier control |

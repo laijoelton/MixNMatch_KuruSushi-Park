@@ -1,9 +1,10 @@
 {% extends "base.html" %}
 {% block title %}Reports{% endblock %}
 {% block heading %}Daily report{% endblock %}
-{% block crumb %}Today?s activity, grouped by zone{% endblock %}
+{% block crumb %}Today's activity by zone · UTC receipt date{% endblock %}
 {% block content %}
 <section class="panel" aria-label="Daily report">
+  <div class="panel-head"><span id="r-updated" role="status">Loading report...</span><button id="r-refresh" class="btn" type="button">Refresh report</button></div>
   <div id="r-cards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-bottom:16px"></div>
 
   <h2 style="margin:18px 0 8px">Throughput by zone</h2>

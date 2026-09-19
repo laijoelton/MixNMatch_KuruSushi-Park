@@ -44,7 +44,7 @@ export function createKpis(container) {
     if (isAdmin) {
       setText(cards.money.label, "Revenue");
       setText(cards.money.value, money(stats.revenue));
-      setText(cards.money.sub, `Net after fines ${money(stats.net)}`);
+      setText(cards.money.sub, `Net after fines and repairs ${money(stats.net)}`);
     } else {
       setText(cards.money.label, "Completed stays");
       setText(cards.money.value, stats.completed_sessions);
