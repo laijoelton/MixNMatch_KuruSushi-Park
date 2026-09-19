@@ -3,6 +3,20 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
+
+# Load .env before any setting is read.
+#
+# Without this the file is decorative: os.environ never sees it, every value
+# silently falls back to the defaults below, and edits appear to do nothing --
+# including flipping AUTOPILOT to true. Real environment variables still win,
+# so container and CI config override the file rather than fighting it.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
+except ImportError:  # pragma: no cover - dotenv ships with uvicorn[standard]
+    pass
 
 
 def _env_float(name: str, default: float) -> float:

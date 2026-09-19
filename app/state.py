@@ -23,6 +23,15 @@ def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _extract_plate(entry) -> Optional[str]:
+    """A detectedCars list entry may be a bare plate string or an object."""
+    if isinstance(entry, str):
+        return entry
+    if isinstance(entry, dict):
+        return entry.get("plate") or entry.get("CarPlateNumber") or entry.get("name")
+    return None
+
+
 class SpotStatus(str, Enum):
     AVAILABLE = "AVAILABLE"
     RESERVED = "RESERVED"
@@ -179,18 +188,38 @@ class ParkingState:
     # Bootstrap (called once at startup from the list-* REST responses)
     # ------------------------------------------------------------------ #
     def load_spots(self, raw: list[dict]) -> None:
+        """Load spots from list-parking-spots.
+
+        The documented sample shows ``detectedCars`` as a list (``[]`` when
+        empty, presumably plate strings or car objects when occupied). The
+        live simulator instead returns a plain integer count (``0`` or
+        ``1``+). Both shapes are handled: a list yields a plate when one is
+        present, an int yields only occupancy, not an identity -- the plate
+        becomes known on the next ``Park/CarIn`` webhook, same as it would for
+        a spot the dispatcher did not reserve itself.
+        """
         with self._lock:
             for item in raw:
-                occupants = item.get("detectedCars") or []
+                detected = item.get("detectedCars")
+                if isinstance(detected, list):
+                    occupied = bool(detected)
+                    plate = _extract_plate(detected[0]) if detected else None
+                elif isinstance(detected, (int, float)):
+                    occupied = detected > 0
+                    plate = None
+                else:
+                    occupied = False
+                    plate = None
+
                 self.spots[item["name"]] = Spot(
                     name=item["name"],
                     purpose=item.get("purpose", "Park"),
                     parking_for_car_type=item.get("parkingForCarType", "Any"),
                     zone_parent=item.get("zoneParent", ""),
-                    status=SpotStatus.OCCUPIED if occupants else SpotStatus.AVAILABLE,
+                    status=SpotStatus.OCCUPIED if occupied else SpotStatus.AVAILABLE,
                     broken=bool(item.get("broken", False)),
                     under_maintenance=bool(item.get("isUnderMaintenance", False)),
-                    occupant_plate=occupants[0] if occupants else None,
+                    occupant_plate=plate,
                 )
 
     def load_barriers(self, raw: list[dict]) -> None:
