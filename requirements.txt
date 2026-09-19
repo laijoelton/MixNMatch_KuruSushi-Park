@@ -10,5 +10,9 @@ python-dotenv==1.2.3
 # Level 2: predictive ML layer (app/ml_agent.py). Optional at runtime - every
 # consumer falls back to the existing deterministic rule if these are
 # missing, but START.bat installs them so the ML path is live by default.
-numpy==2.2.6
+# numpy 2.2.6 predates Python 3.14 and ships no cp314 wheel: pip silently
+# source-built it with MinGW-W64, and that build segfaults on import. The
+# `except ImportError` guard in app/ml_agent.py cannot catch a segfault, so
+# the whole dispatcher died before binding :8080. 2.5.3 has a real cp314 wheel.
+numpy==2.5.3
 scikit-learn==1.7.2
