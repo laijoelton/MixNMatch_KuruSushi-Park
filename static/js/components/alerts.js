@@ -44,6 +44,13 @@ export function deriveAlerts(snapshot, stats, { isAdmin } = {}) {
     else if (level === "Mid") add(`co-${zone.name}`, "warn", `CO rising in ${zone.name}`, `${Number(zone.co_level).toFixed(1)}`, { kind: "zone", name: zone.name });
   }
 
+  // Zone closed for gate maintenance (4.26): no new cars until both gates are fixed.
+  for (const [zone, info] of Object.entries(snapshot.zone_maintenance || {})) {
+    const waiting = (info.todo || []).join(" and ");
+    add(`zone-maint-${zone}`, "warn", `${zone} closed for gate maintenance`,
+      `${info.trigger} needs repair. New cars go to other zones; reopens when ${waiting || "its gates"} ${info.todo?.length > 1 ? "are" : "is"} fixed`,
+      { kind: "zone", name: zone });
+  }
   for (const row of snapshot.neglected_vehicles || []) {
     add(`neglect-${row.plate}`, "warn", `Vehicle ${row.plate} never reached a bay`, row.reason, null);
   }

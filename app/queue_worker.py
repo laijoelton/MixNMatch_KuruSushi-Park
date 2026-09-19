@@ -140,13 +140,19 @@ def server_hour(raw: str) -> Optional[int]:
         return None
 
 
-async def schedule_lights(raw: str, parking_state, simulator, act) -> None:
+async def schedule_lights(raw: str, parking_state, simulator, act, lit_zones=None) -> None:
+    """Day: every light off. Night: every light on - or, given ``lit_zones``,
+    only the lights of those zones (4.29: zones with a car moving in them)."""
     hour = server_hour(raw)
     if hour is None:
         return
     from app import db
-    desired = not (settings.day_start_hour <= hour < settings.night_start_hour)
+    night = not (settings.day_start_hour <= hour < settings.night_start_hour)
     for light in list(parking_state.lights.values()):
+        if lit_zones is None:
+            desired = night
+        else:
+            desired = night and (light.zone_parent in lit_zones if light.zone_parent else bool(lit_zones))
         if light.is_on == desired or light.broken or light.under_maintenance:
             continue
         action = simulator.light_on if desired else simulator.light_off

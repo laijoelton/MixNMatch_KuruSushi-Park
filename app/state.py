@@ -96,6 +96,8 @@ class Barrier:
     cycle_count: int = 0
     operator_override: bool = False
     held_vehicles: set[str] = field(default_factory=set)
+    # Opens since the last repair: what the balanced repair schedule ranks by (4.28).
+    opens_since_repair: int = 0
 
 
 @dataclass
@@ -153,6 +155,10 @@ class VehicleSession:
     # The zone's own entry sensor the car was sent to first (ENTRY3 for a
     # ZONE3 bay); its gate opens only once the car is waiting there.
     staged_via: Optional[str] = None
+    # Ghost car (4.25): never seen at an entrance. Billed automatically at the
+    # exit, but only released when staff say so (release_authorized).
+    ghost_id: Optional[int] = None
+    release_authorized: bool = False
     exit_confirmed: bool = False
     released: bool = False
     payment_suspect: bool = False
@@ -231,6 +237,9 @@ class ParkingState:
         self.last_sequence_id: int = 0
         self.deferred_repairs: dict[str, str] = {}
         self.pending_repairs: dict[str, str] = {}
+        # Zones closed for gate maintenance (4.26):
+        # zone -> {"entry", "exit", "trigger", "todo": gates still to repair}
+        self.zone_maintenance: dict[str, dict[str, Any]] = {}
         self.penalty_count: int = 0
         self.total_fines: float = 0.0
         self.penalty_log: deque = deque(maxlen=200)
@@ -469,6 +478,7 @@ class ParkingState:
                 barrier.broken = False
                 barrier.under_maintenance = False
                 barrier.cycle_count = 0
+                barrier.opens_since_repair = 0
             elif component_type == "ExhaustFan" and name in self.fans:
                 fan = self.fans[name]
                 fan.broken = False
@@ -513,6 +523,11 @@ class ParkingState:
             # "Open"/"Closed" webhook while it sits still.
             if new_state in (BarrierPosition.OPENING, BarrierPosition.CLOSING) and barrier.state != new_state:
                 barrier.cycle_count += 1
+            # One open = starts opening, or a webhook reports Open straight from shut.
+            if ((new_state == BarrierPosition.OPENING and barrier.state != BarrierPosition.OPENING)
+                    or (new_state == BarrierPosition.OPEN
+                        and barrier.state in (BarrierPosition.CLOSED, BarrierPosition.CLOSING))):
+                barrier.opens_since_repair += 1
             barrier.state = new_state
 
     def update_zone(self, name: str, co_level: float, danger_level: str) -> None:
@@ -779,7 +794,8 @@ class ParkingState:
         with self._lock:
             dropped = len(self.sessions)
             for table in (self.sessions, self.active_dispatches, self.spots, self.barriers, self.zones,
-                          self.fans, self.lights, self.pending_repairs, self.deferred_repairs):
+                          self.fans, self.lights, self.pending_repairs, self.deferred_repairs,
+                          self.zone_maintenance):
                 table.clear()
             self.neglected_vehicles.clear()
             return dropped
@@ -846,6 +862,7 @@ class ParkingState:
                      "under_maintenance": b.under_maintenance, "zone": b.zone_parent,
                      "repair_pending": b.name in self.pending_repairs,
                      "main_gate": b.name == settings.main_gate,
+                     "opens_since_repair": b.opens_since_repair,
                      "operator_override": b.operator_override,
                      "hold_reason": "Held closed by operator" if b.operator_override else
                                     "Vehicle awaiting clearance" if b.held_vehicles else ""}
@@ -882,6 +899,9 @@ class ParkingState:
                              "recent": list(self.penalty_log)[:20]},
                 "activity": list(self.activity_log)[:30],
                 "neglected_vehicles": list(self.neglected_vehicles),
+                "zone_maintenance": {zone: {"entry": info["entry"], "exit": info["exit"],
+                                            "trigger": info["trigger"], "todo": sorted(info["todo"])}
+                                     for zone, info in self.zone_maintenance.items()},
                 "deferred_repairs": dict(self.deferred_repairs),
                 "last_sequence_id": self.last_sequence_id,
                 "uptime_s": round(time.time() - self.started_at, 1),

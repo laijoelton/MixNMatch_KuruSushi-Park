@@ -5,7 +5,7 @@ import { GATE_STATE_LABEL, PHASE_LABEL, SPOT_STATE_LABEL, TYPE_GLYPH, gateState,
 import { connect, onConnection, snapshot as currentSnapshot, subscribe } from "../core/live.js";
 import { configurePalette } from "../core/palette.js";
 import { initShell, setBanner, setLevelPill } from "../core/shell.js";
-import { toast } from "../core/toast.js";
+import { confirmAction, toast } from "../core/toast.js";
 import { createAlerts, deriveAlerts } from "../components/alerts.js";
 import { createFeed } from "../components/feed.js";
 import { createKpis } from "../components/kpis.js";
@@ -208,6 +208,7 @@ function gateView(snap, name) {
     body: detailList([
       ["Position", h("span", { class: `tag ${state === "open" ? "free" : state === "fault" ? "fault" : state === "moving" ? "reserved" : ""}`, text: gate.state })],
       ["Condition", gate.broken ? "Broken" : gate.under_maintenance ? "Under repair" : gate.repair_pending ? "Repair queued" : "Good"],
+      ["Opens since repair", String(gate.opens_since_repair ?? 0)],
       ["Zone", gate.zone || "Perimeter"],
       ["Service state", gate.hold_reason || GATE_STATE_LABEL[state]],
     ]),
@@ -240,19 +241,55 @@ document.addEventListener("keydown", (event) => {
 });
 window.addEventListener("beforeunload", closeDrawer);
 
+// Ghost cars (engineering log 4.25): never scanned at an entrance, billed
+// automatically at the exit and held there until staff release them. The
+// banner has no timeout; the close button hides it in this browser.
+const GHOST_DISMISSED = "ghost-dismissed";
+function dismissedGhosts() {
+  try { return new Set(JSON.parse(localStorage.getItem(GHOST_DISMISSED) || "[]")); } catch { return new Set(); }
+}
+function dismissGhost(id) {
+  try {
+    const ids = dismissedGhosts();
+    ids.add(id);
+    localStorage.setItem(GHOST_DISMISSED, JSON.stringify([...ids].slice(-200)));
+  } catch { /* storage unavailable: the banner just returns on reload */ }
+}
+
 window.addEventListener("park-alert", event => {
   const alert = event.detail;
-  if (alert.alert_type !== "UNREGISTERED_VEHICLE_EXIT") return;
-  const content = [h("b", { text: `Unregistered vehicle ${alert.plate} at ${alert.gate}. ` }), "Awaiting staff clearance."];
+  const key = `ghost-${alert.ghost_id}`;
+  if (alert.alert_type === "GHOST_CAR_RESOLVED") { setBanner(key, null); return; }
+  if (alert.alert_type !== "UNREGISTERED_VEHICLE_EXIT" || dismissedGhosts().has(alert.ghost_id)) return;
+  const bill = alert.payment_received ? "paid ✓" : alert.invoiced ? "invoiced, awaiting payment" : "sending invoice…";
+  const content = [h("b", { text: `Ghost car ${alert.plate} at ${alert.gate}` }),
+    ` — never scanned at an entrance. Bill: ${bill}. `];
   if (canGate) {
-    const button = h("button", { class: "btn small", text: "Authorize fallback invoice", onclick: async () => {
-      await runAction(button, () => api("/api/ghost-car/override", { method: "POST", body: { ghost_id: alert.ghost_id } }), "Invoice attempted; awaiting payment");
-    } });
-    content.push(button);
+    const release = h("button", { class: "btn small", type: "button",
+      text: alert.payment_received ? "Open gate & release" : "Release unpaid…", onclick: async () => {
+        let confirmUnpaid = false;
+        if (!alert.payment_received) {
+          const ok = await confirmAction({
+            title: `Release ${alert.plate} without payment?`,
+            message: "No payment has arrived. Releasing now lets the car leave unpaid, and the simulator fines CarEscapedWithoutPaying.",
+            confirmLabel: "Release unpaid", danger: true,
+          });
+          if (!ok) return;
+          confirmUnpaid = true;
+        }
+        const result = await runAction(release, () => api(`/api/ghost-cars/${alert.ghost_id}/release`,
+          { method: "POST", body: { confirm_unpaid: confirmUnpaid } }), `${alert.plate} released`);
+        if (result) setBanner(key, null);
+      } });
+    content.push(release, " ");
   }
-  setBanner(`ghost-${alert.ghost_id}`, { kind: "bad", text: content });
+  content.push(h("button", { class: "btn ghost small", type: "button", text: "✕",
+    "aria-label": `Close the notice for ${alert.plate}`,
+    onclick: () => { dismissGhost(alert.ghost_id); setBanner(key, null); } }));
+  setBanner(key, { kind: "bad", text: content });
 });
 const ghosts = await api("/api/ghost-cars?resolved=false");
 for (const ghost of ghosts) window.dispatchEvent(new CustomEvent("park-alert", { detail: {
   type: "alert", alert_type: "UNREGISTERED_VEHICLE_EXIT", plate: ghost.plate, gate: ghost.gate, ghost_id: ghost.id,
+  invoiced: ghost.invoiced, payment_received: ghost.payment_received,
 } }));

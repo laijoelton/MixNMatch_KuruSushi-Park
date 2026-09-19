@@ -260,7 +260,8 @@ async def run_predictive_loop(
         try:
             _repair_model = _train_repair_model()
             for row in wear_snapshot():
-                if row["broken"] or row["under_maintenance"] or row["type"] == "Light":
+                # Gates are scheduled one at a time by app.main._schedule_gate_repairs (4.28).
+                if row["broken"] or row["under_maintenance"] or row["type"] in ("Light", "BarrierGate"):
                     continue
                 probability = repair_period_prediction(row["name"], row["cycle_count"], row["runtime_seconds"])
                 if probability <= REPAIR_FAILURE_PROBABILITY_THRESHOLD:

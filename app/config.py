@@ -126,6 +126,15 @@ class Settings:
 
     # --- Level 2: multi-zone wear tracking ---
     wear_cycle_threshold: int
+    # A bay is repaired preventively after this many parks since its last
+    # repair (4.24). Bays were seen to break after 13-19 parks.
+    spot_preventive_parks: int
+    # Gates (4.28): one gate in repair at a time; the most-worn idle gate is
+    # repaired once it has at least this many opens since its last repair.
+    gate_repair_min_opens: int
+    # Night lights (4.29): a zone stays lit this many simulated seconds after
+    # its last moving car, so lights do not switch on and off between cars.
+    light_hold_s: float
     wear_runtime_threshold_s: float
 
     # --- Level 2: vehicle-class billing multipliers (on top of the existing
@@ -235,16 +244,19 @@ class Settings:
             exit_charge_delay_s=_env_float("EXIT_CHARGE_DELAY_S", 2.0),
             main_gate=os.environ.get("MAIN_GATE", "gate7").strip(),
             gate_close_delay_s=_env_float("GATE_CLOSE_DELAY_S", 3.0),
-            zone_gate_at_sensor=_env_bool("ZONE_GATE_AT_SENSOR", True),
+            zone_gate_at_sensor=_env_bool("ZONE_GATE_AT_SENSOR", False),
             entry_gate_close_delay_s=_env_float("ENTRY_GATE_CLOSE_DELAY_S", 1.5),
             simulator_log=os.environ.get("SIMULATOR_LOG", "data/simulator.log").strip(),
 
             broadcast_interval_s=_env_float("BROADCAST_INTERVAL_S", 1.0),
             webhook_debug=_env_bool("WEBHOOK_DEBUG", False),
 
-            co_fan_off_threshold=_env_float("CO_FAN_OFF_THRESHOLD", 30.0),
+            co_fan_off_threshold=_env_float("CO_FAN_OFF_THRESHOLD", 15.0),
 
             wear_cycle_threshold=_env_int("WEAR_CYCLE_THRESHOLD", 500),
+            spot_preventive_parks=_env_int("SPOT_PREVENTIVE_PARKS", 9),
+            gate_repair_min_opens=_env_int("GATE_REPAIR_MIN_OPENS", 5),
+            light_hold_s=_env_float("LIGHT_HOLD_S", 10.0),
             wear_runtime_threshold_s=_env_float("WEAR_RUNTIME_THRESHOLD_S", 36000.0),
 
             class_multiplier_sedan=_env_float("CLASS_MULTIPLIER_SEDAN", 1.0),
