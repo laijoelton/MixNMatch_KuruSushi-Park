@@ -119,7 +119,8 @@ connect();
 function showDetails(kind, name, { refresh = false } = {}) {
   const snap = currentSnapshot();
   if (!snap) return;
-  const view = kind === "spot" ? spotView(snap, name) : kind === "gate" ? gateView(snap, name) : kind === "fan" ? fanView(snap, name) : null;
+  const view = kind === "spot" ? spotView(snap, name) : kind === "gate" ? gateView(snap, name) : kind === "fan" ? fanView(snap, name)
+    : kind === "ml-insights" ? mlInsightsView(snap) : null;
   if (!view) {
     if (!refresh) toast(`${name} is not in the live data yet`, "warn");
     return;
@@ -235,6 +236,77 @@ function fanView(snap, name) {
   };
 }
 
+// ------------------------------------------------------------------ ML insights drawer + bell
+function sectionHeading(text) {
+  return h("div", { class: "drawer-kicker" }, text);
+}
+
+function mlInsightsView(snap) {
+  const insights = snap.ml_insights || {};
+  const ventilation = [...(insights.ventilation || [])].sort((a, b) => a.minutes_to_threshold - b.minutes_to_threshold);
+  const components = insights.components || []; // already sorted by days_to_failure server-side
+  const anomalies = insights.anomalies || [];
+
+  const ventilationBody = ventilation.length
+    ? detailList(ventilation.map(v => [v.zone, v.minutes_to_threshold >= 9999
+        ? "No breach predicted" : `${v.minutes_to_threshold} min → ${v.predicted_ppm} ppm`]))
+    : reasonLine("No zone CO data yet.");
+
+  const componentsBody = "components" in insights
+    ? (components.length
+        ? detailList(components.map(c => [`${c.name} (${c.type})`,
+            h("span", { class: c.days_to_failure <= 3 ? "tag fault" : "", text: `${c.days_to_failure}d · ${Math.round(c.failure_probability * 100)}% risk` })]))
+        : reasonLine("No component wear data yet."))
+    : reasonLine("Requires maintenance access.");
+
+  const anomaliesBody = anomalies.length
+    ? detailList(anomalies.map(a => [plate(a.plate),
+        a.fallback_charge != null ? `$${Number(a.fallback_charge).toFixed(2)} · ${a.gate || "—"}` : (a.gate || "—")]))
+    : reasonLine("No resolved ghost cars yet.");
+
+  return {
+    kicker: "Predictive telemetry",
+    title: "ML Insights",
+    signature: JSON.stringify(insights),
+    body: [
+      sectionHeading("Ventilation forecast"), ventilationBody,
+      sectionHeading("Component health"), componentsBody,
+      sectionHeading("Anomaly log"), anomaliesBody,
+    ],
+  };
+}
+
+const PREDICTIVE_ALERT_TYPES = new Set(["PREDICTIVE_CO_WARNING", "PREDICTIVE_MAINTENANCE_WARNING", "GHOST_CAR_RESOLVED"]);
+
+function predictiveAlertMessage(alert) {
+  if (alert.alert_type === "PREDICTIVE_CO_WARNING") {
+    return `⚠️ Zone ${alert.zone}: CO predicted to hit ${alert.predicted_ppm}ppm in ${alert.minutes_to_threshold} min — fan starting early`;
+  }
+  if (alert.alert_type === "PREDICTIVE_MAINTENANCE_WARNING") {
+    return `🔧 ${alert.component} (${alert.component_type}) predicted to fail in ${alert.days_to_failure}d (${Math.round(alert.failure_probability * 100)}% risk)`;
+  }
+  if (alert.alert_type === "GHOST_CAR_RESOLVED") {
+    return alert.fallback_charge != null
+      ? `✅ Ghost car ${alert.plate} resolved — invoiced $${Number(alert.fallback_charge).toFixed(2)}`
+      : `✅ Ghost car ${alert.plate} resolved`;
+  }
+  return null;
+}
+
+let unreadCount = 0;
+function bumpUnread() {
+  unreadCount += 1;
+  const badge = document.getElementById("ml-bell-badge");
+  badge.hidden = false;
+  badge.textContent = unreadCount > 99 ? "99+" : String(unreadCount);
+}
+
+document.getElementById("ml-bell-btn").addEventListener("click", () => {
+  unreadCount = 0;
+  document.getElementById("ml-bell-badge").hidden = true;
+  showDetails("ml-insights", "insights");
+});
+
 document.addEventListener("keydown", (event) => {
   if (event.key === "f" && !event.ctrlKey && !event.metaKey && !/input|textarea|select/i.test(event.target.tagName)) twin.fit();
 });
@@ -242,6 +314,14 @@ window.addEventListener("beforeunload", closeDrawer);
 
 window.addEventListener("park-alert", event => {
   const alert = event.detail;
+  if (PREDICTIVE_ALERT_TYPES.has(alert.alert_type)) {
+    const message = predictiveAlertMessage(alert);
+    if (message) {
+      toast(message, alert.alert_type === "GHOST_CAR_RESOLVED" ? "ok" : "warn", { dismissible: true, lifetimeMs: 15000 });
+      bumpUnread();
+    }
+    return;
+  }
   if (alert.alert_type !== "UNREGISTERED_VEHICLE_EXIT") return;
   const content = [h("b", { text: `Unregistered vehicle ${alert.plate} at ${alert.gate}. ` }), "Awaiting staff clearance."];
   if (canGate) {

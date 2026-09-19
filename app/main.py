@@ -163,6 +163,7 @@ _holding_gate: dict[str, str] = {}  # plate -> zone entry gate opened for it, un
 _entry_watchers: set[asyncio.Task] = set()
 _dispatch_tasks: dict[str, asyncio.Task] = {}
 _webhook_events_in_progress: set[str] = set()
+_co_warned_zones: set[str] = set()  # zones with an unresolved PREDICTIVE_CO_WARNING broadcast
 
 
 async def _wait_for_barrier_open(name: str) -> bool:
@@ -598,6 +599,7 @@ async def _broadcast_loop() -> None:
             snapshot["server_time"] = time.time()
             snapshot["ws_clients"] = manager.count
             snapshot["maintenance_queue"] = maintenance_queue.stats
+            snapshot["ml_insights"] = ml_agent.latest_insights()
             await manager.broadcast(snapshot)
         except Exception:  # noqa: BLE001 - the broadcaster must never die
             log.exception("broadcast tick failed")
@@ -645,7 +647,8 @@ async def lifespan(app: FastAPI):
     wear_checker = asyncio.create_task(_wear_check_loop(), name="dispatcher-wear-check")
     environment = asyncio.create_task(_environment_loop(), name="dispatcher-environment")
     predictive = asyncio.create_task(
-        ml_agent.run_predictive_loop(wear_snapshot=state.wear_snapshot, queue_repair=_queue_repair),
+        ml_agent.run_predictive_loop(wear_snapshot=state.wear_snapshot, queue_repair=_queue_repair,
+                                      broadcast=manager.broadcast),
         name="dispatcher-ml-predictive",
     )
     background_tasks = (broadcaster, wear_checker, environment, predictive)
@@ -1074,6 +1077,14 @@ async def ghost_car_override(ghost_id: int,
     db.resolve_ghost_car(ghost_id, user["username"])
     auth.record_audit(user["username"], "POST", "/api/ghost-car/override", 200, plate,
                       {"before": {"resolved": False}, "after": {"resolved": True, "invoice_attempted": True}})
+    try:
+        await manager.broadcast({
+            "type": "alert", "alert_type": "GHOST_CAR_RESOLVED",
+            "plate": plate, "ghost_id": ghost_id, "fallback_charge": session.expected_parking,
+            "resolved_by": user["username"], "server_time": time.time(),
+        })
+    except Exception:  # noqa: BLE001 - a broadcast failure must not fail the override
+        log.exception("failed to broadcast ghost-car resolution for %s", plate)
     return {"ok": sent, "ghost_id": ghost_id, "plate": plate, "awaiting_payment": True}
 
 
@@ -1607,8 +1618,13 @@ async def _handle_ghost_car(plate: str, exit_spot: str, payload: dict[str, Any])
     for an authenticated operator to review and release it via
     POST /api/ghost-cars/{id}/override.
     """
+    confidence = None
+    median_duration = None
     try:
-        fallback = ml_agent.ghost_car_anomaly_imputation(plate, payload.get("CarType", "Normal"))
+        imputed = ml_agent.ghost_car_anomaly_imputation(plate, payload.get("CarType", "Normal"))
+        fallback = imputed["imputed_fee"]
+        confidence = imputed["confidence_score"]
+        median_duration = imputed["median_duration"]
     except Exception:  # noqa: BLE001 - the hold must proceed even if imputation fails
         log.exception("ghost_car_anomaly_imputation failed for %s; using median/flat fallback", plate)
         fallback = db.median_parking_cost()
@@ -1625,7 +1641,8 @@ async def _handle_ghost_car(plate: str, exit_spot: str, payload: dict[str, Any])
         await manager.broadcast({
             "type": "alert", "alert_type": "UNREGISTERED_VEHICLE_EXIT",
             "plate": plate, "gate": exit_spot, "ghost_id": ghost_id,
-            "fallback_charge": fallback, "server_time": time.time(),
+            "fallback_charge": fallback, "confidence_score": confidence,
+            "median_duration": median_duration, "server_time": time.time(),
         })
     except Exception:  # noqa: BLE001 - a broadcast failure must not lose the alert
         log.exception("failed to broadcast ghost-car alert for %s", plate)
@@ -1695,11 +1712,27 @@ async def _handle_carbon_monoxide_event(payload: dict[str, Any]) -> None:
     # the next 10 simulated minutes. Two distinct edges (still) stop the fan
     # flapping on/off on every reading that hovers around one shared value.
     zone_ratio = state.occupancy_ratio(zone_name)
+    forecast = ml_agent.co_ventilation_analysis(co_level, zone_ratio, history)
+    ml_agent.record_ventilation_insight(zone_name, forecast)
+    if forecast["minutes_to_threshold"] <= ml_agent.CO_WARNING_MINUTES:
+        if zone_name not in _co_warned_zones:
+            _co_warned_zones.add(zone_name)
+            try:
+                await manager.broadcast({
+                    "type": "alert", "alert_type": "PREDICTIVE_CO_WARNING",
+                    "zone": zone_name, "minutes_to_threshold": forecast["minutes_to_threshold"],
+                    "predicted_ppm": forecast["predicted_ppm"], "server_time": time.time(),
+                })
+            except Exception:  # noqa: BLE001 - a broadcast failure must not lose the warning
+                log.exception("failed to broadcast CO warning for %s", zone_name)
+    else:
+        _co_warned_zones.discard(zone_name)
+
     for fan_name in state.fans_in_zone(zone_name):
         fan = state.fans[fan_name]
         if fan.broken or fan.under_maintenance or fan_name in state.pending_repairs:
             continue
-        if not fan.is_on and ml_agent.co_ventilation_analysis(co_level, zone_ratio, history):
+        if not fan.is_on and forecast["trigger_fan"]:
             if await act(f"fan {fan_name} ON (zone {zone_name} CO={co_level:.1f})",
                          lambda n=fan_name: client.fan_on(n)):
                 cycles, runtime = state.set_fan_on(fan_name, True)

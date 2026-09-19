@@ -130,6 +130,8 @@ def project_snapshot(payload: dict, user: dict) -> dict:
     if "maint:view" not in caps:
         for key in ("wear", "deferred_repairs", "maintenance_queue", "fans", "lights"):
             result.pop(key, None)
+        if "ml_insights" in result:
+            result["ml_insights"] = {k: v for k, v in result["ml_insights"].items() if k != "components"}
     # Free-form messages are explicitly classified when recorded, never inspected heuristically.
     if "activity" in result:
         result["activity"] = [a for a in result["activity"]
