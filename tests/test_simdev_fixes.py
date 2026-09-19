@@ -226,7 +226,7 @@ def test_at_night_only_the_zone_with_a_moving_car_is_lit(sim):
     _lights()
     state.reserve_spot("S1", "MOV 001")
     state.sessions["MOV 001"] = VehicleSession(plate="MOV 001", entry_gate="ENTRY1",
-                                               phase=SessionPhase.ASSIGNED, assigned_spot="S1")
+                                               phase=SessionPhase.ASSIGNED, assigned_spot="S1", reached_zone=True)
     asyncio.run(main._refresh_lights(NIGHT))
     assert _on() == ["ZONE1-L0", "ZONE1-L1"], "car driving to a ZONE1 bay; ZONE2 is dark"
 
@@ -260,7 +260,7 @@ def test_lights_stay_on_briefly_after_the_last_movement(sim, monkeypatch):
     _lights()
     state.reserve_spot("S1", "MOV 004")
     state.sessions["MOV 004"] = VehicleSession(plate="MOV 004", entry_gate="ENTRY1",
-                                               phase=SessionPhase.ASSIGNED, assigned_spot="S1")
+                                               phase=SessionPhase.ASSIGNED, assigned_spot="S1", reached_zone=True)
     asyncio.run(main._refresh_lights(NIGHT))
     state.sessions.clear()
     asyncio.run(main._refresh_lights(NIGHT))
@@ -274,3 +274,96 @@ def test_by_day_every_light_is_off(sim):
                                                phase=SessionPhase.ASSIGNED, assigned_spot="S1")
     asyncio.run(main._refresh_lights(DAY))
     assert _on() == []
+
+
+def test_held_lights_switch_off_when_the_hold_ends_without_another_event(sim, monkeypatch):
+    monkeypatch.setattr(main, "settings", dataclasses.replace(main.settings, light_hold_s=0.8))  # 0.1 s at speed 8
+    _lights()
+    state.reserve_spot("S1", "MOV 006")
+    state.sessions["MOV 006"] = VehicleSession(plate="MOV 006", entry_gate="ENTRY1",
+                                               phase=SessionPhase.ASSIGNED, assigned_spot="S1", reached_zone=True)
+
+    async def scenario():
+        await main._refresh_lights(NIGHT)
+        state.sessions.clear()                     # the car parked; no further webhook arrives
+        await main._refresh_lights(NIGHT)
+        assert _on() == ["ZONE1-L0", "ZONE1-L1"]
+        await asyncio.sleep(0.3)
+    asyncio.run(scenario())
+    assert _on() == [], "switched off by the hold timer, not by the next event"
+
+
+def test_by_default_a_zone_goes_dark_as_soon_as_its_last_car_parks(sim):
+    assert main.settings.light_hold_s == 0.0
+    _lights()
+    state.reserve_spot("S1", "MOV 007")
+    session = VehicleSession(plate="MOV 007", entry_gate="ENTRY1", phase=SessionPhase.ASSIGNED, assigned_spot="S1", reached_zone=True)
+    state.sessions["MOV 007"] = session
+    asyncio.run(main._refresh_lights(NIGHT))
+    assert _on() == ["ZONE1-L0", "ZONE1-L1"]
+    state.mark_parked("MOV 007", "S1")
+    asyncio.run(main._refresh_lights(NIGHT))
+    assert _on() == []
+
+
+# --------------------------------------------------------------------------- #
+# 4.31: no mass repairs. The ML sweep's model predicted ~99% failure for every
+# component (107 breakdowns vs 1 preventive repair), so it queued them all.
+# --------------------------------------------------------------------------- #
+def test_the_ml_sweep_queues_no_repairs_by_default(sim, monkeypatch):
+    queued = []
+
+    async def queue(component_type, name):
+        queued.append(name)
+
+    monkeypatch.setattr(main.ml_agent, "repair_period_prediction", lambda *a: 0.99)
+    rows = [{"name": "PM9", "type": "ParkingSpot", "cycle_count": 0, "runtime_seconds": 0.0,
+             "broken": False, "under_maintenance": False},
+            {"name": "fan9", "type": "ExhaustFan", "cycle_count": 1, "runtime_seconds": 5.0,
+             "broken": False, "under_maintenance": False}]
+    asyncio.run(main.ml_agent.predictive_sweep_once(lambda: rows, queue))
+    assert queued == []
+
+
+def test_a_bay_that_was_never_parked_in_is_never_repaired(sim):
+    state.spots["PM8"] = Spot("PM8", zone_parent="ZONE1", cycle_count=0)
+    asyncio.run(main.check_wear())
+    assert "PM8" not in state.pending_repairs and "PM8" not in state.deferred_repairs
+
+
+def test_only_one_fan_per_zone_is_repaired_at_a_time(sim):
+    for name in ("fanA", "fanB"):
+        state.fans[name] = ExhaustFan(name, zone_parent="ZONE1")
+    state.fans["fanC"] = ExhaustFan("fanC", zone_parent="ZONE2")
+    for name in ("fanA", "fanB", "fanC"):
+        asyncio.run(main._queue_repair("ExhaustFan", name))
+    fans_in_repair = sorted(n for n in state.pending_repairs if n in state.fans)
+    assert fans_in_repair == ["fanA", "fanC"], "ZONE1 keeps fanB ventilating while fanA is repaired"
+    asyncio.run(main._handle_component_fixed({"Type": "ExhaustFan", "Name": "fanA"}))
+    asyncio.run(main._queue_repair("ExhaustFan", "fanB"))   # its trigger fires again
+    assert "fanB" in state.pending_repairs, "fanA is back, so fanB may go now"
+
+
+def test_a_zone_lights_up_only_once_its_car_reaches_that_zones_sensor(sim, monkeypatch):
+    monkeypatch.setattr(main, "running_level", lambda: "lvl2")
+    for name, zone in (("gate1", "ZONE1"), ("gate3", "ZONE2"), ("gate5", "ZONE3")):
+        state.barriers[name] = Barrier(name, zone_parent=zone)
+    for i in range(2):
+        state.lights[f"ZONE3-L{i}"] = Light(f"ZONE3-L{i}", zone_parent="ZONE3", is_on=False)
+    state.spots["P69"] = Spot("P69", zone_parent="ZONE3")
+    state.reserve_spot("P69", "MOV 010")
+    state.sessions["MOV 010"] = VehicleSession(plate="MOV 010", entry_gate="ENTRY1",
+                                               phase=SessionPhase.ASSIGNED, assigned_spot="P69")
+    state.active_dispatches["MOV 010"] = "P69"
+    asyncio.run(main._refresh_lights(NIGHT))
+    assert _on() == [], "dispatched at ENTRY1, still on the road: ZONE3 stays dark"
+
+    def sensor(name, direction):
+        return {"EventClass": "car_spot_action", "CarPlateNumber": "MOV 010", "SpotName": name,
+                "SpotType": "EntrySpot", "Direction": direction}
+    asyncio.run(main._handle_car_spot_action(sensor("ENTRY2", "CarIn")))
+    asyncio.run(main._refresh_lights(NIGHT))
+    assert _on() == [], "passing ENTRY2 is not ZONE3"
+    asyncio.run(main._handle_car_spot_action(sensor("ENTRY3", "CarIn")))
+    asyncio.run(main._refresh_lights(NIGHT))
+    assert _on() == ["ZONE3-L0", "ZONE3-L1"]

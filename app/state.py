@@ -158,6 +158,9 @@ class VehicleSession:
     # Ghost car (4.25): never seen at an entrance. Billed automatically at the
     # exit, but only released when staff say so (release_authorized).
     ghost_id: Optional[int] = None
+    # The car has reached its own zone's entry sensor (ENTRY3 for ZONE3):
+    # only then does that zone light up for it (4.31).
+    reached_zone: bool = False
     release_authorized: bool = False
     exit_confirmed: bool = False
     released: bool = False

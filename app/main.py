@@ -701,6 +701,7 @@ async def _wear_check_loop() -> None:
 
 
 _last_motion: dict[str, float] = {}   # zone -> monotonic time a car was last seen moving there
+_light_timer: Optional[asyncio.Task] = None   # switches held zones off when their hold ends
 
 
 def _moving_zones() -> set[str]:
@@ -710,7 +711,7 @@ def _moving_zones() -> set[str]:
     for session in list(state.sessions.values()):
         spot = state.spots.get(session.assigned_spot or "")
         zone = session.zone or (spot.zone_parent if spot else "")
-        driving_in = session.phase == SessionPhase.ASSIGNED and session.parked_at is None
+        driving_in = session.phase == SessionPhase.ASSIGNED and session.parked_at is None and session.reached_zone
         leaving = session.left_spot_at is not None
         if zone and (driving_in or leaving):
             zones_moving.add(zone)
@@ -731,8 +732,20 @@ async def _refresh_lights(server_datetime: Optional[str] = None) -> None:
     for zone in _moving_zones():
         _last_motion[zone] = now
     hold = settings.light_hold_s / max(settings.game_speed, 0.1)
-    lit = _moving_zones() | {zone for zone, seen in _last_motion.items() if now - seen < hold}
-    await schedule_lights(server_datetime, state, client, act, lit_zones=lit)
+    moving = _moving_zones()
+    held = {zone for zone, seen in _last_motion.items() if zone not in moving and now - seen < hold}
+    await schedule_lights(server_datetime, state, client, act, lit_zones=moving | held)
+    # A held zone must go dark when its hold ends even if no webhook arrives
+    # then; waiting for the next event or the 15 s loop left zones lit ~25 s (4.30).
+    global _light_timer
+    if held and (_light_timer is None or _light_timer.done()):
+        wait = min(_last_motion[zone] + hold for zone in held) - now
+        _light_timer = _spawn(_relight_after(max(wait, 0.0) + 0.01, server_datetime))
+
+
+async def _relight_after(delay_s: float, server_datetime: str) -> None:
+    await asyncio.sleep(delay_s)
+    await _refresh_lights(server_datetime)
 
 
 async def _environment_loop() -> None:
@@ -920,6 +933,8 @@ async def dispatch_entry(plate: str, gate_name: str, car_type: str = "Normal",
         session = state.start_session(plate, gate=gate_name, car_type=car_type,
                                       planned_minutes=planned_minutes)
     state.assign_spot(plate, target)
+    if _barrier_for_sensor(gate_name) == _entry_gate_for_session(session):
+        session.reached_zone = True   # e.g. a ZONE1 car: ENTRY1 is its zone's own sensor
     _left_entry.discard(plate)
     _waiting_at.pop(plate, None)
     _holding_gate.pop(plate, None)
@@ -1558,6 +1573,11 @@ async def _queue_repair(component_type: str, name: str, *, via_zone: bool = Fals
         action = lambda: client.fan_repair(name)
     else:
         return
+    if component_type == "ExhaustFan" and component is not None:
+        for other in state.fans.values():
+            if (other.name != name and other.zone_parent == component.zone_parent
+                    and (other.under_maintenance or other.name in state.pending_repairs)):
+                return   # one fan per zone in repair: the zone keeps ventilating (4.31)
     if component_type == "ParkingSpot":
         spot = state.spots.get(name)
         if spot and (spot.occupant_plate or spot.status in (SpotStatus.OCCUPIED, SpotStatus.RESERVED)):
@@ -1630,6 +1650,8 @@ async def _handle_car_spot_action(payload: dict[str, Any]) -> None:
         _retire_previous_visit(plate)
     if spot_type == "EntrySpot" and direction == "CarIn" and plate in state.active_dispatches:
         session = state.get_session(plate)
+        if session is not None and _barrier_for_sensor(spot_name) == _entry_gate_for_session(session):
+            session.reached_zone = True   # at its own zone's sensor: that zone lights up
         if session is not None and session.staged_via == spot_name and session.phase == SessionPhase.ASSIGNED:
             # The car has reached its zone's own sensor and is waiting at the
             # closed zone gate: open it now and send the car on to its bay.

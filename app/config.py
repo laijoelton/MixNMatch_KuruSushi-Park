@@ -132,8 +132,11 @@ class Settings:
     # Gates (4.28): one gate in repair at a time; the most-worn idle gate is
     # repaired once it has at least this many opens since its last repair.
     gate_repair_min_opens: int
+    # The ML repair sweep (4.22) stays off: its model predicted ~99% failure for
+    # every component and queued every bay and fan at once (4.31).
+    ml_predictive_repairs: bool
     # Night lights (4.29): a zone stays lit this many simulated seconds after
-    # its last moving car, so lights do not switch on and off between cars.
+    # its last moving car. 0 = dark as soon as the last car parks (4.30).
     light_hold_s: float
     wear_runtime_threshold_s: float
 
@@ -256,7 +259,8 @@ class Settings:
             wear_cycle_threshold=_env_int("WEAR_CYCLE_THRESHOLD", 500),
             spot_preventive_parks=_env_int("SPOT_PREVENTIVE_PARKS", 9),
             gate_repair_min_opens=_env_int("GATE_REPAIR_MIN_OPENS", 5),
-            light_hold_s=_env_float("LIGHT_HOLD_S", 10.0),
+            ml_predictive_repairs=_env_bool("ML_PREDICTIVE_REPAIRS", False),
+            light_hold_s=_env_float("LIGHT_HOLD_S", 0.0),
             wear_runtime_threshold_s=_env_float("WEAR_RUNTIME_THRESHOLD_S", 36000.0),
 
             class_multiplier_sedan=_env_float("CLASS_MULTIPLIER_SEDAN", 1.0),

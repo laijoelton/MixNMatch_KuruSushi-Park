@@ -703,6 +703,8 @@ rule, they only let it fire earlier or estimate a number better:
   threshold.
   *Superseded by 4.23: fans now use fixed edges, ON above 50 and OFF below 15.
   `co_ventilation_analysis` / `co_off_threshold` are no longer called.*
+  *The predictive repair sweep is off by default since 4.31: it queued every
+  bay and fan at once.*
 - `repair_period_prediction(component_id, cycle_count, runtime_seconds)` -
   a `LogisticRegression` trained on `component_events` history, run from a
   new background task `ml_agent.run_predictive_loop()` (started in
@@ -1006,6 +1008,79 @@ so "night" is real night on the demo machine.
 
 Full suite: **240 passed**.
 
+### 4.30 Zone lights stayed on after the last car parked (20 September 2026)
+
+**Symptom:** at night a zone's lights did not go off when its cars parked.
+
+**Evidence** (ZONE1, `component_events` against webhooks):
+- CKC 119 parked at 18:57:58 and ZONE1 went dark at 18:58:07.
+- HVR 690 parked at 18:58:19 and ZONE1 went dark at 18:58:28.
+
+The lights were back on 6–7 s later for the next car sent to ZONE1.
+
+**Root cause:** two delays stacked.
+- 4.29's 10 s `LIGHT_HOLD_S`.
+- The off-switch only ran on the *next* webhook or the 15 s environment tick. With
+  no further event a zone could stay lit for about 25 s after its last car parked.
+
+**Fix:**
+- `LIGHT_HOLD_S` defaults to **0**, so the refresh on the parking webhook turns
+  the zone off at once.
+- For a non-zero hold, `_refresh_lights` schedules one timer (`_relight_after`)
+  for the earliest hold expiry, so held zones go dark on time without waiting for
+  an event.
+
+**Verification:**
+- with the default, a zone goes dark on its last car's park;
+- with a hold, lights switch off when the hold ends with no further event.
+
+Full suite: **242 passed**.
+
+### 4.31 Every bay and fan repaired at once; zone lit from ENTRY1 (20 September 2026)
+
+**Symptoms:**
+- Nearly every bay showed a repair wrench, including bays that had never had a
+  car.
+- All fans were repaired at the same moment, just after a CO spike cleared.
+- ZONE3's lights came on while its car was still at ENTRY1.
+
+**Evidence:**
+- In three minutes `component_events` recorded **270 `repair_triggered_predictive`
+  for bays and 36 for fans**. Every one came from the ML sweep (4.22).
+- Its logistic model, trained on **107 `broken` vs 1 `fixed_proactive`**, gave
+  **P(fail) ≈ 0.99 at every wear ratio from 0 to 1**. That is above its 0.90
+  trigger, so every sweep queued everything.
+- It had been dormant until START.bat started installing scikit-learn.
+- Fans only *looked* simultaneous. Their preventive repair is postponed while
+  CO ≥ the OFF edge, so all queued fan repairs fired together the moment CO fell
+  below 15.
+
+**Fix:**
+- `ml_agent.predictive_sweep_once` queues nothing unless `ML_PREDICTIVE_REPAIRS`
+  is on. It defaults to **false**. The ML ghost-car fee estimate is unaffected.
+- Bays are repaired only by 4.24's rule (9 parks), so a never-used bay is never
+  repaired.
+- **One fan per zone in repair at a time** (`_queue_repair`), so a zone always
+  keeps ventilating.
+- Night lighting (4.29) counts a car as moving in its zone only once it has
+  reached *that zone's* entry sensor (`VehicleSession.reached_zone`). That is set
+  at dispatch for a ZONE1 car (ENTRY1 is its sensor), and at ENTRY2/ENTRY3 for the
+  others.
+
+**Verification:**
+- the sweep queues nothing with a 0.99 prediction;
+- a never-used bay is left alone;
+- two fans in one zone are repaired one at a time, while another zone's fan
+  proceeds;
+- ZONE3 stays dark at ENTRY1 and ENTRY2 and lights at ENTRY3.
+
+Four lighting tests were updated to mark their car as already in its zone. Full
+suite: **246 passed**.
+
+**After this deploy:** the sweep left `pending_proactive_repair:*` flags on the
+bays it queued, and `check_wear` skips flagged components. A level load clears
+them (4.24).
+
 ---
 
 ## 5. Edge cases and how they are handled
@@ -1056,8 +1131,9 @@ Everything lives in `.env` (see `.env.example`). The ones that matter:
 | `SEED_FROM_LEVEL` | `lvl1` in code, empty in `.env`/`.env.example` | **Keep empty.** When set, the dashboard shows that level's map while no level is running, which is how a Level 1 map appeared before Level 2 was clicked (4.19) |
 | `ENTRY_GATE_CLOSE_DELAY_S` | `1.5` | Simulated seconds after a car leaves its zone sensor before the zone gate closes behind it (4.21) |
 | `CO_FAN_OFF_THRESHOLD` | `15` | Fans run from above `CO_FAN_ON_THRESHOLD` (50) until below this (4.23) |
+| `ML_PREDICTIVE_REPAIRS` | `false` | **Keep false.** The ML repair sweep predicted ~99% failure for everything and queued every bay and fan (4.31) |
 | `GATE_REPAIR_MIN_OPENS` | `5` | One gate in repair at a time; the most-worn idle gate goes once it reaches this many opens since repair (4.28) |
-| `LIGHT_HOLD_S` | `10` | At night a zone stays lit this many simulated seconds after its last moving car (4.29) |
+| `LIGHT_HOLD_S` | `0` | At night a zone stays lit this many simulated seconds after its last moving car; 0 = dark as soon as it parks (4.29, 4.30) |
 | `SPOT_PREVENTIVE_PARKS` | `9` | Preventive bay repair after this many parks since the last repair; bays broke after 13-19 (4.24) |
 | `ZONE_GATE_AT_SENSOR` | `false` | **Keep false.** When true, ZONE2/3 cars are sent to their zone sensor first, which the simulator treats as parking there (4.20, 4.27) |
 | `SIMULATOR_LOG` | `data/simulator.log` | Simulator console captured by START.bat; its `Load Game` line triggers the level reset (4.19). Empty disables it |

@@ -238,6 +238,35 @@ def ghost_car_anomaly_imputation(car_plate: str, car_type: str) -> float:
 # Background training/sweep loop
 # --------------------------------------------------------------------- #
 
+
+async def predictive_sweep_once(
+    wear_snapshot: Callable[[], list[dict[str, Any]]],
+    queue_repair: Callable[[str, str], Awaitable[None]],
+) -> None:
+    """One retrain + sweep. Queues nothing unless ML_PREDICTIVE_REPAIRS is on:
+    trained on 107 breakdowns against 1 preventive repair, the model gave
+    ~99% failure for every component at any wear and queued them all (4.31)."""
+    global _repair_model
+    if not settings.ml_predictive_repairs:
+        return
+    _repair_model = _train_repair_model()
+    for row in wear_snapshot():
+        # Gates are scheduled one at a time by app.main._schedule_gate_repairs (4.28).
+        if row["broken"] or row["under_maintenance"] or row["type"] in ("Light", "BarrierGate"):
+            continue
+        probability = repair_period_prediction(row["name"], row["cycle_count"], row["runtime_seconds"])
+        if probability <= REPAIR_FAILURE_PROBABILITY_THRESHOLD:
+            continue
+        name, component_type = row["name"], row["type"]
+        if db.get_meta(f"pending_proactive_repair:{name}") == "1":
+            continue
+        if settings.autopilot:
+            db.set_meta(f"pending_proactive_repair:{name}", "1")
+            db.record_component_event(name, component_type, "repair_triggered_predictive")
+        log.info("ml_agent: %s %s predicted failure probability %.2f - queuing early repair",
+                 component_type, name, probability)
+        await queue_repair(component_type, name)
+
 async def run_predictive_loop(
     *,
     wear_snapshot: Callable[[], list[dict[str, Any]]],
@@ -255,26 +284,9 @@ async def run_predictive_loop(
     the existing hard 85%-duty-cycle trigger in `app.main.check_wear`, which
     keeps running unchanged as the reactive safety net.
     """
-    global _repair_model
     while True:
         try:
-            _repair_model = _train_repair_model()
-            for row in wear_snapshot():
-                # Gates are scheduled one at a time by app.main._schedule_gate_repairs (4.28).
-                if row["broken"] or row["under_maintenance"] or row["type"] in ("Light", "BarrierGate"):
-                    continue
-                probability = repair_period_prediction(row["name"], row["cycle_count"], row["runtime_seconds"])
-                if probability <= REPAIR_FAILURE_PROBABILITY_THRESHOLD:
-                    continue
-                name, component_type = row["name"], row["type"]
-                if db.get_meta(f"pending_proactive_repair:{name}") == "1":
-                    continue
-                if settings.autopilot:
-                    db.set_meta(f"pending_proactive_repair:{name}", "1")
-                    db.record_component_event(name, component_type, "repair_triggered_predictive")
-                log.info("ml_agent: %s %s predicted failure probability %.2f - queuing early repair",
-                         component_type, name, probability)
-                await queue_repair(component_type, name)
+            await predictive_sweep_once(wear_snapshot, queue_repair)
         except Exception:  # noqa: BLE001 - a bad sweep must not kill the background task
             log.exception("ml_agent predictive loop tick failed")
         await asyncio.sleep(interval_s / max(settings.game_speed, 0.1))
