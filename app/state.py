@@ -120,6 +120,10 @@ class VehicleSession:
     paid: bool = False
     created_at: float = field(default_factory=time.monotonic)
 
+    # What the driver booked. The simulator bills this, not the wall-clock
+    # time we observe -- see compute_charge().
+    planned_minutes: float = 0.0
+
     # Car type decides the electric surcharge, and a car billed for
     # electricity it never used incurs Penalty_ChargeCarForNoElectricityUsed.
     car_type: str = "Normal"
@@ -418,7 +422,8 @@ class ParkingState:
     # ------------------------------------------------------------------ #
     # Vehicle sessions
     # ------------------------------------------------------------------ #
-    def start_session(self, plate: str, gate: str, car_type: str = "Normal") -> VehicleSession:
+    def start_session(self, plate: str, gate: str, car_type: str = "Normal",
+                      planned_minutes: float = 0.0) -> VehicleSession:
         with self._lock:
             session = self.sessions.get(plate)
             if session is None:
@@ -426,6 +431,7 @@ class ParkingState:
                     plate=plate,
                     entry_gate=gate,
                     car_type=car_type or "Normal",
+                    planned_minutes=planned_minutes or 0.0,
                     arrived_wall=_utcnow(),
                 )
                 self.sessions[plate] = session
@@ -434,7 +440,18 @@ class ParkingState:
                 session.phase = SessionPhase.ARRIVED
                 if car_type:
                     session.car_type = car_type
+                if planned_minutes:
+                    session.planned_minutes = planned_minutes
             return session
+
+    def set_planned_minutes(self, plate: str, planned_minutes: float) -> None:
+        """Record the booked duration; later events repeat it, so keep the last."""
+        if not planned_minutes:
+            return
+        with self._lock:
+            session = self.sessions.get(plate)
+            if session is not None:
+                session.planned_minutes = planned_minutes
 
     def get_session(self, plate: str) -> Optional[VehicleSession]:
         with self._lock:

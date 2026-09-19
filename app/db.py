@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     parked_at     TEXT,
     left_spot_at  TEXT,
     minutes       REAL,
+    planned_minutes REAL,
     parking_cost  REAL,
     charging_cost REAL,
     paid_amount   REAL,
@@ -246,10 +247,10 @@ def record_session(row: dict[str, Any]) -> None:
         _conn.execute(
             """INSERT INTO sessions
                (plate, car_type, spot, entry_gate, exit_gate, arrived_at, parked_at,
-                left_spot_at, minutes, parking_cost, charging_cost, paid_amount,
-                payment_ok, completed_at)
+                left_spot_at, minutes, planned_minutes, parking_cost, charging_cost,
+                paid_amount, payment_ok, completed_at)
                VALUES (:plate, :car_type, :spot, :entry_gate, :exit_gate, :arrived_at,
-                       :parked_at, :left_spot_at, :minutes, :parking_cost,
+                       :parked_at, :left_spot_at, :minutes, :planned_minutes, :parking_cost,
                        :charging_cost, :paid_amount, :payment_ok, :completed_at)""",
             {"completed_at": _utcnow(), **row},
         )

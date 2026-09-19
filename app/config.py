@@ -97,6 +97,7 @@ class Settings:
     unknown_car_minutes: float
     game_speed: float
     billing_rounding: str
+    billing_basis: str
     exit_charge_delay_s: float
     payment_wait_s: float
     charge_max_attempts: int
@@ -167,6 +168,17 @@ class Settings:
             # 1.02 should bill as 1, not 2 - an off-by-one here means the car
             # refuses to pay and escapes. Tune with live evidence.
             billing_rounding=os.environ.get("BILLING_ROUNDING", "round").strip().lower(),
+
+            # What the charge is actually based on.
+            #
+            # "planned"  - PlannedParkingDurationInMinutes, the duration the
+            #              driver booked. Measured against 65 explicit
+            #              corrections from the simulator, this is what it
+            #              bills: planned 3 -> wants 3.00 (26 cases),
+            #              planned 4 -> wants 4.00 (24 cases).
+            # "measured" - our own wall-clock observation. Kept as a fallback
+            #              and for cars whose planned duration we never saw.
+            billing_basis=os.environ.get("BILLING_BASIS", "planned").strip().lower(),
 
             # The ExitSpot CarIn sensor fires when the car ENTERS the exit
             # area, not when it is settled and waiting for an invoice. Charging

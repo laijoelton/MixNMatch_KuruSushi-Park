@@ -68,6 +68,18 @@ async def act(description: str, coro_factory: Callable[[], Awaitable[Any]]) -> b
         return False
 
 
+def _planned_of(payload: dict[str, Any]) -> float:
+    """PlannedParkingDurationInMinutes from an event, as a number.
+
+    Present on both entry and park events. The simulator bills this figure,
+    not the wall-clock time we observe.
+    """
+    try:
+        return float(payload.get("PlannedParkingDurationInMinutes") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _round_minutes(minutes: float) -> float:
     """Apply the configured billing rounding to a measured duration."""
     if minutes <= 0:
@@ -99,17 +111,22 @@ def compute_charge(session) -> tuple[float, float, float]:
     Billing runs from the moment the car occupied its spot, not from the entry
     sensor -- the drive in is not parking time.
     """
-    minutes = max(session.billable_minutes, 0.0)
-    if session.parked_at is None:
-        # Never observed parking, so there is nothing to measure. Estimate
-        # rather than bill zero, which the simulator reads as "not charged".
-        minutes = settings.unknown_car_minutes
-
-    # Turn the measured duration into a billable figure. Live evidence: a
-    # fractional charge is never paid and the car escapes, so the simulator
-    # wants whole minutes. It also draws planned durations as whole minutes,
-    # so a measured 1.02 is a 1-minute stay - rounding to nearest, not up.
-    billable = _round_minutes(minutes)
+    # The simulator bills the duration the driver BOOKED, not the wall-clock
+    # time we observe. Measured against 65 explicit corrections it sent us:
+    # planned 3 -> wants 3.00 (26 cases), planned 4 -> wants 4.00 (24 cases).
+    #
+    # Our own measurement is in real seconds and does not line up: one
+    # simulator-minute is roughly 24 real seconds here, so a 3-minute booking
+    # looks like 1.2 real minutes and we were billing 1.00 for it.
+    if settings.billing_basis == "planned" and session.planned_minutes:
+        billable = float(session.planned_minutes)
+    else:
+        minutes = max(session.billable_minutes, 0.0)
+        if session.parked_at is None:
+            # Never observed parking and no booking either - estimate rather
+            # than bill zero, which the simulator reads as "not charged".
+            minutes = settings.unknown_car_minutes
+        billable = _round_minutes(minutes)
     base = round(max(settings.minimum_charge, billable * settings.parking_rate_per_minute), 2)
     if not session.is_electric:
         return base, 0.0, billable
@@ -258,8 +275,9 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR)) if TEMPLATES_DIR.exist
 # Dispatch core (shared by the real webhook path and the manual/dry-run path)
 # --------------------------------------------------------------------------- #
 async def dispatch_entry(plate: str, gate_name: str, car_type: str = "Normal",
-                         dry_run: bool = False) -> dict[str, Any]:
-    state.start_session(plate, gate=gate_name, car_type=car_type)
+                         dry_run: bool = False, planned_minutes: float = 0.0) -> dict[str, Any]:
+    state.start_session(plate, gate=gate_name, car_type=car_type,
+                        planned_minutes=planned_minutes)
 
     # Release promises made to cars that never turned up, otherwise the lot
     # reports itself full while standing empty.
@@ -602,7 +620,8 @@ async def _handle_car_spot_action(payload: dict[str, Any]) -> None:
 
     if spot_type == "EntrySpot" and direction == "CarIn":
         car_type = payload.get("CarType", "Normal")
-        await dispatch_entry(plate, spot_name, car_type)
+        await dispatch_entry(plate, spot_name, car_type,
+                             planned_minutes=_planned_of(payload))
         return
 
     if spot_type == "Park" and direction == "CarIn":
@@ -610,8 +629,10 @@ async def _handle_car_spot_action(payload: dict[str, Any]) -> None:
             # Not dispatched by us -- a car already in the lot when we started,
             # or one that survived a restart. Adopt it so it still gets billed.
             state.start_session(plate, gate="(adopted)",
-                                car_type=payload.get("CarType", "Normal"))
+                                car_type=payload.get("CarType", "Normal"),
+                                planned_minutes=_planned_of(payload))
             log.info("adopted untracked car %s parking at %s", plate, spot_name)
+        state.set_planned_minutes(plate, _planned_of(payload))
         state.mark_parked(plate, spot_name)
         state.log_activity(f"{plate} parked at {spot_name}")
         return
@@ -633,7 +654,8 @@ async def _handle_car_spot_action(payload: dict[str, Any]) -> None:
             # stayed, but charging an estimate beats letting it leave unpaid:
             # billing zero reads to the simulator as not charging at all.
             session = state.start_session(plate, gate="(adopted)",
-                                          car_type=payload.get("CarType", "Normal"))
+                                          car_type=payload.get("CarType", "Normal"),
+                                          planned_minutes=_planned_of(payload))
             log.warning("unknown car %s at exit %s - charging an estimate", plate, spot_name)
             state.log_activity(f"Unknown car {plate} at exit - charging estimate", level="warn")
         if session.charged:
@@ -668,6 +690,7 @@ def _archive(plate: str) -> None:
         "parked_at": session.parked_wall or None,
         "left_spot_at": session.left_spot_wall or None,
         "minutes": session.billable_minutes,
+        "planned_minutes": session.planned_minutes,
         "parking_cost": session.expected_parking,
         "charging_cost": session.expected_charging,
         "paid_amount": session.expected_amount if session.paid else None,
@@ -712,8 +735,10 @@ async def _charge_at_exit(plate: str, spot_name: str) -> None:
         session.expected_amount = round(parking_cost + charging_cost, 2)
 
         suffix = "" if attempt == 1 else f" (attempt {attempt})"
-        log.info("billing %s: %.0f min -> parking=%.2f charging=%.2f (type=%s)%s",
-                 plate, minutes, parking_cost, charging_cost, session.car_type, suffix)
+        basis = ("planned" if settings.billing_basis == "planned" and session.planned_minutes
+                 else "measured")
+        log.info("billing %s: %.0f min (%s) -> parking=%.2f charging=%.2f (type=%s)%s",
+                 plate, minutes, basis, parking_cost, charging_cost, session.car_type, suffix)
         await act(f"charge {plate} parking={parking_cost} charging={charging_cost}{suffix}",
                   lambda: client.car_charge(plate, parking_cost, charging_cost))
         state.log_activity(f"Charged {plate} {session.expected_amount:.2f} at {spot_name}{suffix}")
