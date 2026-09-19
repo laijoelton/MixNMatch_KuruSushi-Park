@@ -6,3 +6,9 @@ httpx==0.28.1
 pydantic==2.13.5
 jinja2==3.1.4
 python-dotenv==1.2.3
+
+# Level 2: predictive ML layer (app/ml_agent.py). Optional at runtime - every
+# consumer falls back to the existing deterministic rule if these are
+# missing, but START.bat installs them so the ML path is live by default.
+numpy==2.2.6
+scikit-learn==1.7.2

@@ -32,7 +32,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
-from app import auth, dashboard_api, db, simlog, tariffs, zones
+from app import auth, dashboard_api, db, ml_agent, simlog, tariffs, zones
 from app.client import client
 from app.config import settings
 from app.layout import announce_level, load_layout, running_level
@@ -644,7 +644,11 @@ async def lifespan(app: FastAPI):
     broadcaster = asyncio.create_task(_broadcast_loop(), name="dispatcher-broadcaster")
     wear_checker = asyncio.create_task(_wear_check_loop(), name="dispatcher-wear-check")
     environment = asyncio.create_task(_environment_loop(), name="dispatcher-environment")
-    background_tasks = (broadcaster, wear_checker, environment)
+    predictive = asyncio.create_task(
+        ml_agent.run_predictive_loop(wear_snapshot=state.wear_snapshot, queue_repair=_queue_repair),
+        name="dispatcher-ml-predictive",
+    )
+    background_tasks = (broadcaster, wear_checker, environment, predictive)
     if settings.simulator_log:
         background_tasks += (asyncio.create_task(simlog.follow(settings.simulator_log, _on_level_loaded),
                                                  name="dispatcher-level-watch"),)
@@ -1603,9 +1607,13 @@ async def _handle_ghost_car(plate: str, exit_spot: str, payload: dict[str, Any])
     for an authenticated operator to review and release it via
     POST /api/ghost-cars/{id}/override.
     """
-    fallback = db.median_parking_cost()
-    if fallback is None:
-        fallback = round(settings.unknown_car_minutes * settings.parking_rate_per_minute, 2)
+    try:
+        fallback = ml_agent.ghost_car_anomaly_imputation(plate, payload.get("CarType", "Normal"))
+    except Exception:  # noqa: BLE001 - the hold must proceed even if imputation fails
+        log.exception("ghost_car_anomaly_imputation failed for %s; using median/flat fallback", plate)
+        fallback = db.median_parking_cost()
+        if fallback is None:
+            fallback = round(settings.unknown_car_minutes * settings.parking_rate_per_minute, 2)
     ghost_id = db.record_ghost_car(plate, exit_spot, fallback)
     await _hold_exit(plate, exit_spot)
     state.log_activity(
@@ -1675,27 +1683,30 @@ async def _handle_carbon_monoxide_event(payload: dict[str, Any]) -> None:
     zone_name = payload["ZoneName"]
     co_level = float(payload.get("CarbonMonoxideLevel", 0.0))
     danger_level = payload.get("DangerLevel", "Safe")
+    history = state.co_history(zone_name)  # before this reading is recorded below
     state.update_zone(zone_name, co_level, danger_level)
     state.log_activity(f"CO {danger_level} in {zone_name} ({co_level:.1f})",
                        level="warn" if danger_level in ("High", "Critical") else "info")
     log.warning("CO event in %s: level=%.2f danger=%s", zone_name, co_level, danger_level)
 
-    # Hysteresis: switch ON at/above co_fan_on_threshold, but only switch OFF
-    # once the level drops below the lower co_fan_off_threshold. A single
-    # shared threshold made the fan flap on/off on every reading that
-    # hovered around it - two distinct edges stop that.
+    # Hysteresis, ON/OFF edges made dynamic by occupancy (app.ml_agent):
+    # a fuller zone reacts earlier, and the ON edge additionally fires ahead
+    # of the static threshold when the trend forecast predicts a breach in
+    # the next 10 simulated minutes. Two distinct edges (still) stop the fan
+    # flapping on/off on every reading that hovers around one shared value.
+    zone_ratio = state.occupancy_ratio(zone_name)
     for fan_name in state.fans_in_zone(zone_name):
         fan = state.fans[fan_name]
         if fan.broken or fan.under_maintenance or fan_name in state.pending_repairs:
             continue
-        if not fan.is_on and co_level > settings.co_fan_on_threshold:
+        if not fan.is_on and ml_agent.co_ventilation_analysis(co_level, zone_ratio, history):
             if await act(f"fan {fan_name} ON (zone {zone_name} CO={co_level:.1f})",
                          lambda n=fan_name: client.fan_on(n)):
                 cycles, runtime = state.set_fan_on(fan_name, True)
                 db.sync_component_wear(fan_name, "ExhaustFan", cycles, runtime)
                 db.record_component_event(fan_name, "ExhaustFan", "on", amount=co_level)
                 state.log_activity(f"Exhaust fan {fan_name} switched on for {zone_name}")
-        elif fan.is_on and co_level < settings.co_fan_off_threshold:
+        elif fan.is_on and co_level < ml_agent.co_off_threshold(zone_ratio):
             if await act(f"fan {fan_name} OFF (zone {zone_name} CO={co_level:.1f})",
                          lambda n=fan_name: client.fan_off(n)):
                 cycles, runtime = state.set_fan_on(fan_name, False)
