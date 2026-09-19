@@ -8,9 +8,12 @@ core without changing its behaviour:
 
 * ``/`` - an operator HUD (live telemetry, digital twin, manual controls).
 * ``/gate`` - a mobile-first cinema-style bay picker for walk-in check-in.
+* ``/dashboard`` - split-screen operator canvas (real simulator geometry,
+  animated dispatch paths) next to a phone-frame driver GPS mockup.
 
-Both are pure read/observe layers over the same ``ParkingState`` the webhook
-handlers mutate, pushed to connected browsers over ``/ws/live``.
+All three are pure read/observe layers over the same ``ParkingState`` the
+webhook handlers mutate, pushed to connected browsers over ``/ws/live`` (and,
+for the split dashboard, the identical feed mirrored at ``/ws/telemetry``).
 """
 from __future__ import annotations
 
@@ -33,6 +36,7 @@ from pydantic import BaseModel, Field
 from app import db
 from app.client import client
 from app.config import settings
+from app.layout import load_layout
 from app.queue_worker import maintenance_queue
 from app.routing import load_distance_table, rank_spots, ring
 from app.seed import load_level
@@ -347,6 +351,18 @@ async def gate_portal(request: Request, gate: Optional[str] = Query(None)):
     })
 
 
+@app.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
+async def split_dashboard(request: Request):
+    if templates is None:
+        raise HTTPException(500, "templates directory missing")
+    gates = state.entry_gates() or [settings.entry_gate]
+    return templates.TemplateResponse(request, "dashboard.html", {
+        "team_name": "KuruSushi-Park", "gates": gates,
+        "default_gate": gates[0] if gates else settings.entry_gate,
+        "asset_version": str(int(time.time())),
+    })
+
+
 # --------------------------------------------------------------------------- #
 # Read APIs
 # --------------------------------------------------------------------------- #
@@ -418,6 +434,17 @@ async def get_gates() -> dict[str, Any]:
 @app.get("/api/broken")
 async def get_broken() -> dict[str, Any]:
     return {"components": state.broken_components(), "deferred_repairs": dict(state.deferred_repairs)}
+
+
+@app.get("/api/layout")
+async def get_layout() -> dict[str, Any]:
+    """Real simulator pixel-space geometry for the split-dashboard canvas.
+
+    Geometry only, sourced from the level file (see app/layout.py) - never
+    status. The caller merges this once against the live /api/state or
+    /ws/telemetry feed for occupancy/broken/etc.
+    """
+    return load_layout(settings.seed_from_level or "lvl1")
 
 
 # --------------------------------------------------------------------------- #
@@ -495,11 +522,51 @@ async def gate_checkin(body: CheckinIn) -> dict[str, Any]:
     return result
 
 
+class DispatchIn(BaseModel):
+    car_plate: str = Field(..., min_length=1, max_length=16)
+    target_spot_id: str = Field(..., min_length=1, max_length=32)
+    gate: Optional[str] = Field(None, max_length=32)
+    car_type: str = Field("Normal", max_length=16)
+
+
+@app.post("/api/dispatch")
+async def api_dispatch(body: DispatchIn) -> dict[str, Any]:
+    """Split-dashboard entry point: driver picks a bay in the phone GPS view.
+
+    Thin wrapper over the same reserve-then-goto path /api/gate/checkin uses
+    (``assign_specific_spot``), so it is idempotency- and AUTOPILOT-safe.
+    """
+    known_gates = state.entry_gates()
+    gate = body.gate or (known_gates[0] if known_gates else settings.entry_gate)
+    if body.target_spot_id not in state.spots:
+        raise HTTPException(404, f"unknown spot {body.target_spot_id}")
+    result = await assign_specific_spot(body.car_plate, gate, body.target_spot_id, body.car_type)
+    if not result["dispatched"]:
+        raise HTTPException(409, result.get("reason", "spot unavailable"))
+    return result
+
+
 # --------------------------------------------------------------------------- #
-# Live WebSocket feed (operator HUD + gate picker)
+# Live WebSocket feed (operator HUD + gate picker + split dashboard)
 # --------------------------------------------------------------------------- #
 @app.websocket("/ws/live")
 async def ws_live(ws: WebSocket):
+    await manager.connect(ws)
+    try:
+        await ws.send_json({"type": "hello", "server_time": time.time(), **state.snapshot()})
+        while True:
+            await ws.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        await manager.disconnect(ws)
+
+
+@app.websocket("/ws/telemetry")
+async def ws_telemetry(ws: WebSocket):
+    """Identical feed to /ws/live, named for the split dashboard's operator
+    canvas + phone GPS view so both stay trivially in sync with each other
+    and with the main HUD - they all share one ConnectionManager broadcast."""
     await manager.connect(ws)
     try:
         await ws.send_json({"type": "hello", "server_time": time.time(), **state.snapshot()})
