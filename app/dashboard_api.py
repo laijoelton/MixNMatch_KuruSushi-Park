@@ -72,6 +72,11 @@ async def reports_page(request: Request):
     return _page(request, "reports.html", "reports")
 
 
+@router.get("/ml-insights", include_in_schema=False)
+async def ml_insights_page(request: Request):
+    return _page(request, "ml_insights.html", "ml-insights")
+
+
 # --------------------------------------------------------------------------- #
 # Sign in / out
 # --------------------------------------------------------------------------- #

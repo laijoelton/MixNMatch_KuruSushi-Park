@@ -235,6 +235,67 @@ function fanView(snap, name) {
   };
 }
 
+// ------------------------------------------------------------------ predictive alert toasts
+// The full ML telemetry (ventilation forecast / component health / anomaly
+// log) lives on its own nav page (/ml-insights, pages/ml_insights.js). The
+// bell here only signals that something predictive just fired.
+const PREDICTIVE_ALERT_TYPES = new Set(["PREDICTIVE_CO_WARNING", "PREDICTIVE_MAINTENANCE_WARNING", "GHOST_CAR_RESOLVED"]);
+
+function predictiveAlertMessage(alert) {
+  if (alert.alert_type === "PREDICTIVE_CO_WARNING") {
+    return `⚠️ Zone ${alert.zone}: CO predicted to hit ${alert.predicted_ppm}ppm in ${alert.minutes_to_threshold} min — fan starting early`;
+  }
+  if (alert.alert_type === "PREDICTIVE_MAINTENANCE_WARNING") {
+    return `🔧 ${alert.component} (${alert.component_type}) predicted to fail in ${alert.days_to_failure}d (${Math.round(alert.failure_probability * 100)}% risk)`;
+  }
+  if (alert.alert_type === "GHOST_CAR_RESOLVED") {
+    return alert.fallback_charge != null
+      ? `✅ Ghost car ${alert.plate} resolved — invoiced $${Number(alert.fallback_charge).toFixed(2)}`
+      : `✅ Ghost car ${alert.plate} resolved`;
+  }
+  return null;
+}
+
+const MAX_NOTIFICATIONS = 20;
+let unreadCount = 0;
+const notifications = []; // most recent first: {message, time}
+
+function bumpUnread() {
+  unreadCount += 1;
+  const badge = document.getElementById("ml-bell-badge");
+  badge.hidden = false;
+  badge.textContent = unreadCount > 99 ? "99+" : String(unreadCount);
+}
+
+function pushNotification(message) {
+  notifications.unshift({ message, time: Date.now() });
+  notifications.length = Math.min(notifications.length, MAX_NOTIFICATIONS);
+  renderBellPopover();
+}
+
+function renderBellPopover() {
+  const list = document.getElementById("ml-bell-list");
+  if (!notifications.length) {
+    list.replaceChildren(h("div", { class: "bell-empty", text: "No notifications yet." }));
+    return;
+  }
+  list.replaceChildren(...notifications.map(n => h("div", { class: "bell-item" },
+    h("span", { text: n.message }),
+    h("span", { class: "time", text: new Date(n.time).toLocaleTimeString() }))));
+}
+
+renderBellPopover();
+const bellPopover = document.getElementById("ml-bell-popover");
+document.getElementById("ml-bell-btn").addEventListener("click", (event) => {
+  event.stopPropagation();
+  unreadCount = 0;
+  document.getElementById("ml-bell-badge").hidden = true;
+  bellPopover.hidden = !bellPopover.hidden;
+});
+document.addEventListener("click", (event) => {
+  if (!bellPopover.hidden && !event.target.closest(".bell-wrap")) bellPopover.hidden = true;
+});
+
 document.addEventListener("keydown", (event) => {
   if (event.key === "f" && !event.ctrlKey && !event.metaKey && !/input|textarea|select/i.test(event.target.tagName)) twin.fit();
 });
@@ -242,6 +303,15 @@ window.addEventListener("beforeunload", closeDrawer);
 
 window.addEventListener("park-alert", event => {
   const alert = event.detail;
+  if (PREDICTIVE_ALERT_TYPES.has(alert.alert_type)) {
+    const message = predictiveAlertMessage(alert);
+    if (message) {
+      toast(message, alert.alert_type === "GHOST_CAR_RESOLVED" ? "ok" : "warn", { dismissible: true, lifetimeMs: 15000 });
+      pushNotification(message);
+      bumpUnread();
+    }
+    return;
+  }
   if (alert.alert_type !== "UNREGISTERED_VEHICLE_EXIT") return;
   const content = [h("b", { text: `Unregistered vehicle ${alert.plate} at ${alert.gate}. ` }), "Awaiting staff clearance."];
   if (canGate) {
