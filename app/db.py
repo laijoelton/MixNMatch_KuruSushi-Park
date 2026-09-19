@@ -384,6 +384,48 @@ def set_meta(key: str, value: Any) -> None:
         _conn.commit()
 
 
+# --------------------------------------------------------------------------- #
+# Run window (4.x). The database outlives the simulator: users, tariffs,
+# component wear and the component history the maintenance predictor learns
+# from all have to survive a restart. Everything that describes *one* run does
+# not - and when it leaks into the next run the dashboard shows yesterday's
+# neglected cars, gaps and penalties as if they were happening now.
+#
+# `scripts/new_run.py` (called by START.bat) archives the file, empties these
+# tables and stamps a new `run_started_at`. Queries that feed the "Needs
+# attention" panel filter on that stamp as well, so a dispatcher restarted in
+# the middle of a run still shows this run - and an old database opened without
+# the launcher does not resurrect the last one.
+# --------------------------------------------------------------------------- #
+RUN_START_KEY = "run_started_at"
+RUN_SCOPED_TABLES = (
+    "events", "sessions", "active_sessions", "payments", "penalties",
+    "neglected_vehicles", "sequence_gaps", "ghost_car_events", "unsigned_webhook_logs",
+)
+
+
+def run_started_at() -> str:
+    """When the current run began, as an ISO-8601 UTC string.
+
+    Written by the launcher; created on first use so a dispatcher started by
+    hand still has a window rather than no filter at all."""
+    value = get_meta(RUN_START_KEY)
+    if not value:
+        value = _utcnow()
+        set_meta(RUN_START_KEY, value)
+    return value
+
+
+def start_new_run(started_at: Optional[str] = None) -> dict[str, int]:
+    """Empty the run-scoped tables and stamp a new run. Returns rows removed."""
+    removed: dict[str, int] = {}
+    with _lock, _conn:
+        for table in RUN_SCOPED_TABLES:
+            removed[table] = _conn.execute(f"DELETE FROM {table}").rowcount
+    set_meta(RUN_START_KEY, started_at or _utcnow())
+    return removed
+
+
 def query(sql: str, params: tuple = ()) -> list[dict[str, Any]]:
     """Read-only helper for the dashboard endpoints."""
     with _lock:
@@ -576,6 +618,9 @@ def record_neglect(session, reason: str) -> None:
 
 
 def counters() -> dict[str, Any]:
+    # Gaps and unprocessed events are faults an operator is expected to act on,
+    # so they count this run only - see the run-window note above.
+    run = run_started_at()
     return query(
         """SELECT
              (SELECT COUNT(*) FROM events)     AS events,
@@ -583,6 +628,8 @@ def counters() -> dict[str, Any]:
              (SELECT COUNT(*) FROM penalties)  AS penalties,
              (SELECT COALESCE(SUM(fine_amount), 0) FROM penalties) AS total_fines,
              (SELECT COUNT(*) FROM payments WHERE valid = 0)       AS suspect_payments,
-             (SELECT COUNT(*) FROM sequence_gaps)                  AS sequence_gaps,
-             (SELECT COUNT(*) FROM events WHERE processed = 0)     AS unprocessed_events"""
+             (SELECT COUNT(*) FROM sequence_gaps WHERE detected_at >= ?)          AS sequence_gaps,
+             (SELECT COUNT(*) FROM events WHERE processed = 0 AND received_at >= ?)
+                                                                   AS unprocessed_events""",
+        (run, run),
     )[0]

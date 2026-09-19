@@ -90,8 +90,11 @@ button, input, select { font: inherit; color: inherit; }
   border-radius: var(--r-sm);
   color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: 0.02em;
   text-decoration: none !important;
+  /* Every item is one icon over one line. A label that wraps pushes the rest of
+     the rail out of alignment, so labels here stay short enough not to. */
+  text-align: center; white-space: nowrap;
 }
-.rail-link svg { width: 20px; height: 20px; }
+.rail-link svg { width: 20px; height: 20px; flex: none; }
 .rail-link:hover { color: var(--text); background: var(--surface-2); }
 .rail-link.is-active { color: var(--text); background: var(--surface-3); box-shadow: inset 2px 0 0 var(--accent); }
 

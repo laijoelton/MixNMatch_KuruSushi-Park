@@ -202,14 +202,20 @@ async def history_timeline(request: Request, plate: str = Query(..., min_length=
 async def stats(request: Request) -> dict[str, Any]:
     """Operational counters for everyone; money figures for admins only."""
     user = _user(request)
+    # The two fault counters are scoped to the current run (db.run_started_at):
+    # they drive "Needs attention", and a gap from yesterday is not something an
+    # operator can still act on.
+    run = db.run_started_at()
     out = db.query("""SELECT
         (SELECT COUNT(*) FROM sessions)                       AS completed_sessions,
         (SELECT COALESCE(AVG(minutes), 0) FROM sessions)      AS avg_minutes,
         (SELECT COUNT(*) FROM payments WHERE valid = 0)       AS suspect_payments,
         (SELECT COUNT(*) FROM penalties)                      AS penalty_count,
         (SELECT COALESCE(SUM(fine_amount), 0) FROM penalties) AS total_fines,
-        (SELECT COUNT(*) FROM sequence_gaps)                  AS sequence_gaps,
-        (SELECT COUNT(*) FROM events WHERE processed = 0)     AS unprocessed_events""")[0]
+        (SELECT COUNT(*) FROM sequence_gaps WHERE detected_at >= ?)         AS sequence_gaps,
+        (SELECT COUNT(*) FROM events WHERE processed = 0 AND received_at >= ?)
+                                                              AS unprocessed_events""",
+        (run, run))[0]
     if has(user, "fin:view"):
         revenue = db.query("SELECT COALESCE(SUM(amount), 0) AS r FROM payments WHERE valid = 1")[0]["r"]
         repair_costs = db.query(

@@ -624,7 +624,11 @@ def restore_sessions() -> None:
                 spot.status = SpotStatus.OCCUPIED if session.parked_at else SpotStatus.RESERVED
                 spot.reserved_at = session.created_at if not session.parked_at else None
     state.neglected_vehicles.clear()
-    state.neglected_vehicles.extend(db.query("SELECT * FROM neglected_vehicles ORDER BY occurred_at DESC LIMIT 100"))
+    # This run only: a restart mid-run keeps its own neglected cars, but an
+    # older database no longer floods the attention panel with yesterday's.
+    state.neglected_vehicles.extend(db.query(
+        "SELECT * FROM neglected_vehicles WHERE occurred_at >= ? ORDER BY occurred_at DESC LIMIT 100",
+        (db.run_started_at(),)))
 
 
 def restore_operational_observability() -> None:

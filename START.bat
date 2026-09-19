@@ -31,7 +31,7 @@ if not exist "%SIM_EXE%" (
 
 REM ------------------------------------------------- python / dependencies
 if not exist "%VENV_PY%" (
-  echo  [1/5] No virtual environment - creating one ^(first run only, ~1 min^)
+  echo  [1/6] No virtual environment - creating one ^(first run only, ~1 min^)
   python -m venv .venv
   if errorlevel 1 (
     echo  [X] Could not create the virtual environment. Is Python installed?
@@ -45,7 +45,7 @@ if not exist "%VENV_PY%" (
     goto :fail
   )
 ) else (
-  echo  [1/5] Virtual environment found - checking dependencies...
+  echo  [1/6] Virtual environment found - checking dependencies...
   echo        usually a second; a few minutes if new packages must be downloaded
   echo        - numpy/scikit-learn are ~70 MB. pip prints nothing until it is done.
   REM Re-run on every start: an existing .venv never picks up packages added
@@ -65,7 +65,7 @@ if not exist ".env" (
 )
 
 REM ------------------------------------------------- clear a stale listener
-echo  [2/5] Checking port 8080...
+echo  [2/6] Checking port 8080...
 set "STALE="
 for /f "tokens=5" %%P in ('netstat -ano ^| findstr /r /c:"TCP.*:8080 .*LISTENING"') do set "STALE=%%P"
 if defined STALE (
@@ -77,7 +77,7 @@ if defined STALE (
 )
 
 REM ------------------------------------------------------- start simulator
-echo  [3/5] Starting the simulator...
+echo  [3/6] Starting the simulator...
 tasklist /fi "imagename eq ParkingSimulator.exe" 2>nul | findstr /i /c:"ParkingSimulator.exe" >nul
 if not errorlevel 1 (
   echo        already running - leaving it alone.
@@ -135,7 +135,15 @@ if errorlevel 1 (
 
 REM ------------------------------------------------------ start dispatcher
 :startapp
-echo  [4/5] Starting the dispatcher on :8080 ...
+REM Each run starts from a clean slate: the previous run's events, sessions,
+REM payments, penalties and neglected cars are archived to data\archive\ and
+REM cleared, so the dashboard never opens showing yesterday's alerts and fines.
+REM Accounts, tariffs and component wear (what the maintenance predictor learns
+REM from) are kept.
+echo  [4/6] Preparing a clean run...
+"%VENV_PY%" -m scripts.new_run
+
+echo  [5/6] Starting the dispatcher on :8080 ...
 start "Grand Park Auto Dispatcher" "%VENV_PY%" -m uvicorn app.main:app --host 0.0.0.0 --port 8080
 
 echo        waiting for it to come up ...
@@ -155,7 +163,7 @@ goto :waitapp
 :appup
 echo        dispatcher is up.
 
-echo  [5/5] Opening the operator dashboard...
+echo  [6/6] Opening the operator dashboard...
 start "" "%DASH_URL%"
 
 echo.

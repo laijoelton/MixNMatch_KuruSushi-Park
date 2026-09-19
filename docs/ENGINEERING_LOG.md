@@ -1291,6 +1291,54 @@ had stubbed main's old return types, a number, and were updated to the dicts.
 
 ---
 
+### 4.37 The attention panel opened full of yesterday's alerts (20 September 2026)
+
+**Symptom.** A launch on a freshly loaded level showed "Needs attention" full:
+100 rows of "Vehicle X never reached a bay", "128 gaps in the event stream" and
+"4 accepted webhooks need processing", plus RM15,350 of fines and 700 penalties
+in the figures. Nothing on site had happened yet. The one alert that mattered -
+"Main gate (gate7) is closed - no cars can enter", the reason no car was moving
+(4.x, level start closes every gate) - was row 101 and never seen.
+
+**Root cause.** `data/park.db` is never reset, and startup reloads the last 100
+`neglected_vehicles` rows into the live snapshot (`restore_sessions`). Every
+counter behind the panel - gaps, unprocessed events, penalties, revenue -
+counted the whole file, which by then held 37,202 events and 1,205 sessions from
+previous runs. One row per neglected car also means a queue of any size buries
+every other alert, whatever its severity.
+
+**Fix (three parts).**
+1. **A run window.** `db.run_started_at()` reads the `run_started_at` meta key,
+   creating it on first use. `restore_sessions`, `db.counters()` and
+   `/api/stats` filter neglected cars, sequence gaps and unprocessed events on
+   it. A dispatcher restarted mid-run keeps that run's rows; an old database
+   opened by hand no longer resurrects the last one.
+2. **A clean slate per run.** `scripts/new_run.py`, called by `START.bat` as
+   step 4, copies the database to `data/archive/park-<stamp>.db` (keeping the
+   newest 5), empties `db.RUN_SCOPED_TABLES` and stamps a new run. Accounts,
+   tariffs, `component_wear` and `component_events` stay: the maintenance
+   predictor learns from them across runs, so wiping the file outright would
+   cost us that history. Errors there print a notice and let the launcher
+   continue - no reset is worth a failed start during the demo.
+3. **No single alert type can flood the panel.** Past three, neglected cars
+   collapse into one row ("5 vehicles never reached a bay ... open History for
+   the full list") in `deriveAlerts`.
+
+**Also fixed here:** the rail's Tariffs and Logs links had no icon and never
+showed as active, and "ML Insights" wrapped onto two lines and pushed the items
+below it out of line. They now carry icons and the `is-active` state like the
+rest, the label reads "Insights" (the page heading is still ML Insights), and
+`.rail-link` is `white-space: nowrap` so a future label cannot wrap again.
+
+**Verification:** `tests/test_run_window.py` covers both halves - a new run
+clears the run tables while keeping users and wear, and the counters ignore rows
+stamped before the run. Full suite: **260 passed**. Live on Level 3 with a clean
+database the panel showed exactly one row, the closed main gate; with five
+neglected cars seeded inside the window and one from the day before it showed
+"5 vehicles never reached a bay" and ignored the old one.
+
+---
+
 ## 5. Edge cases and how they are handled
 
 | Edge case | Handling |
@@ -1319,6 +1367,8 @@ had stubbed main's old return types, a number, and were updated to the dicts.
 | Admin clears a page's records (red dustbin on History / Payments / Penalties) | `DELETE /api/admin/data/{history,payments,penalties}`, gated by the admin-only `admin:reset` capability (other roles get `403`; the icon is hidden via `data-cap`). History deletes `sessions` + `neglected_vehicles`; Payments deletes `payments`; Penalties deletes `penalties` and zeroes the in-memory fine counters. `active_sessions`/live sessions are never touched — clearing them mid-run would lose billing state and cause `CarEscapedWithoutPaying`. `events` is never touched — it is the `EventId` de-duplication record. Every clear is written to the audit log with the row count |
 | `numpy`/`scikit-learn` missing or import fails | Every `app/ml_agent.py` function falls back to its documented deterministic rule instead of raising (4.22) |
 | Ghost car fee imputation | Estimates the invoice shown to staff only; the exit barrier still requires operator override, never auto-released (4.22) |
+| The database carries the previous run's records | `START.bat` archives it to `data/archive/` and empties the run-scoped tables; accounts, tariffs and component wear stay. Whatever survives is still filtered by `run_started_at`, so old neglected cars, gaps and unprocessed events cannot reach the attention panel (4.37) |
+| One fault repeats for many cars | Neglected cars past three collapse into a single attention row, so no single fault type can bury a more severe alert (4.37) |
 
 ---
 
@@ -1396,6 +1446,7 @@ Offline, with no simulator:
 python -m scripts.replay              # full car lifecycle
 AMOUNT=0.01 python -m scripts.replay  # fraud detection
 python -m scripts.export_graph        # road graph for the pathfinder
+python -m scripts.new_run             # archive the last run and start a clean one (4.37)
 ```
 
 ---

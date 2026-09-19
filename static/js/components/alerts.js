@@ -54,8 +54,18 @@ export function deriveAlerts(snapshot, stats, { isAdmin } = {}) {
                     : `${info.trigger}. New cars go to other zones until the second gate's repair starts`,
       { kind: "zone", name: zone });
   }
-  for (const row of snapshot.neglected_vehicles || []) {
-    add(`neglect-${row.plate}`, "warn", `Vehicle ${row.plate} never reached a bay`, row.reason, null);
+  // One row per car buries everything else the moment a queue builds up, so
+  // past a handful they collapse into a single row that links to the full list.
+  const neglected = snapshot.neglected_vehicles || [];
+  if (neglected.length > 3) {
+    const plates = neglected.slice(0, 3).map((row) => row.plate).join(", ");
+    add("neglect-many", "warn", `${neglected.length} vehicles never reached a bay`,
+      `${plates} and ${neglected.length - 3} more — open History for the full list`,
+      { kind: "page", href: "/history" });
+  } else {
+    for (const row of neglected) {
+      add(`neglect-${row.plate}`, "warn", `Vehicle ${row.plate} never reached a bay`, row.reason, null);
+    }
   }
   for (const gate of snapshot.barriers || []) {
     if (gate.held_plates?.length) {
