@@ -1,6 +1,6 @@
 """Compute true driving distances over the simulator's road graph.
 
-    python -m scripts.export_graph        # first: lvl1.json -> data/graph.json
+    python -m scripts.export_graph        # first: lvl2.json -> data/graph.json
     python -m scripts.build_distances     # then:  graph.json -> data/distances.json
 
 `app/routing.py` loads `data/distances.json` at startup and uses real driving
@@ -11,26 +11,39 @@ C/C++ pathfinder has something to validate against: same graph in, same numbers
 out. If the two disagree, one of them is wrong.
 
 
-What the graph actually looks like (measured, lvl1)
+What the graph actually looks like (measured, lvl2)
 ---------------------------------------------------
 
-* 63 nodes, 62 edges. The main component is 60 nodes / 60 edges, so it contains
-  exactly **one cycle** -- it is a tree with a single loop. There is essentially
-  one path between any two points, which is why pathfinding is not where the
-  wins are.
+* 169 nodes, 166 edges. The main component is 163 nodes / 164 edges (two
+  independent cycles, not a single-loop tree like lvl1), plus four small
+  stray components -- a 3-node spur and three isolated points -- that no
+  entry or parkable spot ever attaches to: every entry's undirected Dijkstra
+  reaches all 90 parkable spots, which only holds if entries and spots share
+  the one 163-node component.
 
 * **Edges are bidirectional.** The `Direction` field is not a one-way flag.
-  Treating `From -> To` as directed reaches 0 of 30 parking spots from ENTRY1;
-  undirected reaches all 30. Direction appears to be a rendering/heading hint.
+  Treating `From -> To` as directed reaches only 60 of 90 parking spots from
+  ENTRY1; undirected reaches all 90. Direction appears to be a
+  rendering/heading hint.
 
-* Parking spots are not graph nodes. Each sits ~97 units off its nearest node
-  (the stub from the aisle into the bay), and the mapping is 1:1 -- 30 spots,
-  30 distinct nodes, no collisions.
+* Parking spots are not graph nodes. Each sits 87-114 units off its nearest
+  node (mean ~98, the stub from the aisle into the bay), and the mapping is
+  1:1 -- 90 parkable spots, 90 distinct nodes, no collisions.
 
 Cost model
 ----------
 
-    cost(entry, spot) = dijkstra(entry_node, spot_node) + stub_length
+    cost(entry, spot) = dijkstra(entry_node, spot_node)
+
+``entry_node``/``spot_node`` are each the entry or spot's nearest road-graph
+node (``nearest_node``). The straight-line distance from the raw entry/spot
+position to that attach node is *not* added to the reported cost. An earlier
+revision added both attach distances (``estub + dijkstra + sstub``). Nobody
+had a reference table to catch it against on lvl1; on lvl2 there is one, and
+it disagreed -- entry attach distances there run 77-111 units, so the extra
+terms inflated every measurement 15-25% against the validated table in
+``docs/superpowers/specs/2026-09-20-level2-control-redesign-design.md``
+(e.g. ENTRY1->ZONE1 minimum is 977, not the ~1146 the extra terms produced).
 
 and, when `--round-trip` is passed:
 
@@ -135,14 +148,14 @@ def main() -> None:
     unreachable: list[str] = []
 
     for entry in entries:
-        enode, estub = nearest_node(nodes, entry["x"], entry["y"])
+        enode, _ = nearest_node(nodes, entry["x"], entry["y"])
         d = dijkstra(adj, enode)
         row: dict[str, float] = {}
-        for spot, (snode, sstub) in spot_attach.items():
+        for spot, (snode, _) in spot_attach.items():
             if snode not in d:
                 unreachable.append(f"{entry['name']}->{spot}")
                 continue
-            cost = estub + d[snode] + sstub
+            cost = d[snode]
             if ROUND_TRIP:
                 cost += exit_cost.get(spot, 0.0)
             row[spot] = round(cost, 1)

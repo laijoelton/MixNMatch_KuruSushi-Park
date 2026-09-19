@@ -95,6 +95,19 @@ def load_layout(level: str = "lvl1") -> dict[str, Any]:
         return result
 
 
+def component_coordinates(level: str) -> dict[str, tuple[float, float]]:
+    """Every named spot and gate with its X/Y, for distance fallbacks."""
+    data = load_layout(level)
+    coords: dict[str, tuple[float, float]] = {}
+    for name, spot in data.get("spots", {}).items():
+        if spot.get("x") is not None and spot.get("y") is not None:
+            coords[name] = (float(spot["x"]), float(spot["y"]))
+    for name, gate in data.get("gates", {}).items():
+        if gate.get("x") is not None and gate.get("y") is not None:
+            coords[name] = (float(gate["x"]), float(gate["y"]))
+    return coords
+
+
 # --------------------------------------------------------------------------- #
 # List-based geometry + level auto-detection (operator console twin)
 #

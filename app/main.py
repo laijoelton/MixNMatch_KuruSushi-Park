@@ -35,9 +35,9 @@ from pydantic import BaseModel, Field
 from app import auth, dashboard_api, db, ml_agent, simlog, tariffs, zones
 from app.client import client
 from app.config import settings
-from app.layout import announce_level, load_layout, running_level
+from app.layout import announce_level, component_coordinates, load_layout, running_level
 from app.queue_worker import maintenance_queue, schedule_lights
-from app.routing import load_distance_table, rank_spots
+from app.routing import load_distance_table, rank_spots, set_coordinates
 from app.seed import load_level
 from app.signature import verify as verify_signature_recipes
 from app.state import Barrier, BarrierPosition, SessionPhase, VehicleSession, SpotStatus, normalize_car_type, state
@@ -865,10 +865,12 @@ async def lifespan(app: FastAPI):
                             settings.seed_from_level)
 
     if load_distance_table():
-        log.info("routing: using precomputed driving distances (data/distances.json)")
+        log.info("routing: using precomputed driving distances")
     else:
-        log.info("routing: no data/distances.json - will use Euclidean distance from coordinates "
-                 "or stable alphabetical order as fallback")
+        log.warning("routing: data/distances.json missing - falling back to "
+                    "straight-line distance. Run scripts.export_graph then "
+                    "scripts.build_distances for true driving distance.")
+    set_coordinates(component_coordinates(running_level() or "lvl2"))
 
     log.info("autopilot=%s  signature_mode=%s  game_speed=%sx",
              settings.autopilot, settings.webhook_signature_mode, settings.game_speed)

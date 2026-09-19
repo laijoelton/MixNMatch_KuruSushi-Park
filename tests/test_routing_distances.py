@@ -44,3 +44,12 @@ def test_rank_spots_is_ascending_by_distance():
 def test_the_synthetic_ring_is_gone():
     for dead in ("circular_delta", "circular_distance", "StationRing", "ring"):
         assert not hasattr(routing, dead), f"{dead} still exists"
+
+
+def test_live_coordinates_feed_the_fallback(monkeypatch):
+    from app import layout
+    coords = layout.component_coordinates("lvl2")
+    assert coords, "lvl2 layout exposed no coordinates"
+    routing.set_coordinates(coords)
+    # ENTRY1 is beside ZONE1, so a ZONE1 bay must beat a ZONE3 bay.
+    assert routing._cost("ENTRY1", "S1") is not None

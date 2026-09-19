@@ -4,13 +4,13 @@ The level config is a 38KB blob with rendering data mixed in. This pulls out
 just the navigation-relevant parts so the C/C++ module does not have to parse
 it:
 
-    python -m scripts.export_graph            # lvl1 -> data/graph.json
-    python -m scripts.export_graph lvl2
+    python -m scripts.export_graph            # lvl2 -> data/graph.json
+    python -m scripts.export_graph lvl1       # or any other level, explicitly
 
 Output shape:
 
     {
-      "level": "lvl1",
+      "level": "lvl2",
       "nodes":  [{"name": "P2", "x": 206.99, "y": 951.96, "emitter": false}],
       "edges":  [{"from": "P3", "to": "P6", "direction": 0}],
       "spots":  [{"name": "S3", "x": 665, "y": 713, "zone": "ZONE1",
@@ -33,7 +33,7 @@ import json
 import sys
 from pathlib import Path
 
-LEVEL = sys.argv[1] if len(sys.argv) > 1 else "lvl1"
+LEVEL = sys.argv[1] if len(sys.argv) > 1 else "lvl2"
 
 CANDIDATES = [
     Path("ParkingSimulator-win-x64/ParkingSimulator-win-x64/settings") / f"{LEVEL}.json",
