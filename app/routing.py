@@ -10,6 +10,8 @@ component list does not change composition between runs.
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
 
@@ -66,6 +68,48 @@ class StationRing:
 ring = StationRing()
 
 
+# --------------------------------------------------------------------------- #
+# Real-distance override
+# --------------------------------------------------------------------------- #
+# The synthetic ring above orders stations by NAME, which has nothing to do with
+# where they physically are. The simulator's level file
+# (settings/lvl1.json) contains the actual road graph -- 60 nodes with X/Y
+# coordinates and directed Connections -- plus X/Y for every spot and gate.
+#
+# If a precomputed distance table is present it is used instead of the ring.
+# Expected shape, driving distance from each origin to each spot:
+#
+#     {"ENTRY1": {"S1": 340.2, "S3": 512.8, ...}, "ENTRY2": {...}}
+#
+# Generate it with the C/C++ pathfinder (Dijkstra/A* over the Paths graph) and
+# drop it at data/distances.json. Nothing else needs to change.
+_DISTANCES: dict[str, dict[str, float]] = {}
+
+
+def load_distance_table(path: str = "data/distances.json") -> bool:
+    """Load a precomputed origin -> spot driving-distance table, if present."""
+    global _DISTANCES
+    file = Path(path)
+    if not file.exists():
+        return False
+    try:
+        raw = json.loads(file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(raw, dict):
+        return False
+    _DISTANCES = {
+        str(origin): {str(spot): float(d) for spot, d in targets.items()}
+        for origin, targets in raw.items()
+        if isinstance(targets, dict)
+    }
+    return bool(_DISTANCES)
+
+
+def has_distance_table() -> bool:
+    return bool(_DISTANCES)
+
+
 def find_best_spot(gate_name: str, available_spots: Sequence[str]) -> Optional[str]:
     """Return the ``available_spots`` entry with the minimum bidirectional
     circular step offset from ``gate_name``:
@@ -76,6 +120,14 @@ def find_best_spot(gate_name: str, available_spots: Sequence[str]) -> Optional[s
     """
     if not available_spots:
         return None
+
+    # Prefer real driving distance when the pathfinder has supplied a table.
+    table = _DISTANCES.get(gate_name)
+    if table:
+        known = [s for s in available_spots if s in table]
+        if known:
+            return min(known, key=lambda spot: (table[spot], spot))
+
     n = ring.size
     origin = ring.position(gate_name)
     ranked = sorted(

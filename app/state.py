@@ -11,10 +11,16 @@ import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
 from app.config import settings
+
+
+def _utcnow() -> str:
+    """Wall-clock stamp for the dashboard; monotonic time cannot be a date."""
+    return datetime.now(timezone.utc).isoformat()
 
 
 class SpotStatus(str, Enum):
@@ -100,6 +106,36 @@ class VehicleSession:
     charged: bool = False
     paid: bool = False
     created_at: float = field(default_factory=time.monotonic)
+
+    # Car type decides the electric surcharge, and a car billed for
+    # electricity it never used incurs Penalty_ChargeCarForNoElectricityUsed.
+    car_type: str = "Normal"
+
+    # Billing runs from the moment the car occupies the spot, not from when it
+    # reached the entry -- the drive in is not parking time.
+    parked_at: Optional[float] = None
+    left_spot_at: Optional[float] = None
+
+    # Split of the last computed charge, kept for payment validation.
+    expected_parking: Optional[float] = None
+    expected_charging: Optional[float] = None
+
+    # Wall-clock stamps for the dashboard (monotonic is not a date).
+    arrived_wall: str = ""
+    parked_wall: str = ""
+    left_spot_wall: str = ""
+
+    @property
+    def is_electric(self) -> bool:
+        return self.car_type.strip().lower() == "electric"
+
+    @property
+    def billable_minutes(self) -> float:
+        """Minutes between parking and leaving the spot (or now, if still in)."""
+        if self.parked_at is None:
+            return 0.0
+        end = self.left_spot_at if self.left_spot_at is not None else time.monotonic()
+        return max(0.0, (end - self.parked_at) / 60.0)
 
 
 class _BoundedEventCache:
@@ -306,15 +342,22 @@ class ParkingState:
     # ------------------------------------------------------------------ #
     # Vehicle sessions
     # ------------------------------------------------------------------ #
-    def start_session(self, plate: str, gate: str) -> VehicleSession:
+    def start_session(self, plate: str, gate: str, car_type: str = "Normal") -> VehicleSession:
         with self._lock:
             session = self.sessions.get(plate)
             if session is None:
-                session = VehicleSession(plate=plate, entry_gate=gate)
+                session = VehicleSession(
+                    plate=plate,
+                    entry_gate=gate,
+                    car_type=car_type or "Normal",
+                    arrived_wall=_utcnow(),
+                )
                 self.sessions[plate] = session
             else:
                 session.entry_gate = gate
                 session.phase = SessionPhase.ARRIVED
+                if car_type:
+                    session.car_type = car_type
             return session
 
     def get_session(self, plate: str) -> Optional[VehicleSession]:
@@ -330,11 +373,32 @@ class ParkingState:
 
     def mark_parked(self, plate: str, spot_name: str) -> None:
         with self._lock:
-            self.mark_spot_occupied(spot_name, plate)
             session = self.sessions.get(plate)
+
+            # If the car ended up somewhere other than the spot we reserved,
+            # free the reservation -- otherwise that spot leaks and the lot
+            # slowly appears full.
+            if session is not None and session.assigned_spot and session.assigned_spot != spot_name:
+                stale = self.spots.get(session.assigned_spot)
+                if stale is not None and stale.occupant_plate == plate:
+                    self.mark_spot_vacant(session.assigned_spot)
+
+            self.mark_spot_occupied(spot_name, plate)
             if session is not None:
                 session.phase = SessionPhase.PARKED
                 session.assigned_spot = spot_name
+                # Start the billing clock here, not at the entry sensor.
+                if session.parked_at is None:
+                    session.parked_at = time.monotonic()
+                    session.parked_wall = _utcnow()
+
+    def mark_left_spot(self, plate: str) -> None:
+        """Stop the billing clock when the car vacates its spot."""
+        with self._lock:
+            session = self.sessions.get(plate)
+            if session is not None and session.left_spot_at is None:
+                session.left_spot_at = time.monotonic()
+                session.left_spot_wall = _utcnow()
 
     def mark_exit_requested(self, plate: str, exit_gate: str) -> None:
         with self._lock:
@@ -365,9 +429,10 @@ class ParkingState:
             session.paid = True
             return True
 
-    def complete_session(self, plate: str) -> None:
+    def complete_session(self, plate: str) -> Optional[VehicleSession]:
+        """Remove the session and hand it back so it can be archived to SQLite."""
         with self._lock:
-            self.sessions.pop(plate, None)
+            return self.sessions.pop(plate, None)
 
 
 state = ParkingState(max_processed_events=settings.max_processed_events)

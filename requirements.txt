@@ -1,4 +1,6 @@
-fastapi==0.115.0
-uvicorn[standard]==0.30.6
-httpx==0.27.2
-pydantic==2.9.2
+# Pinned to releases that ship prebuilt wheels for Python 3.13/3.14.
+# Older pydantic (<2.12) has no cp314 wheel and tries to compile Rust.
+fastapi==0.141.1
+uvicorn[standard]==0.53.0
+httpx==0.28.1
+pydantic==2.13.5
