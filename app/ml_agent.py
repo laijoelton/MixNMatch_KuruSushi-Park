@@ -50,6 +50,7 @@ MIN_REPAIR_TRAINING_SAMPLES = 6
 MIN_GHOST_CAR_SAMPLES_FOR_ISOLATION_FOREST = 8
 REPAIR_FAILURE_PROBABILITY_THRESHOLD = 0.90
 CO_BREACH_PPM = 50.0
+CO_HARD_ON_CEILING = 45.0  # guardrail vs Penalty_ZonePollutedWithHighCO: never wait past this to turn on
 CO_WARNING_MINUTES = 10
 NO_BREACH_PREDICTED_MINUTES = 9999
 MAINTENANCE_WARNING_DAYS = 3
@@ -67,8 +68,13 @@ _warned_components: set[str] = set()
 # --------------------------------------------------------------------- #
 
 def _co_on_threshold(zone_ratio: float) -> float:
-    """Dynamic ON edge: a busier zone reacts earlier than an empty one."""
-    return max(30.0, CO_BREACH_PPM - 20.0 * zone_ratio)
+    """Dynamic ON edge: a busier zone reacts earlier than an empty one.
+
+    Clamped to CO_HARD_ON_CEILING regardless of R - a hard guardrail so the
+    fan is never left waiting past 45ppm, independent of how the dynamic
+    formula reads at low occupancy.
+    """
+    return min(CO_HARD_ON_CEILING, max(30.0, CO_BREACH_PPM - 20.0 * zone_ratio))
 
 
 def co_off_threshold(zone_ratio: float) -> float:
