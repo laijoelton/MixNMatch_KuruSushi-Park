@@ -1,7 +1,7 @@
 {
   "TeamName": "Mix_and_Match",
   "ListenAddress": "http://0.0.0.0:9898",
-  "WebhookUrl": "http://www.carparking.local/webhook.php",
+  "WebhookUrl": "http://127.0.0.1:8080/webhooks/simulator",
   "ParkingSpeedMuliplier": 1,
   "MinParkingTime": 1,
   "MaxParkingTime": 5,

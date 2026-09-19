@@ -1,10 +1,12 @@
-"""FastAPI dispatcher: inbound Grand Park Auto webhooks, outbound REST commands.
+"""FastAPI dispatcher: headless simulator-core engine.
 
 This service is the sole external controller of the closed
-``ParkingSimulator-win-x64`` binary. It never polls; every mutation to local
-state happens strictly in reaction to an inbound webhook (see ``app/state.py``
-docstring), and every simulator-facing action is a direct REST call made from
-inside one of the handlers below.
+``ParkingSimulator-win-x64`` binary. It never polls; every mutation to
+local state happens strictly in reaction to an inbound webhook (see
+``app/state.py``'s module docstring). This module exposes only JSON APIs -
+the browser-facing operator HUD and mobile gate portal are layered on top
+of this exact engine on the ``feature/dashboard-ui`` branch / ``main``,
+without changing any of the logic below.
 """
 from __future__ import annotations
 
@@ -17,10 +19,12 @@ from typing import Any, Awaitable, Callable, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
 from app.client import client
 from app.config import settings
-from app.routing import find_best_spot, ring
+from app.queue_worker import maintenance_queue
+from app.routing import rank_spots, ring
 from app.state import state
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -37,9 +41,9 @@ def verify_signature(payload: dict[str, Any], provided: Optional[str]) -> bool:
     sort field names alphabetically (excluding ``Signature``), join the
     corresponding values with ``|``, hash the result, compare to ``provided``.
 
-    If ``WEBHOOK_SECRET`` is configured the hash is HMAC-keyed; otherwise a
-    plain digest of the joined string is used, matching the documented
-    example which shows no separate signing key.
+    If ``WEBHOOK_SECRET`` is configured the hash is HMAC-keyed with it;
+    otherwise a plain digest of the joined string is used, matching the
+    unsigned examples in the organizer's docs.
     """
     if provided is None:
         return not settings.webhook_secret
@@ -55,9 +59,9 @@ def verify_signature(payload: dict[str, Any], provided: Optional[str]) -> bool:
     return hmac.compare_digest(digest, provided)
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    await client.login()
+async def sync_from_simulator() -> dict[str, int]:
+    """One-shot list-* refresh. Called at startup and on manual operator request only -
+    never on a timer, per the organizer's no-polling rule."""
     spots = await client.list_parking_spots()
     barriers = await client.list_barriers()
     zones = await client.list_zones()
@@ -71,23 +75,87 @@ async def lifespan(app: FastAPI):
     state.load_zones(zones)
     state.load_fans(fans)
     ring.rebuild(list(state.spots.keys()) + list(state.barriers.keys()))
+    counts = {"spots": len(state.spots), "barriers": len(state.barriers),
+              "zones": len(state.zones), "fans": len(state.fans)}
+    state.log_activity(f"Manual sync: {counts['spots']} spots, {counts['barriers']} barriers, "
+                       f"{counts['zones']} zones, {counts['fans']} fans")
+    return counts
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await client.login()
+    counts = await sync_from_simulator()
     log.info("startup sync complete: %d spots, %d barriers, %d zones, %d fans",
-             len(state.spots), len(state.barriers), len(state.zones), len(state.fans))
+             counts["spots"], counts["barriers"], counts["zones"], counts["fans"])
+
+    maintenance_queue.start()
     try:
         yield
     finally:
+        await maintenance_queue.stop()
         await client.aclose()
 
 
 app = FastAPI(
-    title="KuruSushi-Park Dispatcher",
-    version="1.0.0",
+    title="KuruSushi-Park Dispatcher (headless core)",
+    version="2.0.0",
     description="Supervisory dispatch layer over the Grand Park Auto simulator.",
     lifespan=lifespan,
 )
 
 
+# --------------------------------------------------------------------------- #
+# Dispatch core (shared by the real webhook path and the manual/dry-run path)
+# --------------------------------------------------------------------------- #
+async def dispatch_entry(plate: str, gate_name: str, car_type: str = "Normal",
+                         dry_run: bool = False) -> dict[str, Any]:
+    state.start_session(plate, gate=gate_name)
+    candidate_type = "Electric" if car_type.lower() == "electric" else "Any"
+    candidates = state.available_spots(car_type=candidate_type)
+    ranked = rank_spots(gate_name, candidates)
+    target = ranked[0][0] if ranked else None
+
+    if dry_run:
+        return {"plate": plate, "gate": gate_name, "target": target,
+                "ranked_candidates": ranked[:10], "dispatched": False}
+
+    if target is None:
+        state.log_activity(f"No available spot for {plate} at {gate_name} - lot full", level="error")
+        return {"plate": plate, "gate": gate_name, "target": None, "dispatched": False}
+
+    if not state.reserve_spot(target, plate):
+        candidates = [c for c in state.available_spots(car_type=candidate_type) if c != target]
+        ranked = rank_spots(gate_name, candidates)
+        target = ranked[0][0] if ranked else None
+        if target is None or not state.reserve_spot(target, plate):
+            state.log_activity(f"Failed to reserve any spot for {plate}", level="error")
+            return {"plate": plate, "gate": gate_name, "target": None, "dispatched": False}
+
+    state.assign_spot(plate, target)
+    await client.car_goto(plate, target)
+    state.log_activity(f"Dispatched {plate} from {gate_name} to {target}")
+    log.info("dispatched %s from %s to %s", plate, gate_name, target)
+    return {"plate": plate, "gate": gate_name, "target": target, "dispatched": True}
+
+
+async def assign_specific_spot(plate: str, gate_name: str, spot_name: str,
+                               car_type: str = "Normal") -> dict[str, Any]:
+    """Honour an explicit spot pick (used by the manual API and, on the UI
+    branch, the gate portal) rather than the auto-ranked target."""
+    state.start_session(plate, gate=gate_name)
+    if not state.reserve_spot(spot_name, plate):
+        return {"plate": plate, "gate": gate_name, "target": spot_name, "dispatched": False,
+                "reason": "spot no longer available"}
+    state.assign_spot(plate, spot_name)
+    await client.car_goto(plate, spot_name)
+    state.log_activity(f"Manual assign: {plate} to {spot_name} at {gate_name}")
+    return {"plate": plate, "gate": gate_name, "target": spot_name, "dispatched": True}
+
+
+# --------------------------------------------------------------------------- #
+# Read APIs
+# --------------------------------------------------------------------------- #
 @app.get("/healthz")
 async def healthz() -> dict[str, Any]:
     return {
@@ -98,9 +166,103 @@ async def healthz() -> dict[str, Any]:
         "fans": len(state.fans),
         "active_sessions": len(state.sessions),
         "last_sequence_id": state.last_sequence_id,
+        "maintenance_queue": maintenance_queue.stats,
     }
 
 
+@app.get("/api/state")
+async def get_state() -> dict[str, Any]:
+    return state.snapshot()
+
+
+@app.get("/api/spots")
+async def get_spots() -> dict[str, Any]:
+    return {"spots": state.snapshot()["spots"], "occupancy": state.occupancy_counts()}
+
+
+@app.get("/api/gates")
+async def get_gates() -> dict[str, Any]:
+    return {"gates": state.entry_gates()}
+
+
+@app.get("/api/broken")
+async def get_broken() -> dict[str, Any]:
+    return {"components": state.broken_components(), "deferred_repairs": dict(state.deferred_repairs)}
+
+
+# --------------------------------------------------------------------------- #
+# Manual / operator controls
+# --------------------------------------------------------------------------- #
+@app.post("/api/manual/sync")
+async def manual_sync() -> dict[str, Any]:
+    counts = await sync_from_simulator()
+    return {"ok": True, **counts}
+
+
+class ManualArrivalIn(BaseModel):
+    plate: str = Field(..., min_length=1, max_length=16)
+    gate: str = Field(..., min_length=1, max_length=32)
+    car_type: str = Field("Normal", max_length=16)
+    dry_run: bool = False
+
+
+@app.post("/api/manual/arrival")
+async def manual_arrival(body: ManualArrivalIn) -> dict[str, Any]:
+    if body.gate not in state.spots:
+        raise HTTPException(404, f"unknown gate/spot {body.gate}")
+    return await dispatch_entry(body.plate, body.gate, body.car_type, body.dry_run)
+
+
+class ManualAssignIn(BaseModel):
+    plate: str = Field(..., min_length=1, max_length=16)
+    gate: str = Field(..., min_length=1, max_length=32)
+    spot: str = Field(..., min_length=1, max_length=32)
+    car_type: str = Field("Normal", max_length=16)
+
+
+@app.post("/api/manual/assign")
+async def manual_assign(body: ManualAssignIn) -> dict[str, Any]:
+    if body.gate not in state.spots or body.spot not in state.spots:
+        raise HTTPException(404, "unknown gate or spot")
+    result = await assign_specific_spot(body.plate, body.gate, body.spot, body.car_type)
+    if not result["dispatched"]:
+        raise HTTPException(409, result.get("reason", "spot unavailable"))
+    return result
+
+
+@app.post("/api/manual/barrier/{name}/open")
+async def manual_barrier_open(name: str) -> dict[str, Any]:
+    await client.barrier_open(name)
+    state.update_barrier_state(name, "Open")
+    state.log_activity(f"Operator opened barrier {name}")
+    return {"ok": True, "name": name, "state": "Open"}
+
+
+@app.post("/api/manual/barrier/{name}/close")
+async def manual_barrier_close(name: str) -> dict[str, Any]:
+    await client.barrier_close(name)
+    state.update_barrier_state(name, "Closed")
+    state.log_activity(f"Operator closed barrier {name}")
+    return {"ok": True, "name": name, "state": "Closed"}
+
+
+@app.post("/api/manual/repair/{name}")
+async def manual_repair(name: str) -> dict[str, Any]:
+    component_type = (
+        "ParkingSpot" if name in state.spots
+        else "BarrierGate" if name in state.barriers
+        else "ExhaustFan" if name in state.fans
+        else None
+    )
+    if component_type is None:
+        raise HTTPException(404, f"unknown component {name}")
+    await _queue_repair(component_type, name)
+    return {"ok": True, "name": name, "type": component_type, "queued": True}
+
+
+# --------------------------------------------------------------------------- #
+# Inbound simulator webhook
+# --------------------------------------------------------------------------- #
 @app.post("/webhooks/simulator")
 async def simulator_webhook(request: Request) -> JSONResponse:
     payload = await request.json()
@@ -133,6 +295,21 @@ async def simulator_webhook(request: Request) -> JSONResponse:
 
 
 # --------------------------------------------------------------------------- #
+# Maintenance queue helper
+# --------------------------------------------------------------------------- #
+async def _queue_repair(component_type: str, name: str) -> None:
+    if component_type == "ParkingSpot":
+        action: Callable[[], Awaitable[None]] = lambda: client.spot_repair(name)
+    elif component_type == "BarrierGate":
+        action = lambda: client.barrier_repair(name)
+    elif component_type == "ExhaustFan":
+        action = lambda: client.fan_repair(name)
+    else:
+        return
+    await maintenance_queue.submit(f"repair {component_type}:{name}", action, priority=10)
+
+
+# --------------------------------------------------------------------------- #
 # Event handlers
 # --------------------------------------------------------------------------- #
 async def _handle_car_spot_action(payload: dict[str, Any]) -> None:
@@ -142,35 +319,22 @@ async def _handle_car_spot_action(payload: dict[str, Any]) -> None:
     direction = payload.get("Direction", "")
 
     if spot_type == "EntrySpot" and direction == "CarIn":
-        state.start_session(plate, gate=spot_name)
         car_type = payload.get("CarType", "Normal")
-        candidate_type = "Electric" if car_type.lower() == "electric" else "Any"
-        candidates = state.available_spots(car_type=candidate_type)
-        target = find_best_spot(spot_name, candidates)
-        if target is None:
-            log.error("no available spot for %s at %s - lot full", plate, spot_name)
-            return
-        if not state.reserve_spot(target, plate):
-            candidates = [c for c in state.available_spots(car_type=candidate_type) if c != target]
-            target = find_best_spot(spot_name, candidates)
-            if target is None or not state.reserve_spot(target, plate):
-                log.error("failed to reserve any spot for %s", plate)
-                return
-        state.assign_spot(plate, target)
-        await client.car_goto(plate, target)
-        log.info("dispatched %s from %s to %s", plate, spot_name, target)
+        await dispatch_entry(plate, spot_name, car_type)
         return
 
     if spot_type == "Park" and direction == "CarIn":
         state.mark_parked(plate, spot_name)
+        state.log_activity(f"{plate} parked at {spot_name}")
         return
 
     if spot_type == "Park" and direction == "CarOut":
         state.mark_spot_vacant(spot_name)
+        state.log_activity(f"{plate} vacated {spot_name}")
         ready = state.pop_ready_repair(spot_name)
         if ready:
-            await client.spot_repair(spot_name)
-            log.info("deferred repair now applied to vacated spot %s", spot_name)
+            await _queue_repair(ready, spot_name)
+            log.info("deferred repair for %s now queued after vacancy", spot_name)
         return
 
     if spot_type == "ExitSpot" and direction == "CarIn":
@@ -182,11 +346,13 @@ async def _handle_car_spot_action(payload: dict[str, Any]) -> None:
         await client.car_charge(plate, cost)
         state.mark_charged(plate)
         state.mark_at_exit(plate)
+        state.log_activity(f"Charged {plate} {cost:.2f} at {spot_name}")
         log.info("charged %s %.2f at exit spot %s", plate, cost, spot_name)
         return
 
     if spot_type == "ExitSpot" and direction == "CarOut":
         state.complete_session(plate)
+        state.log_activity(f"{plate} left the facility via {spot_name}")
         log.info("%s left the facility via %s", plate, spot_name)
         return
 
@@ -195,6 +361,7 @@ async def _handle_component_broken(payload: dict[str, Any]) -> None:
     component_type = payload["Type"]
     name = payload["Name"]
     state.set_component_broken(component_type, name)
+    state.log_activity(f"{component_type} {name} broken (fine {payload.get('FineAmount')})", level="warn")
     log.warning("component broken: %s %s (fine %s)", component_type, name, payload.get("FineAmount"))
 
     if component_type == "ParkingSpot":
@@ -203,17 +370,14 @@ async def _handle_component_broken(payload: dict[str, Any]) -> None:
             state.queue_deferred_repair(name, component_type)
             log.info("repair for occupied spot %s deferred until vacated", name)
             return
-        await client.spot_repair(name)
-    elif component_type == "BarrierGate":
-        await client.barrier_repair(name)
-    elif component_type == "ExhaustFan":
-        await client.fan_repair(name)
+    await _queue_repair(component_type, name)
 
 
 async def _handle_component_fixed(payload: dict[str, Any]) -> None:
     component_type = payload["Type"]
     name = payload["Name"]
     state.set_component_fixed(component_type, name)
+    state.log_activity(f"{component_type} {name} fixed")
     log.info("component fixed: %s %s", component_type, name)
 
 
@@ -222,6 +386,8 @@ async def _handle_carbon_monoxide_event(payload: dict[str, Any]) -> None:
     co_level = float(payload.get("CarbonMonoxideLevel", 0.0))
     danger_level = payload.get("DangerLevel", "Safe")
     state.update_zone(zone_name, co_level, danger_level)
+    state.log_activity(f"CO {danger_level} in {zone_name} ({co_level:.1f})",
+                       level="warn" if danger_level in ("High", "Critical") else "info")
     log.warning("CO event in %s: level=%.2f danger=%s", zone_name, co_level, danger_level)
 
     if danger_level in ("High", "Critical"):
@@ -230,6 +396,7 @@ async def _handle_carbon_monoxide_event(payload: dict[str, Any]) -> None:
             if not fan.is_on and not fan.broken and not fan.under_maintenance:
                 await client.fan_on(fan_name)
                 fan.is_on = True
+                state.log_activity(f"Exhaust fan {fan_name} switched on for {zone_name}")
                 log.info("exhaust fan %s switched on to mitigate CO in %s", fan_name, zone_name)
 
 
@@ -245,6 +412,8 @@ async def _handle_payment_made(payload: dict[str, Any]) -> None:
     session = state.get_session(plate)
     if session is not None and session.expected_amount is not None:
         if abs(amount - session.expected_amount) > 0.01:
+            state.log_activity(f"Payment mismatch for {plate}: expected {session.expected_amount:.2f}, "
+                               f"got {amount:.2f}", level="warn")
             log.warning("payment mismatch for %s: expected %.2f, server reported %.2f - flagged as suspect",
                        plate, session.expected_amount, amount)
             return
@@ -254,11 +423,17 @@ async def _handle_payment_made(payload: dict[str, Any]) -> None:
 
 
 async def _handle_penalty(payload: dict[str, Any]) -> None:
-    log.error("PENALTY: %s - fine %s (%s %s)", payload.get("Reason"), payload.get("FineAmount"),
-              payload.get("Type"), payload.get("ComponentName"))
+    reason = payload.get("Reason", "")
+    fine = float(payload.get("FineAmount", 0.0))
+    component_type = payload.get("Type", "")
+    component_name = payload.get("ComponentName", "")
+    state.record_penalty(reason, fine, component_type, component_name)
+    state.log_activity(f"PENALTY: {reason} (-{fine})", level="error")
+    log.error("PENALTY: %s - fine %s (%s %s)", reason, fine, component_type, component_name)
 
 
 async def _handle_test_webhook(payload: dict[str, Any]) -> None:
+    state.log_activity("Test webhook received")
     log.info("test webhook received: %s", payload.get("EventId"))
 
 
