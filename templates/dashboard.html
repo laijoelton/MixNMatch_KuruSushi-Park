@@ -8,7 +8,7 @@
 </head>
 <body>
   <div class="split-root">
-    <section class="operator-pane operator-pane-full">
+    <section class="operator-pane">
       <div class="operator-header">
         <h1><span class="status-dot" id="status-dot"></span>{{ team_name }} — Live Operator View</h1>
         <div class="mini-cards">
@@ -36,13 +36,29 @@
         </div>
       </div>
     </section>
+
+    <section class="phone-pane">
+      <div class="phone-frame">
+        <div class="phone-notch"></div>
+        <div class="phone-screen" id="driver-screen">
+          <!-- DriverPortal renders into here -->
+        </div>
+      </div>
+    </section>
   </div>
 
   <script src="/static/js/operator_canvas.js?v={{ asset_version }}"></script>
+  <script src="/static/js/user_waze_gps.js?v={{ asset_version }}"></script>
   <script>
     const statusDot = document.getElementById("status-dot");
     const operatorCanvas = new OperatorCanvas(document.getElementById("operator-canvas"));
     operatorCanvas.loadLayout();
+
+    const driverPortal = new DriverPortal(
+      document.getElementById("driver-screen"),
+      {{ default_gate | tojson }}
+    );
+    driverPortal.loadLayout();
 
     const trackInput = document.getElementById("track-plate");
     const trackHint = document.getElementById("track-hint");
@@ -68,6 +84,7 @@
       document.getElementById("c-reserved").textContent = occ.RESERVED || 0;
       document.getElementById("c-sessions").textContent = (snap.sessions || []).length;
       operatorCanvas.update(snap);
+      driverPortal.update(snap);
     }
 
     let ws;

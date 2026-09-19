@@ -17,7 +17,9 @@ echo.
 set "SIM_EXE=ParkingSimulator-win-x64\ParkingSimulator-win-x64\ParkingSimulator.exe"
 set "VENV_PY=.venv\Scripts\python.exe"
 set "SETTINGS=ParkingSimulator-win-x64\ParkingSimulator-win-x64\settings\settings.json"
-set "DASH_URL=http://127.0.0.1:8080/"
+REM The split-screen operator dashboard. "/" is the older HUD, still served.
+set "DASH_URL=http://127.0.0.1:8080/dashboard"
+set "HUD_URL=http://127.0.0.1:8080/"
 
 if not exist "%SIM_EXE%" (
   echo  [X] Simulator not found:
@@ -131,7 +133,8 @@ echo.
 echo  ===============================================
 echo   Running.
 echo.
-echo   Dashboard    %DASH_URL%
+echo   Dashboard    %DASH_URL%    ^<- split-screen operator view
+echo   Operator HUD %HUD_URL%
 echo   Gate portal  http://127.0.0.1:8080/gate
 echo   Health       http://127.0.0.1:8080/healthz
 echo.

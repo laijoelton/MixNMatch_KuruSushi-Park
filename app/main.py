@@ -353,8 +353,13 @@ async def assign_specific_spot(plate: str, gate_name: str, spot_name: str,
     if not sent:
         state.release_reservation(spot_name, plate)
         state.complete_session(plate)
+        # Distinguish "we chose not to send" from "we tried and it failed" --
+        # a driver at the gate portal being told "autopilot disabled" when the
+        # simulator is simply unreachable sends them looking in the wrong place.
+        reason = ("autopilot disabled - no command sent" if not settings.autopilot
+                  else "simulator did not accept the command")
         return {"plate": plate, "gate": gate_name, "target": spot_name, "dispatched": False,
-                "reason": "autopilot disabled"}
+                "reason": reason}
     state.log_activity(f"Check-in: {plate} chose {spot_name} at {gate_name}")
     return {"plate": plate, "gate": gate_name, "target": spot_name, "dispatched": True}
 
