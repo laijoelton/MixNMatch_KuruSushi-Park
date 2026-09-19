@@ -17,6 +17,14 @@
           <div class="mini-card warn"><div class="label">Reserved</div><div class="value" id="c-reserved">0</div></div>
           <div class="mini-card"><div class="label">Sessions</div><div class="value" id="c-sessions">0</div></div>
         </div>
+        <div class="row" style="align-items:center; gap:10px;">
+          <span class="hint">{{ user.username }} ({{ user.role }})</span>
+          <a class="hint" href="/">Operator HUD →</a>
+          <a class="hint" href="/admin">{{ user.role|capitalize }} console →</a>
+          <form method="post" action="/logout" style="display:inline;">
+            <button type="submit" class="secondary">Log out</button>
+          </form>
+        </div>
       </div>
 
       <div class="track-bar">
@@ -92,7 +100,11 @@
       const proto = location.protocol === "https:" ? "wss" : "ws";
       ws = new WebSocket(`${proto}://${location.host}/ws/telemetry`);
       ws.onopen = () => statusDot.classList.add("live");
-      ws.onclose = () => { statusDot.classList.remove("live"); setTimeout(connect, 1500); };
+      ws.onclose = (evt) => {
+        statusDot.classList.remove("live");
+        if (evt.code === 1008) { setTimeout(() => location.reload(), 800); return; }
+        setTimeout(connect, 1500);
+      };
       ws.onerror = () => ws.close();
       ws.onmessage = (evt) => applySnapshot(JSON.parse(evt.data));
     }

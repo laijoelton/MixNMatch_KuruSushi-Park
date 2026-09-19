@@ -1,0 +1,586 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ team_name }} — {{ user.role|capitalize }} Console</title>
+  <link rel="stylesheet" href="/static/css/dashboard.css?v={{ asset_version }}" />
+  <style>
+    table.data-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-family: var(--mono);
+      font-size: 11px;
+    }
+    table.data-table th, table.data-table td {
+      text-align: left;
+      padding: 5px 8px;
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    table.data-table th {
+      color: var(--text-dim);
+      font-weight: 600;
+      text-transform: uppercase;
+      font-size: 10px;
+    }
+    table.data-table tbody tr:hover { background: var(--panel-alt); }
+    .table-wrap { max-height: 320px; overflow: auto; }
+    .zone-full { color: var(--danger); font-weight: 700; }
+    .topbar-user {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 12px;
+      color: var(--text-dim);
+    }
+    .role-badge {
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      background: rgba(79, 209, 197, 0.15);
+      color: var(--accent);
+    }
+    /* Each role sees a different console; colouring the badge makes it
+       obvious at a glance which account is driving, which matters when four
+       of them are open side by side during a demo. */
+    .role-badge.admin      { background: rgba(229, 62, 62, 0.16);  color: #fc8181; }
+    .role-badge.operator   { background: rgba(79, 209, 197, 0.16); color: var(--accent); }
+    .role-badge.accountant { background: rgba(104, 211, 145, 0.16); color: #68d391; }
+    .role-badge.engineer   { background: rgba(246, 173, 85, 0.16); color: #f6ad55; }
+
+    .money { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+    .money.pos { color: var(--ok); }
+    .money.neg { color: var(--danger); }
+    .perm-note {
+      font-size: 10px;
+      color: var(--text-dim);
+      font-family: var(--mono);
+      margin-top: 2px;
+    }
+  </style>
+</head>
+<body>
+  <div class="hud">
+    <div class="hud-header">
+      <div class="hud-title">
+        <span class="status-dot" id="status-dot"></span>
+        <div>
+          <h1>{{ team_name }} — {{ user.role|capitalize }} Console</h1>
+          <div class="subtitle" id="subtitle">connecting…</div>
+        </div>
+      </div>
+      <div class="row">
+        <div class="topbar-user">
+          {{ user.username }}
+          <span class="role-badge {{ user.role }}">{{ user.role }}</span>
+        </div>
+        {# Only offer links the role can actually open - a nav item that
+           lands on a 403 is worse than no nav item. #}
+        {% if 'lot.view' in perms %}
+        <a class="hint" href="/" style="align-self:center;">Operator HUD →</a>
+        <a class="hint" href="/dashboard" style="align-self:center;">Split canvas →</a>
+        {% endif %}
+        <form method="post" action="/logout" style="display:inline;">
+          <button type="submit" class="secondary">Log out</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="cards">
+      {% if 'lot.view' in perms %}
+      <div class="card accent"><div class="label">Available</div><div class="value" id="c-available">0</div></div>
+      <div class="card"><div class="label">Occupied</div><div class="value" id="c-occupied">0</div></div>
+      <div class="card warn"><div class="label">Reserved</div><div class="value" id="c-reserved">0</div></div>
+      <div class="card"><div class="label">Active Sessions</div><div class="value" id="c-sessions">0</div></div>
+      {% endif %}
+      {% if 'finance.view' in perms %}
+      <div class="card accent"><div class="label">Revenue</div><div class="value money pos" id="c-revenue">0.00</div></div>
+      <div class="card danger"><div class="label">Fines</div><div class="value money neg" id="c-fines">0.00</div></div>
+      <div class="card"><div class="label">Net</div><div class="value money" id="c-net">0.00</div></div>
+      <div class="card warn"><div class="label">Shortfall</div><div class="value money neg" id="c-shortfall">0.00</div></div>
+      {% endif %}
+      {% if 'diagnostics.view' in perms %}
+      <div class="card danger"><div class="label">Penalties</div><div class="value" id="c-penalties">0</div></div>
+      <div class="card"><div class="label">Completed</div><div class="value" id="c-completed">0</div></div>
+      <div class="card danger"><div class="label">Suspect Payments</div><div class="value" id="c-suspect">0</div></div>
+      {% endif %}
+    </div>
+
+    {% if 'diagnostics.view' in perms %}
+    <div class="panel">
+      <h2>System status</h2>
+      <div class="mini-cards" id="system-status"
+           style="display:flex; gap:14px; flex-wrap:wrap; font-family:var(--mono); font-size:12px; color:var(--text-dim);"></div>
+    </div>
+    {% endif %}
+
+    {% if 'lot.view' in perms %}
+    <div class="panel">
+      <h2>Occupancy by zone</h2>
+      <div class="table-wrap">
+        <table class="data-table" id="zone-table">
+          <thead>
+            <tr><th>Zone</th><th>Total</th><th>Available</th><th>Occupied</th><th>Reserved</th>
+                <th>Broken</th><th>Gates</th><th>Status</th></tr>
+          </thead>
+          <tbody id="zone-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+    {% endif %}
+
+    {% if 'lot.control' in perms %}
+    <div class="panel">
+      <h2>Gate control</h2>
+      <div class="perm-note">manual override — applies whether or not autopilot is on</div>
+      <div class="row" id="gate-controls" style="flex-wrap:wrap; gap:8px; margin-top:10px;"></div>
+      <div class="hint" id="gate-feedback" style="margin-top:8px;"></div>
+    </div>
+    {% endif %}
+
+    {% if 'finance.view' in perms %}
+    <div class="grid-two">
+      <div class="panel">
+        <h2>Earnings</h2>
+        <div class="table-wrap">
+          <table class="data-table">
+            <tbody id="finance-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>Penalties by reason</h2>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead><tr><th>Reason</th><th>Count</th><th>Fines</th></tr></thead>
+            <tbody id="penalty-reason-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Unpaid / disputed sessions</h2>
+      <div class="perm-note">billed but never settled — escapes and refused payments</div>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr><th>Plate</th><th>Spot</th><th>Min</th><th>Planned</th>
+                <th>Park $</th><th>Charge $</th><th>Paid $</th><th>Completed</th></tr>
+          </thead>
+          <tbody id="unpaid-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+    {% endif %}
+
+    {% if 'history.view' in perms %}
+    <div class="panel">
+      <h2>Session history</h2>
+      <div class="controls-form" style="grid-template-columns: 1fr auto; margin-bottom:10px;">
+        <input type="text" id="history-search" placeholder="Search by plate…" />
+        <button id="history-search-btn" class="secondary">Search</button>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table" id="history-table">
+          <thead>
+            <tr><th>Plate</th><th>Type</th><th>Spot</th><th>Entry</th><th>Exit</th><th>Min</th>
+                <th>Park $</th><th>Charge $</th><th>Paid $</th><th>OK</th><th>Completed</th></tr>
+          </thead>
+          <tbody id="history-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+    {% endif %}
+
+    <div class="grid-two">
+      {% if 'lot.view' in perms or 'diagnostics.view' in perms %}
+      <div class="panel stack">
+        <h2>Broken components</h2>
+        <div class="list" id="broken-list"></div>
+        {% if 'maintenance' in perms %}
+        <div class="perm-note">click a component to queue a repair</div>
+        {% endif %}
+      </div>
+      {% endif %}
+
+      {% if 'staff.manage' in perms %}
+      <div class="panel">
+        <h2>Active staff sessions</h2>
+        <div class="list" id="staff-sessions-list"></div>
+      </div>
+      {% endif %}
+    </div>
+
+    <div class="grid-two">
+      {% if 'lot.view' in perms or 'diagnostics.view' in perms %}
+      <div class="panel">
+        <h2>Activity log</h2>
+        <div class="list" id="activity-list"></div>
+      </div>
+      {% endif %}
+      {% if 'finance.view' in perms or 'diagnostics.view' in perms %}
+      <div class="panel">
+        <h2>Penalty log</h2>
+        <div class="list" id="penalty-list"></div>
+      </div>
+      {% endif %}
+    </div>
+
+    {% if 'diagnostics.view' in perms %}
+    <div class="panel">
+      <h2>Raw event log</h2>
+      <div class="controls-form" style="grid-template-columns: 1fr auto; margin-bottom:10px;">
+        <input type="text" id="event-filter" placeholder="Filter by event class, e.g. car_spot_action…" />
+        <button id="event-filter-btn" class="secondary">Filter</button>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead><tr><th>Seq</th><th>Class</th><th>Received</th><th>Signature</th><th>Error</th></tr></thead>
+          <tbody id="event-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+
+  <script>
+    // The server already refuses anything this role may not do; the gating
+    // here is so the page does not render dead controls or fire requests it
+    // knows will 403. Server-side checks remain the real boundary.
+    const PERMS = new Set({{ perms | tojson }});
+    const can = (p) => PERMS.has(p);
+
+    const statusDot = document.getElementById("status-dot");
+    const subtitle = document.getElementById("subtitle");
+
+    const fmt = (n) => Number(n || 0).toFixed(2);
+    const $ = (id) => document.getElementById(id);
+    const setText = (id, value) => { const el = $(id); if (el) el.textContent = value; };
+
+    function renderList(el, items, render) {
+      if (!el) return;
+      el.innerHTML = "";
+      if (!items.length) {
+        el.innerHTML = '<div class="hint">nothing yet</div>';
+        return;
+      }
+      for (const item of items) {
+        const row = document.createElement("div");
+        row.className = "list-row" + (render.cls ? " " + render.cls(item) : "");
+        row.innerHTML = render.html(item);
+        if (render.onClick) {
+          row.style.cursor = "pointer";
+          row.addEventListener("click", () => render.onClick(item));
+        }
+        el.appendChild(row);
+      }
+    }
+
+    function renderRows(tbody, rows, columns, emptyText) {
+      if (!tbody) return;
+      tbody.innerHTML = "";
+      if (!rows.length) {
+        tbody.innerHTML = `<tr><td colspan="${columns}" class="hint">${emptyText}</td></tr>`;
+        return true;
+      }
+      return false;
+    }
+
+    // ---------------------------------------------------------------- lot
+    function renderZones(zones) {
+      const tbody = $("zone-tbody");
+      if (!tbody) return;
+      tbody.innerHTML = "";
+      for (const z of zones) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${z.zone}</td><td>${z.total}</td><td>${z.available}</td><td>${z.occupied}</td>
+          <td>${z.reserved}</td><td>${z.broken}</td><td>${(z.gates || []).join(", ") || "—"}</td>
+          <td class="${z.full ? "zone-full" : ""}">${z.full ? "FULL" : "OK"}</td>`;
+        tbody.appendChild(tr);
+      }
+    }
+
+    let knownBarriers = [];
+    function renderGateControls(barriers) {
+      const box = $("gate-controls");
+      if (!box) return;
+      const names = barriers.map((b) => `${b.name}:${b.state}`).join("|");
+      if (names === knownBarriers.join("|")) return;   // avoid rebuilding every tick
+      knownBarriers = barriers.map((b) => `${b.name}:${b.state}`);
+      box.innerHTML = "";
+      for (const b of barriers) {
+        const wrap = document.createElement("div");
+        const blocked = b.broken || b.under_maintenance;
+        wrap.className = "row";
+        wrap.style.cssText = "align-items:center; gap:6px; margin-right:12px;";
+        wrap.innerHTML = `
+          <span style="font-family:var(--mono); font-size:12px;">${b.name}</span>
+          <span class="badge ${b.state === "Open" ? "available" : "broken"}">${b.state}</span>`;
+        for (const action of ["open", "close"]) {
+          const btn = document.createElement("button");
+          btn.className = "secondary";
+          btn.textContent = action;
+          btn.disabled = blocked;
+          btn.title = blocked ? "component is broken or under maintenance" : "";
+          btn.addEventListener("click", () => gateAction(b.name, action, btn));
+          wrap.appendChild(btn);
+        }
+        box.appendChild(wrap);
+      }
+    }
+
+    async function gateAction(name, action, btn) {
+      const feedback = $("gate-feedback");
+      btn.disabled = true;
+      try {
+        const res = await fetch(`/api/manual/barrier/${encodeURIComponent(name)}/${action}`,
+                                { method: "POST" });
+        const body = await res.json().catch(() => ({}));
+        if (feedback) {
+          // Surface the reason. A dead simulator answers 502 with a message,
+          // and an operator needs to see that instead of a silent no-op.
+          feedback.textContent = res.ok
+            ? `${name} ${action}: ok`
+            : `${name} ${action} failed (${res.status}): ${body.detail || "unknown error"}`;
+          feedback.className = res.ok ? "hint" : "hint error";
+        }
+      } catch (err) {
+        if (feedback) { feedback.textContent = `${name} ${action} failed: ${err}`; feedback.className = "hint error"; }
+      } finally {
+        btn.disabled = false;
+        knownBarriers = [];   // force a redraw so the badge refreshes
+      }
+    }
+
+    async function queueRepair(name) {
+      if (!can("maintenance")) return;
+      const res = await fetch(`/api/manual/repair/${encodeURIComponent(name)}`, { method: "POST" });
+      const body = await res.json().catch(() => ({}));
+      const feedback = $("gate-feedback");
+      if (feedback) {
+        feedback.textContent = res.ok
+          ? `repair queued for ${name}`
+          : `repair for ${name} failed (${res.status}): ${body.detail || "unknown error"}`;
+      }
+    }
+
+    // ----------------------------------------------------------- snapshot
+    function applySnapshot(snap) {
+      const occ = snap.occupancy || {};
+      setText("c-available", occ.AVAILABLE || 0);
+      setText("c-occupied", occ.OCCUPIED || 0);
+      setText("c-reserved", occ.RESERVED || 0);
+      setText("c-sessions", (snap.sessions || []).length);
+      setText("c-penalties", (snap.penalties || {}).count || 0);
+
+      renderZones(snap.zone_occupancy || []);
+      if (can("lot.control")) renderGateControls(snap.barriers || []);
+
+      const brokenItems = (snap.spots || []).filter((s) => s.broken || s.under_maintenance)
+        .concat((snap.barriers || []).filter((b) => b.broken || b.under_maintenance))
+        .concat((snap.fans || []).filter((f) => f.broken || f.under_maintenance));
+      renderList($("broken-list"), brokenItems, {
+        html: (c) => `<span>${c.name}</span><span class="badge broken">${c.broken ? "broken" : "maintenance"}</span>`,
+        onClick: can("maintenance") ? (c) => queueRepair(c.name) : null,
+      });
+
+      renderList($("activity-list"), snap.activity || [], {
+        cls: (a) => a.level === "error" ? "error" : a.level === "warn" ? "warn" : "",
+        html: (a) => `<span>${a.message}</span><span class="time">${new Date(a.at * 1000).toLocaleTimeString()}</span>`,
+      });
+
+      renderList($("penalty-list"), (snap.penalties || {}).recent || [], {
+        cls: () => "error",
+        html: (p) => `<span>${p.reason} (${p.type} ${p.component})</span><span class="time">-${fmt(p.fine)}</span>`,
+      });
+    }
+
+    let ws;
+    function connect() {
+      const proto = location.protocol === "https:" ? "wss" : "ws";
+      ws = new WebSocket(`${proto}://${location.host}/ws/live`);
+      ws.onopen = () => { statusDot.classList.add("live"); subtitle.textContent = "live"; };
+      ws.onclose = (evt) => {
+        statusDot.classList.remove("live");
+        // 1008 is the server refusing the handshake for want of a session -
+        // reconnecting in a loop would just hammer it, so send them to login.
+        if (evt.code === 1008) {
+          subtitle.textContent = "session expired — reloading";
+          setTimeout(() => location.reload(), 800);
+          return;
+        }
+        subtitle.textContent = "disconnected — retrying…";
+        setTimeout(connect, 1500);
+      };
+      ws.onerror = () => ws.close();
+      ws.onmessage = (evt) => applySnapshot(JSON.parse(evt.data));
+    }
+    connect();
+
+    // ------------------------------------------------------------- health
+    async function loadHealth() {
+      if (!can("diagnostics.view")) return;
+      const res = await fetch("/healthz");
+      if (!res.ok) return;
+      const data = await res.json();
+      setText("c-completed", data.completed_sessions || 0);
+      setText("c-suspect", data.suspect_payments || 0);
+      const box = $("system-status");
+      if (!box) return;
+      box.innerHTML = `
+        <span>autopilot: <b style="color:${data.autopilot ? "var(--ok)" : "var(--danger)"}">${data.autopilot}</b></span>
+        <span>signature mode: <b>${data.signature_mode}</b></span>
+        <span>signature pinned: <b>${data.signature_pinned || "none"}</b></span>
+        <span>events logged: <b>${data.events}</b></span>
+        <span>sequence gaps: <b>${data.sequence_gaps}</b></span>
+        <span>maintenance queue: <b>${(data.maintenance_queue || {}).pending || 0} pending</b></span>`;
+    }
+
+    // ------------------------------------------------------------ finance
+    async function loadFinance() {
+      if (!can("finance.view")) return;
+      const res = await fetch("/api/finance");
+      if (!res.ok) return;
+      const f = await res.json();
+
+      setText("c-revenue", fmt(f.revenue));
+      setText("c-fines", fmt(f.fines));
+      setText("c-shortfall", fmt(f.shortfall));
+      const net = $("c-net");
+      if (net) {
+        net.textContent = fmt(f.net);
+        net.classList.toggle("pos", f.net >= 0);
+        net.classList.toggle("neg", f.net < 0);
+      }
+
+      const rows = [
+        ["Collected", fmt(f.revenue), `${f.payments_accepted} accepted payments`],
+        ["Invoiced", fmt(f.invoiced), `${f.sessions_billed} billed sessions`],
+        ["Shortfall", fmt(f.shortfall), "invoiced but never collected"],
+        ["Rejected", fmt(f.rejected_amount), `${f.payments_rejected} refused as wrong`],
+        ["Fines", fmt(f.fines), `${f.penalty_count} penalties`],
+        ["Net", fmt(f.net), "collected minus fines"],
+      ];
+      const tbody = $("finance-tbody");
+      if (tbody) {
+        tbody.innerHTML = "";
+        for (const [label, value, note] of rows) {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `<td style="font-weight:600;">${label}</td>
+                          <td class="money">${value}</td>
+                          <td class="hint">${note}</td>`;
+          tbody.appendChild(tr);
+        }
+      }
+
+      const reasons = $("penalty-reason-tbody");
+      if (reasons && !renderRows(reasons, f.penalties_by_reason || [], 3, "no penalties — good")) {
+        for (const r of f.penalties_by_reason) {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `<td>${r.reason}</td><td>${r.n}</td><td class="money neg">${fmt(r.total)}</td>`;
+          reasons.appendChild(tr);
+        }
+      }
+
+      const unpaid = $("unpaid-tbody");
+      if (unpaid && !renderRows(unpaid, f.unpaid_sessions || [], 8, "every session settled")) {
+        for (const r of f.unpaid_sessions) {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `
+            <td>${r.plate || ""}</td><td>${r.spot || ""}</td>
+            <td>${r.minutes != null ? Number(r.minutes).toFixed(0) : ""}</td>
+            <td>${r.planned_minutes != null ? Number(r.planned_minutes).toFixed(0) : ""}</td>
+            <td class="money">${fmt(r.parking_cost)}</td>
+            <td class="money">${fmt(r.charging_cost)}</td>
+            <td class="money">${r.paid_amount != null ? fmt(r.paid_amount) : "—"}</td>
+            <td>${(r.completed_at || "").replace("T", " ").slice(0, 19)}</td>`;
+          unpaid.appendChild(tr);
+        }
+      }
+    }
+
+    // -------------------------------------------------------------- staff
+    async function loadStaffSessions() {
+      if (!can("staff.manage")) return;
+      const res = await fetch("/api/admin/sessions");
+      if (!res.ok) return;
+      const data = await res.json();
+      renderList($("staff-sessions-list"), data.sessions || [], {
+        html: (s) => `<span>${s.username}</span><span class="role-badge ${s.role}">${s.role}</span>`,
+      });
+    }
+
+    // ------------------------------------------------------------ history
+    async function loadHistory(plate) {
+      if (!can("history.view")) return;
+      const url = plate
+        ? `/api/history?limit=100&plate=${encodeURIComponent(plate)}`
+        : "/api/history?limit=50";
+      const res = await fetch(url);
+      if (!res.ok) return;
+      const rows = await res.json();
+      const tbody = $("history-tbody");
+      if (renderRows(tbody, rows, 11, "no sessions yet")) return;
+      for (const r of rows) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${r.plate || ""}</td><td>${r.car_type || ""}</td><td>${r.spot || ""}</td>
+          <td>${r.entry_gate || ""}</td><td>${r.exit_gate || ""}</td>
+          <td>${r.minutes != null ? Number(r.minutes).toFixed(0) : ""}</td>
+          <td>${r.parking_cost != null ? fmt(r.parking_cost) : ""}</td>
+          <td>${r.charging_cost != null ? fmt(r.charging_cost) : ""}</td>
+          <td>${r.paid_amount != null ? fmt(r.paid_amount) : ""}</td>
+          <td>${r.payment_ok ? "yes" : "no"}</td>
+          <td>${(r.completed_at || "").replace("T", " ").slice(0, 19)}</td>`;
+        tbody.appendChild(tr);
+      }
+    }
+
+    // ------------------------------------------------------------- events
+    async function loadEvents(eventClass) {
+      if (!can("diagnostics.view")) return;
+      const url = eventClass
+        ? `/api/events?limit=100&event_class=${encodeURIComponent(eventClass)}`
+        : "/api/events?limit=50";
+      const res = await fetch(url);
+      if (!res.ok) return;
+      const rows = await res.json();
+      const tbody = $("event-tbody");
+      if (renderRows(tbody, rows, 5, "no events yet")) return;
+      for (const r of rows) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${r.sequence_id != null ? r.sequence_id : ""}</td>
+          <td>${r.event_class || ""}</td>
+          <td>${(r.received_at || "").replace("T", " ").slice(0, 19)}</td>
+          <td>${r.signature_ok == null ? "—" : (r.signature_ok ? "ok" : "mismatch")}</td>
+          <td class="${r.process_error ? "zone-full" : ""}">${r.process_error || ""}</td>`;
+        tbody.appendChild(tr);
+      }
+    }
+
+    function bindSearch(inputId, buttonId, handler) {
+      const input = $(inputId);
+      const button = $(buttonId);
+      if (!input || !button) return;
+      const run = () => handler(input.value.trim());
+      button.addEventListener("click", run);
+      input.addEventListener("keydown", (e) => { if (e.key === "Enter") run(); });
+    }
+
+    bindSearch("history-search", "history-search-btn", loadHistory);
+    bindSearch("event-filter", "event-filter-btn", loadEvents);
+
+    loadHealth();       setInterval(loadHealth, 5000);
+    loadFinance();      setInterval(loadFinance, 5000);
+    loadStaffSessions(); setInterval(loadStaffSessions, 10000);
+    loadHistory();
+    loadEvents();       setInterval(() => loadEvents($("event-filter")?.value.trim()), 10000);
+  </script>
+</body>
+</html>

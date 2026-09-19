@@ -1,0 +1,4 @@
+# Test/benchmark harness dependencies. The harness imports app/* directly,
+# so it needs everything the dispatcher itself needs, plus test tooling.
+-r requirements.txt
+pytest==8.3.3

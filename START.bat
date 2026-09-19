@@ -46,6 +46,17 @@ if not exist "%VENV_PY%" (
   )
 ) else (
   echo  [1/5] Virtual environment found.
+  REM Sync dependencies every run, not only when the venv is created.
+  REM A teammate who already has a .venv would otherwise never pick up a
+  REM newly added package - python-multipart is required for the login form,
+  REM and without it every sign-in fails with a 500 that looks like our bug.
+  REM pip is quiet and quick when everything is already satisfied.
+  echo        syncing dependencies...
+  "%VENV_PY%" -m pip install -q -r requirements.txt
+  if errorlevel 1 (
+    echo  [X] Dependency sync failed - check your network or requirements.txt
+    goto :fail
+  )
 )
 
 if not exist ".env" (
@@ -127,6 +138,8 @@ goto :waitapp
 echo        dispatcher is up.
 
 echo  [5/5] Opening the operator dashboard...
+REM Staff pages redirect to /login when there is no session, so a first-time
+REM launch lands on the sign-in form and comes back here after.
 start "" "%DASH_URL%"
 
 echo.
@@ -135,8 +148,16 @@ echo   Running.
 echo.
 echo   Dashboard    %DASH_URL%    ^<- split-screen operator view
 echo   Operator HUD %HUD_URL%
-echo   Gate portal  http://127.0.0.1:8080/gate
+echo   Staff console http://127.0.0.1:8080/admin
+echo   Gate portal  http://127.0.0.1:8080/gate   ^<- drivers, no login
 echo   Health       http://127.0.0.1:8080/healthz
+echo.
+echo   Staff sign-in is required for every page except the gate portal.
+echo   Default accounts ^(change them in .env before a real deploy^):
+echo     admin      / admin123        everything
+echo     operator   / operator123     gates + bays
+echo     accountant / accountant123   earnings + penalties
+echo     engineer   / engineer123     logs + faults
 echo.
 
 REM Surface the setting that most often causes confusion.

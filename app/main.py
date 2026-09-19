@@ -28,13 +28,18 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
-from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
-from app import db
+from app import auth, db
+from app.auth import (
+    SESSION_COOKIE, ROLE_ADMIN, SessionInfo,
+    PERM_LOT_VIEW, PERM_LOT_CONTROL, PERM_MAINTENANCE, PERM_FINANCE_VIEW,
+    PERM_DIAGNOSTICS_VIEW, PERM_HISTORY_VIEW, PERM_STAFF_MANAGE,
+)
 from app.client import client
 from app.config import settings
 from app.layout import load_layout
@@ -299,16 +304,24 @@ async def dispatch_entry(plate: str, gate_name: str, car_type: str = "Normal",
                 "ranked_candidates": ranked[:10], "dispatched": False}
 
     if target is None:
-        state.log_activity(f"No available spot for {plate} at {gate_name} - lot full", level="error")
-        return {"plate": plate, "gate": gate_name, "target": None, "dispatched": False}
+        # Lot (or this car's zone/type) is genuinely full. Leaving the car
+        # idling at the entry earns Penalty_CarLeftFromEntryBecauseNeglected
+        # once the driver gives up - send it straight back out instead.
+        state.log_activity(f"No available spot for {plate} at {gate_name} - lot full, sending to leavepark",
+                           level="error")
+        await act(f"car {plate} -> leavepark (lot full)", lambda: client.car_goto(plate, "leavepark"))
+        state.complete_session(plate)
+        return {"plate": plate, "gate": gate_name, "target": None, "dispatched": False, "reason": "lot_full"}
 
     if not state.reserve_spot(target, plate):
         candidates = [c for c in state.available_spots(car_type=candidate_type) if c != target]
         ranked = rank_spots(gate_name, candidates)
         target = ranked[0][0] if ranked else None
         if target is None or not state.reserve_spot(target, plate):
-            state.log_activity(f"Failed to reserve any spot for {plate}", level="error")
-            return {"plate": plate, "gate": gate_name, "target": None, "dispatched": False}
+            state.log_activity(f"Failed to reserve any spot for {plate} - sending to leavepark", level="error")
+            await act(f"car {plate} -> leavepark (no reservable spot)", lambda: client.car_goto(plate, "leavepark"))
+            state.complete_session(plate)
+            return {"plate": plate, "gate": gate_name, "target": None, "dispatched": False, "reason": "lot_full"}
 
     state.assign_spot(plate, target)
 
@@ -365,14 +378,110 @@ async def assign_specific_spot(plate: str, gate_name: str, spot_name: str,
 
 
 # --------------------------------------------------------------------------- #
+# Auth pages
+# --------------------------------------------------------------------------- #
+# Only the staff surfaces below (operator/admin dashboards, manual control
+# endpoints) sit behind login. The public driver portal (/gate) and its APIs
+# are deliberately left open - a walk-in driver has no staff account.
+def _require_page_user(request: Request) -> SessionInfo:
+    """Like auth.require_staff, but for HTML pages: redirect to /login
+    instead of a bare 401 JSON body a browser tab can't do anything with."""
+    info = auth.sessions.get(request.cookies.get(SESSION_COOKIE))
+    if info is None:
+        raise _LoginRedirect(str(request.url.path))
+    return info
+
+
+def _require_page_permission(permission: str) -> Callable[[Request], SessionInfo]:
+    """Page gate for one permission.
+
+    Anonymous gets a redirect (a browser tab can act on that); a logged-in
+    role that simply lacks the permission gets a 403, because bouncing them
+    to /login would loop - they are already logged in.
+    """
+    def dependency(request: Request) -> SessionInfo:
+        info = auth.sessions.get(request.cookies.get(SESSION_COOKIE))
+        if info is None:
+            raise _LoginRedirect(str(request.url.path))
+        if not info.can(permission):
+            raise HTTPException(
+                403, f"role '{info.role}' cannot open this page "
+                     f"(needs '{permission}') - try {info.home}")
+        return info
+
+    return dependency
+
+
+class _LoginRedirect(Exception):
+    def __init__(self, next_path: str) -> None:
+        self.next_path = next_path
+
+
+@app.exception_handler(_LoginRedirect)
+async def _login_redirect_handler(request: Request, exc: _LoginRedirect) -> RedirectResponse:
+    return RedirectResponse(f"/login?next={exc.next_path}", status_code=303)
+
+
+@app.get("/login", response_class=HTMLResponse, include_in_schema=False)
+async def login_page(request: Request, next: str = "/", error: Optional[str] = None):
+    if templates is None:
+        raise HTTPException(500, "templates directory missing")
+    existing = auth.sessions.get(request.cookies.get(SESSION_COOKIE))
+    if existing is not None:
+        return RedirectResponse(next or "/", status_code=303)
+    return templates.TemplateResponse(request, "login.html", {
+        "next": next, "error": error, "asset_version": str(int(time.time())),
+    })
+
+
+@app.post("/login", include_in_schema=False)
+async def login_submit(request: Request, username: str = Form(...), password: str = Form(...),
+                       next: str = Form("/")):
+    role = auth.authenticate(username.strip(), password)
+    if role is None:
+        return RedirectResponse(f"/login?next={next}&error=1", status_code=303)
+    session = auth.sessions.create(username.strip(), role)
+    state.log_activity(f"{username} ({role}) logged in")
+    # "/" is the form's default, not a deliberate destination - send each role
+    # to a page it can actually read instead of straight into a 403.
+    destination = next if next and next != "/" else session.home
+    response = RedirectResponse(destination, status_code=303)
+    response.set_cookie(SESSION_COOKIE, session.token, httponly=True, samesite="lax",
+                        max_age=int(settings.session_ttl_s))
+    return response
+
+
+@app.post("/logout", include_in_schema=False)
+async def logout(request: Request):
+    token = request.cookies.get(SESSION_COOKIE)
+    info = auth.sessions.get(token)
+    auth.sessions.destroy(token)
+    if info is not None:
+        state.log_activity(f"{info.username} ({info.role}) logged out")
+    response = RedirectResponse("/login", status_code=303)
+    response.delete_cookie(SESSION_COOKIE)
+    return response
+
+
+@app.get("/api/me")
+async def api_me(user: SessionInfo = Depends(auth.require_staff)) -> dict[str, Any]:
+    return {"username": user.username, "role": user.role,
+            "permissions": sorted(user.permissions), "home": user.home}
+
+
+# --------------------------------------------------------------------------- #
 # Pages
 # --------------------------------------------------------------------------- #
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
-async def operator_dashboard(request: Request):
+async def operator_dashboard(
+    request: Request,
+    user: SessionInfo = Depends(_require_page_permission(PERM_LOT_VIEW)),
+):
     if templates is None:
         raise HTTPException(500, "templates directory missing")
     return templates.TemplateResponse(request, "index.html", {
         "team_name": "KuruSushi-Park", "asset_version": str(int(time.time())),
+        "user": user, "perms": sorted(user.permissions),
     })
 
 
@@ -388,7 +497,10 @@ async def gate_portal(request: Request, gate: Optional[str] = Query(None)):
 
 
 @app.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
-async def split_dashboard(request: Request):
+async def split_dashboard(
+    request: Request,
+    user: SessionInfo = Depends(_require_page_permission(PERM_LOT_VIEW)),
+):
     if templates is None:
         raise HTTPException(500, "templates directory missing")
     gates = state.entry_gates() or [settings.entry_gate]
@@ -396,6 +508,25 @@ async def split_dashboard(request: Request):
         "team_name": "KuruSushi-Park", "gates": gates,
         "default_gate": gates[0] if gates else settings.entry_gate,
         "asset_version": str(int(time.time())),
+        "user": user, "perms": sorted(user.permissions),
+    })
+
+
+@app.get("/admin", response_class=HTMLResponse, include_in_schema=False)
+async def admin_dashboard(request: Request,
+                          user: SessionInfo = Depends(_require_page_user)):
+    """The shared staff console.
+
+    Every role opens the same page; the panes inside are gated by permission,
+    so an Accountant sees earnings and an Engineer sees the event log without
+    either of them needing a separate template to drift out of sync. Admin,
+    holding every permission, sees the whole thing.
+    """
+    if templates is None:
+        raise HTTPException(500, "templates directory missing")
+    return templates.TemplateResponse(request, "admin.html", {
+        "team_name": "KuruSushi-Park", "asset_version": str(int(time.time())),
+        "user": user, "perms": sorted(user.permissions),
     })
 
 
@@ -423,14 +554,86 @@ async def healthz() -> dict[str, Any]:
 
 
 @app.get("/api/history")
-async def get_history(limit: int = 100) -> list[dict[str, Any]]:
-    """Completed parking sessions, for the dashboard history table."""
-    return db.query("SELECT * FROM sessions ORDER BY completed_at DESC LIMIT ?",
-                    (max(1, min(limit, 500)),))
+async def get_history(limit: int = 100, plate: Optional[str] = None,
+                      user: SessionInfo = Depends(auth.require_permission(PERM_HISTORY_VIEW))) -> list[dict[str, Any]]:
+    """Completed parking sessions, for the dashboard history table.
+    Optional ``plate`` does a case-insensitive substring search, so staff can
+    look up "what happened to car X" without scanning the whole log."""
+    limit = max(1, min(limit, 500))
+    if plate:
+        return db.query(
+            "SELECT * FROM sessions WHERE plate LIKE ? ORDER BY completed_at DESC LIMIT ?",
+            (f"%{plate.strip()}%", limit))
+    return db.query("SELECT * FROM sessions ORDER BY completed_at DESC LIMIT ?", (limit,))
+
+
+@app.get("/api/zones")
+async def get_zones(user: SessionInfo = Depends(auth.require_permission(PERM_LOT_VIEW))) -> dict[str, Any]:
+    """Occupied/free spots by zone plus that zone's gate status - so staff
+    can see at a glance whether a zone (or the whole lot) is full."""
+    return {"zones": state.zone_occupancy()}
+
+
+@app.get("/api/finance")
+async def get_finance(user: SessionInfo = Depends(auth.require_permission(PERM_FINANCE_VIEW))) -> dict[str, Any]:
+    """The Accountant's view: what the park earned, and what it lost.
+
+    Revenue is read from `payments` (what was actually paid) rather than from
+    `sessions.parking_cost` (what we asked for) -- a car that escaped without
+    paying must not show up as income. `invoiced` is kept alongside so the
+    gap between the two is visible instead of hidden.
+    """
+    collected = db.query(
+        "SELECT COALESCE(SUM(amount), 0) AS total, COUNT(*) AS n "
+        "FROM payments WHERE valid = 1")[0]
+    rejected = db.query(
+        "SELECT COALESCE(SUM(amount), 0) AS total, COUNT(*) AS n "
+        "FROM payments WHERE valid = 0")[0]
+    invoiced = db.query(
+        "SELECT COALESCE(SUM(COALESCE(parking_cost, 0) + COALESCE(charging_cost, 0)), 0) AS total, "
+        "COUNT(*) AS n FROM sessions")[0]
+    fines = db.query(
+        "SELECT COALESCE(SUM(fine_amount), 0) AS total, COUNT(*) AS n FROM penalties")[0]
+
+    by_reason = db.query(
+        "SELECT reason, COUNT(*) AS n, COALESCE(SUM(fine_amount), 0) AS total "
+        "FROM penalties GROUP BY reason ORDER BY total DESC LIMIT 20")
+    unpaid = db.query(
+        "SELECT plate, spot, minutes, planned_minutes, parking_cost, charging_cost, "
+        "paid_amount, completed_at FROM sessions "
+        "WHERE COALESCE(payment_ok, 0) = 0 ORDER BY completed_at DESC LIMIT 50")
+
+    revenue = float(collected["total"])
+    fines_total = float(fines["total"])
+    return {
+        "revenue": round(revenue, 2),
+        "payments_accepted": collected["n"],
+        "rejected_amount": round(float(rejected["total"]), 2),
+        "payments_rejected": rejected["n"],
+        "invoiced": round(float(invoiced["total"]), 2),
+        "sessions_billed": invoiced["n"],
+        # What we asked for but never collected - escapes and refused payments.
+        "shortfall": round(float(invoiced["total"]) - revenue, 2),
+        "fines": round(fines_total, 2),
+        "penalty_count": fines["n"],
+        "net": round(revenue - fines_total, 2),
+        "penalties_by_reason": by_reason,
+        "unpaid_sessions": unpaid,
+    }
+
+
+@app.get("/api/admin/sessions")
+async def get_admin_sessions(user: SessionInfo = Depends(auth.require_permission(PERM_STAFF_MANAGE))) -> dict[str, Any]:
+    """Who is currently logged in - Admin oversight, not available to Operators."""
+    return {"sessions": [
+        {"username": s.username, "role": s.role, "expires_at": s.expires_at}
+        for s in auth.sessions.active_sessions()
+    ]}
 
 
 @app.get("/api/events")
-async def get_events(limit: int = 50, event_class: Optional[str] = None) -> list[dict[str, Any]]:
+async def get_events(limit: int = 50, event_class: Optional[str] = None,
+                     user: SessionInfo = Depends(auth.require_permission(PERM_DIAGNOSTICS_VIEW))) -> list[dict[str, Any]]:
     """Raw webhook log, newest first."""
     limit = max(1, min(limit, 500))
     if event_class:
@@ -441,39 +644,41 @@ async def get_events(limit: int = 50, event_class: Optional[str] = None) -> list
 
 
 @app.get("/api/payments")
-async def get_payments(limit: int = 100) -> list[dict[str, Any]]:
+async def get_payments(limit: int = 100,
+                       user: SessionInfo = Depends(auth.require_permission(PERM_FINANCE_VIEW))) -> list[dict[str, Any]]:
     return db.query("SELECT * FROM payments ORDER BY server_datetime DESC LIMIT ?",
                     (max(1, min(limit, 500)),))
 
 
 @app.get("/api/signature-report")
-async def get_signature_report() -> dict[str, Any]:
+async def get_signature_report(user: SessionInfo = Depends(auth.require_permission(PERM_DIAGNOSTICS_VIEW))) -> dict[str, Any]:
     """Which signature recipe the live simulator is actually using."""
     return {"attempts": db.signature_attempts(), "candidates": db.signature_trials()}
 
 
 @app.get("/api/state")
-async def get_state() -> dict[str, Any]:
-    return state.snapshot()
+async def get_state(user: SessionInfo = Depends(auth.require_any(PERM_LOT_VIEW, PERM_FINANCE_VIEW))) -> dict[str, Any]:
+    # Filtered, or this would be a way around the narrower endpoints below.
+    return auth.filter_snapshot(state.snapshot(), user.permissions)
 
 
 @app.get("/api/spots")
-async def get_spots() -> dict[str, Any]:
+async def get_spots(user: SessionInfo = Depends(auth.require_permission(PERM_LOT_VIEW))) -> dict[str, Any]:
     return {"spots": state.snapshot()["spots"], "occupancy": state.occupancy_counts()}
 
 
 @app.get("/api/gates")
-async def get_gates() -> dict[str, Any]:
+async def get_gates(user: SessionInfo = Depends(auth.require_permission(PERM_LOT_VIEW))) -> dict[str, Any]:
     return {"gates": state.entry_gates()}
 
 
 @app.get("/api/broken")
-async def get_broken() -> dict[str, Any]:
+async def get_broken(user: SessionInfo = Depends(auth.require_any(PERM_LOT_VIEW, PERM_DIAGNOSTICS_VIEW))) -> dict[str, Any]:
     return {"components": state.broken_components(), "deferred_repairs": dict(state.deferred_repairs)}
 
 
 @app.get("/api/layout")
-async def get_layout() -> dict[str, Any]:
+async def get_layout(user: SessionInfo = Depends(auth.require_permission(PERM_LOT_VIEW))) -> dict[str, Any]:
     """Real simulator pixel-space geometry for the split-dashboard canvas.
 
     Geometry only, sourced from the level file (see app/layout.py) - never
@@ -486,9 +691,27 @@ async def get_layout() -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 # Manual / operator controls
 # --------------------------------------------------------------------------- #
+async def _operator_command(description: str, coro_factory: Callable[[], Awaitable[Any]]) -> Any:
+    """Run a simulator command on behalf of a human and surface failures.
+
+    Unlike act(), this ignores AUTOPILOT: a manual override is explicit human
+    intent, not an automated decision, so dry-run must not silently drop it.
+
+    It does translate a dead simulator into 502 + the reason. Without this the
+    operator gets a bare "Internal Server Error" from the httpx ConnectError
+    and no way to tell "the simulator is down" from "my click did nothing".
+    """
+    try:
+        return await coro_factory()
+    except Exception as exc:  # httpx.ConnectError, HTTP 4xx/5xx, timeouts
+        log.warning("operator command failed (%s): %s", description, exc)
+        state.log_activity(f"{description} FAILED: {type(exc).__name__}", level="error")
+        raise HTTPException(502, f"simulator command failed: {exc}") from exc
+
+
 @app.post("/api/manual/sync")
-async def manual_sync() -> dict[str, Any]:
-    counts = await sync_from_simulator()
+async def manual_sync(user: SessionInfo = Depends(auth.require_any(PERM_LOT_CONTROL, PERM_MAINTENANCE))) -> dict[str, Any]:
+    counts = await _operator_command(f"{user.username} triggered a sync", sync_from_simulator)
     return {"ok": True, **counts}
 
 
@@ -500,30 +723,44 @@ class ManualArrivalIn(BaseModel):
 
 
 @app.post("/api/manual/arrival")
-async def manual_arrival(body: ManualArrivalIn) -> dict[str, Any]:
+async def manual_arrival(body: ManualArrivalIn,
+                         user: SessionInfo = Depends(auth.require_permission(PERM_LOT_CONTROL))) -> dict[str, Any]:
     if body.gate not in state.spots:
         raise HTTPException(404, f"unknown gate/spot {body.gate}")
     return await dispatch_entry(body.plate, body.gate, body.car_type, body.dry_run)
 
 
 @app.post("/api/manual/barrier/{name}/open")
-async def manual_barrier_open(name: str) -> dict[str, Any]:
-    await client.barrier_open(name)
+async def manual_barrier_open(name: str,
+                              user: SessionInfo = Depends(auth.require_permission(PERM_LOT_CONTROL))) -> dict[str, Any]:
+    # Validate first: an operator typo should be a 404, not a command posted
+    # at the simulator for a barrier that does not exist.
+    if name not in state.barriers:
+        raise HTTPException(404, f"unknown barrier {name}")
+    await _operator_command(f"{user.username} opens barrier {name}",
+                            lambda: client.barrier_open(name))
     state.update_barrier_state(name, "Open")
-    state.log_activity(f"Operator opened barrier {name}")
+    state.log_activity(f"{user.username} opened barrier {name}")
     return {"ok": True, "name": name, "state": "Open"}
 
 
 @app.post("/api/manual/barrier/{name}/close")
-async def manual_barrier_close(name: str) -> dict[str, Any]:
-    await client.barrier_close(name)
+async def manual_barrier_close(name: str,
+                               user: SessionInfo = Depends(auth.require_permission(PERM_LOT_CONTROL))) -> dict[str, Any]:
+    # Validate first: an operator typo should be a 404, not a command posted
+    # at the simulator for a barrier that does not exist.
+    if name not in state.barriers:
+        raise HTTPException(404, f"unknown barrier {name}")
+    await _operator_command(f"{user.username} closes barrier {name}",
+                            lambda: client.barrier_close(name))
     state.update_barrier_state(name, "Closed")
-    state.log_activity(f"Operator closed barrier {name}")
+    state.log_activity(f"{user.username} closed barrier {name}")
     return {"ok": True, "name": name, "state": "Closed"}
 
 
 @app.post("/api/manual/repair/{name}")
-async def manual_repair(name: str) -> dict[str, Any]:
+async def manual_repair(name: str,
+                        user: SessionInfo = Depends(auth.require_permission(PERM_MAINTENANCE))) -> dict[str, Any]:
     component_type = (
         "ParkingSpot" if name in state.spots
         else "BarrierGate" if name in state.barriers
@@ -533,6 +770,7 @@ async def manual_repair(name: str) -> dict[str, Any]:
     if component_type is None:
         raise HTTPException(404, f"unknown component {name}")
     await _queue_repair(component_type, name)
+    state.log_activity(f"{user.username} queued repair for {name}")
     return {"ok": True, "name": name, "type": component_type, "queued": True}
 
 
@@ -585,11 +823,33 @@ async def api_dispatch(body: DispatchIn) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 # Live WebSocket feed (operator HUD + gate picker + split dashboard)
 # --------------------------------------------------------------------------- #
+def _ws_session(ws: WebSocket) -> Optional[SessionInfo]:
+    """The staff session behind a WebSocket, or None.
+
+    The live feed carries the whole snapshot - plates, sessions, penalties -
+    so leaving it open would hand an unauthenticated client everything the
+    REST endpoints above refuse them. Browsers attach cookies to the
+    WebSocket handshake, so the same session cookie works here.
+    """
+    return auth.sessions.get(ws.cookies.get(SESSION_COOKIE))
+
+
+async def _reject_ws(ws: WebSocket) -> None:
+    await ws.close(code=1008, reason="login required")
+
+
 @app.websocket("/ws/live")
 async def ws_live(ws: WebSocket):
-    await manager.connect(ws)
+    session = _ws_session(ws)
+    if session is None:
+        await ws.accept()
+        await _reject_ws(ws)
+        return
+    await manager.connect(ws, session.permissions)
     try:
-        await ws.send_json({"type": "hello", "server_time": time.time(), **state.snapshot()})
+        await ws.send_json(auth.filter_snapshot(
+            {"type": "hello", "server_time": time.time(), **state.snapshot()},
+            session.permissions))
         while True:
             await ws.receive_text()
     except WebSocketDisconnect:
@@ -603,9 +863,16 @@ async def ws_telemetry(ws: WebSocket):
     """Identical feed to /ws/live, named for the split dashboard's operator
     canvas + phone GPS view so both stay trivially in sync with each other
     and with the main HUD - they all share one ConnectionManager broadcast."""
-    await manager.connect(ws)
+    session = _ws_session(ws)
+    if session is None:
+        await ws.accept()
+        await _reject_ws(ws)
+        return
+    await manager.connect(ws, session.permissions)
     try:
-        await ws.send_json({"type": "hello", "server_time": time.time(), **state.snapshot()})
+        await ws.send_json(auth.filter_snapshot(
+            {"type": "hello", "server_time": time.time(), **state.snapshot()},
+            session.permissions))
         while True:
             await ws.receive_text()
     except WebSocketDisconnect:

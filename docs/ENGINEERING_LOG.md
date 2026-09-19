@@ -291,6 +291,141 @@ releasing` → `goto leavepark` → `201 Created`.
 data point available. It said "whole numbers get paid" long before any reasoning
 about tariffs did.
 
+### 4.9 The charge was right, then drifted wrong — we were billing the wrong clock
+
+**Symptom:** cars paid correctly for a while, then a stream of
+`Penalty_CarChargedWrongAmount`, each naming an amount we had not sent.
+
+**Diagnosis:** the penalty text carries the answer — `should be: (3)`. Parsing
+65 of them gave a clean split: planned 3 → wants `3.00` (26 cases), planned 4 →
+wants `4.00` (24 cases). Not one correction matched our measured duration.
+
+The simulator bills **`PlannedParkingDurationInMinutes`** — the duration the
+driver booked on arrival — not the time the car was actually in the bay. §4.8's
+rounding fix had been papering over this: at `GameSpeedMultiplier=1` a measured
+stay lands near the booked one, so rounding hid the mismatch. Raise the game
+speed and the two diverge, which is why it looked like a drift over time rather
+than a bug that was always there.
+
+**Fix:** bill the booked duration, keeping the measured clock as a fallback for
+cars whose plan we never saw (adopted cars, restarts):
+
+```
+BILLING_BASIS=planned     # planned | measured
+```
+
+`_planned_of(payload)` reads it off the arrival event; `compute_charge()`
+prefers it. `_apply_charge_correction()` parses `should be: (X)` out of a
+penalty and re-bills, so a wrong charge costs one fine instead of an escape.
+
+**Verified:** a full run finished with **0 penalties and 0 fines**.
+
+**Lesson:** the simulator was telling us the right answer in every rejection
+message. We were reading the penalties as a score, not as data.
+
+### 4.10 Two half-built dashboards, and a launcher pointing at the wrong one
+
+**Symptom:** "I'm still not on the new dashboard, it's still the old one."
+
+**Two independent causes**, which is why changing one did not help:
+
+1. `START.bat` opened `http://127.0.0.1:8080/` — the *older* operator HUD. The
+   split dashboard lives at `/dashboard`.
+2. The split dashboard was only half-wired. `split_dashboard.css` styled
+   `.phone-pane/.phone-frame/.phone-screen`, and `static/js/user_waze_gps.js`
+   defined `window.DriverPortal` — but `templates/dashboard.html` never loaded
+   that script, had none of the IDs it needed, and used `operator-pane-full`,
+   so the left pane took the whole width and the phone pane did not exist.
+
+**Fix:** launcher opens `/dashboard` (`/` is still served and still linked);
+template loads the script, carries the required IDs, and uses `operator-pane`.
+
+**Lesson:** "it looks the same" can be two bugs wearing one coat. The URL was
+the obvious suspect and fixing it alone would have changed nothing visible.
+
+### 4.11 Merging the auth branch: four bugs the merge itself surfaced
+
+Merging `feature/admin-operator-auth` (staff login + roles) was clean — two
+trivial conflicts — but reviewing and running it turned up four real problems.
+
+**a. The live WebSocket was wide open.** Every REST endpoint had been placed
+behind a login, but `/ws/live` and `/ws/telemetry` had not. They push the whole
+snapshot — plates, sessions, penalties — so anyone who could reach the port got
+everything the REST gates refused, by opening a socket. The auth was a front
+door on a building with no back wall.
+**Fix:** both sockets require a staff session (browsers send cookies on the
+handshake) and close `1008` without one. The page treats `1008` as "session
+expired" and reloads rather than reconnecting in a loop.
+
+**b. A duplicate dict key silently dropped the CO data.** The branch added
+`"zones": self.zone_occupancy()` to a snapshot literal that already had a
+`"zones"` key holding the CO/danger-level `Zone` objects. Python keeps the
+last one, so the air-quality data vanished from the snapshot with no error.
+Nothing consumed it yet, which is exactly why it would have been found late.
+**Fix:** the occupancy list is `zone_occupancy`; `zones` still carries CO.
+
+**c. Operator controls failed as a bare `500`.** The manual endpoints called
+the simulator directly, so an unreachable simulator surfaced as
+`Internal Server Error` with no reason — indistinguishable from "my click did
+nothing". Barrier names were not validated either, so a typo was posted to the
+simulator rather than refused.
+**Fix:** `_operator_command()` wraps them, logs the failure to the activity
+feed and returns `502` with the reason; unknown names are a `404`. It
+deliberately ignores `AUTOPILOT` — a manual override is explicit human intent,
+and dry-run must not silently swallow it.
+
+**d. `scripts/replay.py` polled an endpoint that never existed.** It read
+`/cars` to find the invoice; there is no such route and never was, so the check
+always failed and silently fell back to `1.0` — making the fraud-detection test
+weaker than it looked.
+**Fix:** it logs in as staff and reads `/api/state`, which now exposes
+`expected_amount` on live sessions (the dashboard needs that too — history only
+has the figure after the session is archived).
+
+### 4.12 Roles: four of them, and why they are permissions not role checks
+
+The brief asks for Admin and Operator; we were then asked for Accountant and
+Engineer as well, "and be ready to expand" for level 2.
+
+The branch's original shape was `if info.role != ROLE_ADMIN`. That works for
+two roles and quietly breaks for four: every such comparison has to be found
+and revisited each time a role is added, and the failure mode is a new role
+silently inheriting access nobody granted it.
+
+**What we did instead:** endpoints ask for a *permission*, never a role.
+
+| Permission | Admin | Operator | Accountant | Engineer |
+|---|---|---|---|---|
+| `lot.view` | yes | yes | — | yes |
+| `lot.control` | yes | yes | — | — |
+| `maintenance` | yes | — | — | yes |
+| `finance.view` | yes | — | yes | — |
+| `diagnostics.view` | yes | — | — | yes |
+| `history.view` | yes | yes | yes | yes |
+| `staff.manage` | yes | — | — | — |
+
+Admin is defined as `ALL_PERMISSIONS`, not a hand-listed set — so a permission
+added for level 2 is granted to Admin automatically instead of going stale.
+
+Adding a role is one row in `ROLE_PERMISSIONS` plus credentials in `.env`. No
+endpoint changes.
+
+**Three details worth keeping:**
+
+- **The snapshot is filtered too.** Denying an Accountant `/api/spots` means
+  nothing if `/api/state` and the WebSocket hand them the same spots.
+  `filter_snapshot()` drops keys the role's permissions do not cover, and the
+  broadcaster groups sockets by permission set so the filter runs once per
+  distinct role on screen, not once per connection.
+- **One console, panes gated in the template.** All four roles open `/admin`
+  and see only their panes. Four separate templates would drift apart.
+- **Login lands where the role can read.** An Accountant sent to the lot canvas
+  would bounce straight off a 403, so each role has a `home`.
+
+`authenticate()` compares every account even after a match, and encodes both
+sides before `compare_digest` — its `str` form raises `TypeError` on non-ASCII
+input, which would turn a junk username into a 500 instead of a failed login.
+
 ---
 
 ## 5. Edge cases and how they are handled
@@ -310,6 +445,11 @@ about tariffs did.
 | Simulator returns an unexpected shape | `detectedCars` accepts list or int |
 | Handler throws | Caught, recorded on the event row, returns `200` — a bad event must never kill the receiver |
 | Dry-run must not mutate state | Reservation rolled back when no command was sent |
+| Simulator unreachable during a manual click | `502` with the reason, logged to the activity feed — never a bare `500` |
+| Unknown component name from an operator | `404` before anything is sent to the simulator |
+| Staff session expires while a dashboard is open | WebSocket closes `1008`; the page reloads to the login instead of reconnect-looping |
+| A role reads a broad endpoint to get around a narrow one | `filter_snapshot()` strips keys their permissions do not cover, on REST and WebSocket alike |
+| Simulator bills a duration we did not measure | `should be: (X)` parsed out of the penalty and re-billed |
 
 ---
 
@@ -327,7 +467,10 @@ Everything lives in `.env` (see `.env.example`). The ones that matter:
 | `ELECTRIC_SPLIT_CHARGING` | `true` | Split the 2× across both fields |
 | `RESERVATION_TTL_S` | `120` | Expire promises to no-show cars |
 | `UNKNOWN_CAR_MINUTES` | `3.0` | Estimate for adopted cars |
+| `BILLING_BASIS` | `planned` | The simulator bills the booked duration (§4.9) |
 | `SEED_FROM_LEVEL` | `lvl1` | **Set empty for a scored run** |
+| `ADMIN_PASSWORD` etc. | `admin123` … | Demo defaults — change before a real deploy |
+| `SESSION_TTL_S` | `28800` | Staff session lifetime (8h) |
 
 Two traps worth knowing:
 
@@ -362,13 +505,17 @@ autopilot=True  signature_mode=observe
 `startup sync failed` or `running on SEEDED layout` means it is **not**
 connected to the real park — stop and fix before letting it run live.
 
-| Surface | URL |
-|---|---|
-| Operator HUD | `http://127.0.0.1:8080/` |
-| Mobile gate portal | `http://127.0.0.1:8080/gate` |
-| Health + counters | `http://127.0.0.1:8080/healthz` |
-| Session history | `http://127.0.0.1:8080/api/history` |
-| Signature calibration | `http://127.0.0.1:8080/api/signature-report` |
+| Surface | URL | Who |
+|---|---|---|
+| Split dashboard | `http://127.0.0.1:8080/dashboard` | `lot.view` |
+| Operator HUD | `http://127.0.0.1:8080/` | `lot.view` |
+| Staff console | `http://127.0.0.1:8080/admin` | any staff — panes by permission |
+| Sign-in | `http://127.0.0.1:8080/login` | — |
+| Mobile gate portal | `http://127.0.0.1:8080/gate` | **public, no login** |
+| Health + counters | `http://127.0.0.1:8080/healthz` | public |
+| Session history | `http://127.0.0.1:8080/api/history` | `history.view` |
+| Signature calibration | `http://127.0.0.1:8080/api/signature-report` | `diagnostics.view` |
+| Earnings + penalties | `http://127.0.0.1:8080/api/finance` | `finance.view` |
 
 Offline, with no simulator:
 
@@ -397,6 +544,12 @@ level 1 has none. Levels 2 and 3 do.
 onto a synthetic ring, so `S1` is "adjacent" to `S10`. The real road graph (63
 nodes, 62 directed edges) is exported to `data/graph.json`; a pathfinder writing
 `data/distances.json` is picked up automatically at startup.
+
+**Staff auth is demo-grade.** Sessions live in process memory, so a restart
+logs everyone out; passwords sit in `.env` rather than hashed in a database.
+That is the right trade for a single-process dispatcher and the wrong one for
+anything real. Replacing `staff_accounts()` is the whole job — every check
+downstream already goes through permissions, not usernames.
 
 **One entry gate is assumed.** `ENTRY_GATE=gateA` is a level-1 simplification.
 Level 2 has 3 entry spots, level 3 has 8.

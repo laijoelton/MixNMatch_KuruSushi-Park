@@ -575,6 +575,39 @@ class ParkingState:
                     counts[s.status.value] += 1
             return counts
 
+    def zone_occupancy(self) -> list[dict[str, Any]]:
+        """Occupied/free Park spots per zone, plus that zone's gate status -
+        so staff (and the dispatcher itself) can tell at a glance whether a
+        new car should be sent in or straight to leavepark."""
+        with self._lock:
+            zones: dict[str, dict[str, int]] = {}
+            for s in self.spots.values():
+                if s.purpose != "Park":
+                    continue
+                zone = s.zone_parent or "(none)"
+                bucket = zones.setdefault(zone, {"total": 0, "available": 0, "occupied": 0,
+                                                  "reserved": 0, "broken": 0})
+                bucket["total"] += 1
+                if s.status == SpotStatus.AVAILABLE:
+                    bucket["available"] += 1
+                elif s.status == SpotStatus.OCCUPIED:
+                    bucket["occupied"] += 1
+                elif s.status == SpotStatus.RESERVED:
+                    bucket["reserved"] += 1
+                else:
+                    bucket["broken"] += 1
+
+            gates_by_zone: dict[str, list[str]] = {}
+            for b in self.barriers.values():
+                gates_by_zone.setdefault(b.zone_parent or "(none)", []).append(
+                    f"{b.name}:{b.state.value}")
+
+            return [
+                {"zone": zone, **counts, "gates": gates_by_zone.get(zone, []),
+                 "full": counts["available"] == 0}
+                for zone, counts in sorted(zones.items())
+            ]
+
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             return {
@@ -603,12 +636,22 @@ class ParkingState:
                 "sessions": [
                     {"plate": s.plate, "entry_gate": s.entry_gate, "phase": s.phase.value,
                      "assigned_spot": s.assigned_spot, "exit_gate": s.exit_gate,
-                     "charged": s.charged, "paid": s.paid}
+                     "charged": s.charged, "paid": s.paid,
+                     # The live invoice, so the dashboard can show what a car
+                     # owes while it is still here - history only has it after
+                     # the session is archived.
+                     "expected_amount": s.expected_amount,
+                     "planned_minutes": s.planned_minutes,
+                     "car_type": s.car_type}
                     for s in self.sessions.values()
                 ],
                 "occupancy": {status.value: sum(1 for s in self.spots.values()
                                                 if s.purpose == "Park" and s.status == status)
                              for status in SpotStatus},
+                # NOT "zones" - that key already carries the CO/danger-level
+                # Zone objects, and a duplicate key in a dict literal silently
+                # discards the first one.
+                "zone_occupancy": self.zone_occupancy(),
                 "penalties": {"count": self.penalty_count, "total_fines": round(self.total_fines, 2),
                              "recent": list(self.penalty_log)[:20]},
                 "activity": list(self.activity_log)[:30],

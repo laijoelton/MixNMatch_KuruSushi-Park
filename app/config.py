@@ -105,6 +105,19 @@ class Settings:
     broadcast_interval_s: float
     webhook_debug: bool
 
+    # Staff auth. Never used for the public /gate driver portal - only for
+    # the staff consoles and the manual control endpoints behind them.
+    # Roles and what each one may do live in app/auth.py:ROLE_PERMISSIONS.
+    admin_username: str
+    admin_password: str
+    operator_username: str
+    operator_password: str
+    accountant_username: str
+    accountant_password: str
+    engineer_username: str
+    engineer_password: str
+    session_ttl_s: float
+
     @classmethod
     def from_env(cls) -> "Settings":
         return cls(
@@ -194,6 +207,17 @@ class Settings:
 
             broadcast_interval_s=_env_float("BROADCAST_INTERVAL_S", 1.0),
             webhook_debug=_env_bool("WEBHOOK_DEBUG", False),
+
+            # Demo-grade defaults - change these in .env before a real deploy.
+            admin_username=os.environ.get("ADMIN_USERNAME", "admin"),
+            admin_password=os.environ.get("ADMIN_PASSWORD", "admin123"),
+            operator_username=os.environ.get("OPERATOR_USERNAME", "operator"),
+            operator_password=os.environ.get("OPERATOR_PASSWORD", "operator123"),
+            accountant_username=os.environ.get("ACCOUNTANT_USERNAME", "accountant"),
+            accountant_password=os.environ.get("ACCOUNTANT_PASSWORD", "accountant123"),
+            engineer_username=os.environ.get("ENGINEER_USERNAME", "engineer"),
+            engineer_password=os.environ.get("ENGINEER_PASSWORD", "engineer123"),
+            session_ttl_s=_env_float("SESSION_TTL_S", 8 * 3600.0),
         )
 
 

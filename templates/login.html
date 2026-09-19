@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>KuruSushi-Park — Staff Login</title>
+  <link rel="stylesheet" href="/static/css/dashboard.css?v={{ asset_version }}" />
+  <style>
+    body.login-body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+    }
+    .login-card {
+      width: 340px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 28px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .login-card h1 {
+      font-size: 18px;
+      margin: 0 0 2px 0;
+    }
+    .login-card .subtitle {
+      color: var(--text-dim);
+      font-size: 12px;
+      margin-bottom: 6px;
+    }
+    .login-card .field-row {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+    .login-card label {
+      font-size: 11px;
+      color: var(--text-dim);
+    }
+    .login-error {
+      background: rgba(239, 91, 109, 0.12);
+      border: 1px solid var(--danger);
+      color: var(--danger);
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 12px;
+    }
+    .login-hint {
+      font-size: 11px;
+      color: var(--text-dim);
+      text-align: center;
+    }
+    /* A quiet key to the four roles, so whoever is demoing knows which
+       account shows which console without reading the source. */
+    .role-key {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px 14px;
+      font-size: 11px;
+      border-top: 1px solid var(--border);
+      padding-top: 12px;
+    }
+    .role-key div { display: flex; flex-direction: column; }
+    .role-key b { color: var(--text); font-size: 11px; }
+    .role-key span { color: var(--text-dim); font-size: 10px; }
+  </style>
+</head>
+<body class="login-body">
+  <form class="login-card" method="post" action="/login">
+    <div>
+      <h1>KuruSushi-Park</h1>
+      <div class="subtitle">Staff sign-in</div>
+    </div>
+
+    {% if error %}
+    <div class="login-error">Incorrect username or password.</div>
+    {% endif %}
+
+    <input type="hidden" name="next" value="{{ next }}" />
+
+    <div class="field-row">
+      <label for="username">Username</label>
+      <input id="username" name="username" type="text" autocomplete="username" required autofocus />
+    </div>
+    <div class="field-row">
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required />
+    </div>
+
+    <button type="submit">Sign in</button>
+
+    <div class="role-key">
+      <div><b>Admin</b><span>everything</span></div>
+      <div><b>Operator</b><span>gates + bays</span></div>
+      <div><b>Accountant</b><span>earnings + penalties</span></div>
+      <div><b>Engineer</b><span>logs + faults</span></div>
+    </div>
+
+    <div class="login-hint">Driver? Use the <a href="/gate">gate portal</a> instead — no login needed.</div>
+  </form>
+</body>
+</html>

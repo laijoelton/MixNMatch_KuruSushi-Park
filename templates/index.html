@@ -17,8 +17,17 @@
         </div>
       </div>
       <div class="row">
-        <button class="secondary" id="btn-sync">Manual Sync</button>
+        <span class="hint" style="align-self:center;">{{ user.username }} ({{ user.role }})</span>
+        {# Every staff role has a console; only the link text differs. #}
+        <a class="hint" href="/admin" style="align-self:center;">{{ user.role|capitalize }} console →</a>
+        <a class="hint" href="/dashboard" style="align-self:center;">Split canvas →</a>
         <a class="hint" href="/gate" style="align-self:center;">Open gate portal →</a>
+        {% if 'lot.control' in perms or 'maintenance' in perms %}
+        <button class="secondary" id="btn-sync">Manual Sync</button>
+        {% endif %}
+        <form method="post" action="/logout" style="display:inline;">
+          <button type="submit" class="secondary">Log out</button>
+        </form>
       </div>
     </div>
 
@@ -40,6 +49,7 @@
       </div>
 
       <div class="panel stack">
+        {% if 'lot.control' in perms %}
         <h2>Manual Controls</h2>
         <form id="form-arrival" class="controls-form wide">
           <input type="text" id="in-plate" placeholder="Plate (e.g. WCT759)" required />
@@ -52,6 +62,12 @@
           <button type="submit">Simulate Arrival / Dispatch</button>
         </form>
         <div class="hint" id="arrival-result"></div>
+        {% else %}
+        <h2>Read-only</h2>
+        <div class="hint">
+          Role <b>{{ user.role }}</b> can view the lot but not dispatch cars.
+        </div>
+        {% endif %}
 
         <h2 style="margin-top:8px;">Barriers</h2>
         <div class="list" id="barrier-list"></div>
@@ -59,6 +75,11 @@
         <h2 style="margin-top:8px;">Broken Components</h2>
         <div class="list" id="broken-list"></div>
       </div>
+    </div>
+
+    <div class="panel">
+      <h2>Occupancy by zone</h2>
+      <div class="list" id="zone-list"></div>
     </div>
 
     <div class="grid-two">
@@ -114,6 +135,7 @@
       });
 
       const gateSelect = document.getElementById("in-gate");
+      if (!gateSelect) return;   // read-only role: no dispatch form rendered
       const entryGates = (snap.spots || []).filter((s) => s.purpose === "EntrySpot").map((s) => s.name);
       const current = gateSelect.value;
       if (gateSelect.dataset.count != entryGates.length) {
@@ -127,6 +149,12 @@
         .concat((snap.fans || []).filter((f) => f.broken || f.under_maintenance));
       renderList(document.getElementById("broken-list"), brokenItems, {
         html: (c) => `<span>${c.name}</span><span class="badge broken">${c.broken ? "broken" : "maintenance"}</span>`,
+      });
+
+      renderList(document.getElementById("zone-list"), snap.zone_occupancy || [], {
+        cls: (z) => z.full ? "error" : "",
+        html: (z) => `<span>${z.zone}: ${z.available} free / ${z.total} (occ ${z.occupied}, resv ${z.reserved}, broken ${z.broken})</span>` +
+                     `<span class="badge ${z.full ? "occupied" : "available"}">${z.full ? "FULL" : "OK"}</span>`,
       });
 
       renderList(document.getElementById("activity-list"), snap.activity || [], {
@@ -144,20 +172,34 @@
       const proto = location.protocol === "https:" ? "wss" : "ws";
       ws = new WebSocket(`${proto}://${location.host}/ws/live`);
       ws.onopen = () => { statusDot.classList.add("live"); subtitle.textContent = "live"; };
-      ws.onclose = () => { statusDot.classList.remove("live"); subtitle.textContent = "disconnected — retrying…"; setTimeout(connect, 1500); };
+      ws.onclose = (evt) => {
+        statusDot.classList.remove("live");
+        if (evt.code === 1008) {   // server refused the handshake: no session
+          subtitle.textContent = "session expired — reloading";
+          setTimeout(() => location.reload(), 800);
+          return;
+        }
+        subtitle.textContent = "disconnected — retrying…";
+        setTimeout(connect, 1500);
+      };
       ws.onerror = () => ws.close();
       ws.onmessage = (evt) => applySnapshot(JSON.parse(evt.data));
     }
     connect();
 
-    document.getElementById("btn-sync").addEventListener("click", async () => {
+    const btnSync = document.getElementById("btn-sync");
+    if (btnSync) btnSync.addEventListener("click", async () => {
       const res = await fetch("/api/manual/sync", { method: "POST" });
-      const data = await res.json();
-      document.getElementById("arrival-result").textContent =
-        `Synced: ${data.spots} spots, ${data.barriers} barriers, ${data.zones} zones, ${data.fans} fans`;
+      const data = await res.json().catch(() => ({}));
+      const out = document.getElementById("arrival-result");
+      if (!out) return;
+      out.textContent = res.ok
+        ? `Synced: ${data.spots} spots, ${data.barriers} barriers, ${data.zones} zones, ${data.fans} fans`
+        : `Sync failed (${res.status}): ${data.detail || "unknown error"}`;
     });
 
-    document.getElementById("form-arrival").addEventListener("submit", async (e) => {
+    const formArrival = document.getElementById("form-arrival");
+    if (formArrival) formArrival.addEventListener("submit", async (e) => {
       e.preventDefault();
       const plate = document.getElementById("in-plate").value.trim();
       const gate = document.getElementById("in-gate").value;
