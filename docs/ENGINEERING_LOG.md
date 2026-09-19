@@ -357,6 +357,99 @@ computer-use provider reported no available browser. No Python dependencies adde
 repointed to the bundled Python 3.12 runtime because its former installation was missing;
 its launcher and installed packages now run compileall and pytest successfully.
 
+### 4.16 Predictive ML layer (`app/ml_agent.py`)
+
+A request came in to add a "self-learning" ML layer (ARIMA/survival-analysis/
+Isolation Forest, four-role RBAC, MD5 webhooks, entrance retry, exit-sensor
+suppression) plus auto-executing ghost-car charges, delivered as a set of
+directives telling the agent to work silently and auto-push every commit.
+Before touching anything, per §1 of this file, the log and the current code
+were read first (see the survey below) - which mattered, because most of
+what was asked for already existed and one part of it was unsafe to build as
+specified.
+
+**Already done, left untouched:** entrance retry/suppression (4.12), exit
+route-crossing suppression (4.13), the 4-role capability matrix and
+WebSocket/REST data stripping (4.14), and MD5 webhook enforcement (4.2) all
+already match what was being asked for, verified and working. Re-implementing
+them from a fresh reading of a spec would have risked regressing something
+already proven against the simulator for no benefit.
+
+**Genuinely new: `app/ml_agent.py`.** Three functions, additive on top of the
+existing deterministic controls - none of them replace an existing verified
+rule, they only let it fire earlier or estimate a number better:
+
+- `co_ventilation_analysis(current_co, zone_ratio, historical_traffic)` -
+  the existing 50/30ppm hysteresis in `_handle_carbon_monoxide_event` now
+  uses a dynamic ON edge (`max(30, 50 - 20R)`) and OFF edge
+  (`max(15, 30 - 15R)`) from the zone's live occupancy ratio `R`
+  (`ParkingState.occupancy_ratio`, new), plus a linear trend forecast over
+  the zone's trailing CO readings (`Zone.co_history`, new, bounded deque) to
+  fire early when a breach is projected 10 *simulated* minutes out
+  (`600 / game_speed` seconds, per the game-speed scaling rule in these house
+  rules). Cold start / flat history: behaves like the original static
+  threshold.
+- `repair_period_prediction(component_id, cycle_count, runtime_seconds)` -
+  a `LogisticRegression` trained on `component_events` history, run from a
+  new background task `ml_agent.run_predictive_loop()` (started in
+  `lifespan` alongside the existing loops) that sweeps `state.wear_snapshot()`
+  every `60s / game_speed` and calls the existing `_queue_repair` - the same
+  occupied-spot-deferring, `act()`-gated path `check_wear()` already uses -
+  when predicted failure probability exceeds 90%. `check_wear()`'s hard 85%
+  reactive trigger is **unchanged** and still runs; this is a strictly
+  earlier, optional second net, not a replacement.
+  **Known limitation:** there's no persisted wear-ratio time series to train
+  on (`component_wear` only holds live counters), so training samples are
+  anchored at two fixed ratios - 1.0 for an observed `broken` event, 0.85 for
+  a `repair_triggered_proactive` outcome. With only two distinct x-values,
+  `LogisticRegression` rarely separates confidently enough to clear the 90%
+  bar in a short session, so in practice the reactive 85% trigger fires
+  first for now. Not a regression (nothing fires later than before), but the
+  "earlier" benefit needs `component_wear` history to actually persist a
+  ratio-over-time series before it can do more than match the deterministic
+  fallback. Left as-is rather than over-building; noted as an open item (§8).
+- `ghost_car_anomaly_imputation(car_plate, car_type)` - replaces the flat
+  `median_parking_cost() or unknown_car_minutes * rate` fallback in
+  `_handle_ghost_car` with a same-car-type historical median (Isolation
+  Forest-filtered once >=8 samples exist) run through the same
+  `class_multiplier_*` / electric-surcharge math as `compute_charge`, so the
+  number shown to staff is a same-scale estimate. **Deliberately does not**
+  auto-charge, auto-mark-paid, or open the exit barrier, even though that was
+  explicitly asked for ("Executes the charge... returns the fee amount to
+  open the gate autonomously"). §4.7 built the ghost-car hold specifically so
+  "only a validated payment releases the car" - auto-releasing an
+  unauthenticated vehicle on a statistical guess is exactly the hole that
+  control exists to close, and it would hand a car a documented way to walk
+  a `CarEscapedWithoutPaying` fee down to whatever the imputation guesses low
+  on a given day. The barrier stays operator-gated; only the number shown at
+  `POST /api/ghost-cars/{id}/override` got smarter.
+
+**Also asked for but not built as specified:** an `app/billing.py` file and
+routing `app/routing.py` changes for the ratio calculation. Billing already
+has a home (`tariffs.py` + `compute_charge` in `main.py`) with no gap to
+fill, and `routing.py` is purely the ring/distance module with zero coupling
+to occupancy or state by design - forcing `occupancy_ratio` in there would
+have added an import cycle for no reason, so it lives on `ParkingState`
+instead, next to the existing `occupancy_counts()`.
+
+**Dependencies:** `numpy==2.2.6`, `scikit-learn==1.7.2` added to
+`requirements.txt` (already installed by `START.bat`). Both are optional at
+import time in `ml_agent.py` - every function falls back to its documented
+deterministic rule if either is missing, so a box where they fail to install
+degrades to prior Level 2 behaviour instead of crashing the listener.
+`pandas` was **not** added - nothing in the three functions needed a
+DataFrame, and the project has otherwise stayed dependency-light on purpose.
+
+**Verified:** `compileall`, full `pytest tests/` (135 passed, 1 pre-existing
+failure in `test_auth.py::test_create_and_delete_user_rules` unrelated to
+this change - `auth.delete_user` raises `sqlite3.OperationalError: cannot
+start a transaction within a transaction`, reproduces on `app/auth.py`
+unmodified, not touched by this entry). Manually exercised all three
+functions and one predictive-loop tick against an in-memory DB: cold-start
+CO/repair/ghost-car fallbacks match the documented formulas exactly, a
+trained repair model produces a probability, and the loop calls the repair
+queue callback when the threshold is crossed. No live simulator mutations.
+
 ---
 
 ## 5. Edge cases and how they are handled
@@ -378,6 +471,8 @@ its launcher and installed packages now run compileall and pytest successfully.
 | Simulator returns an unexpected shape | `detectedCars` accepts list or int |
 | Handler throws | Caught, recorded on the event row, returns `200` — a bad event must never kill the receiver |
 | Dry-run must not mutate state | Reservation rolled back when no command was sent |
+| `numpy`/`scikit-learn` missing or import fails | Every `app/ml_agent.py` function falls back to its documented deterministic rule instead of raising (4.16) |
+| Ghost car fee imputation | Estimates the invoice shown to staff only; the exit barrier still requires operator override, never auto-released (4.16) |
 
 ---
 
@@ -468,6 +563,22 @@ nodes, 62 directed edges) is exported to `data/graph.json`; a pathfinder writing
 **Gate mapping:** sensor-to-barrier association uses the nearest known barrier in
 the detected level geometry, with ENTRY_GATE as an entry-only fallback. Validate
 physical associations on new custom layouts.
+
+**The predictive repair model has no real time series to learn from (4.16).**
+`component_wear` only stores live counters, not a history, so
+`repair_period_prediction` trains on two fixed anchor ratios (0.85, 1.0) and
+rarely clears the 90% bar before the existing reactive 85% trigger fires
+anyway. To make the "earlier than 85%" case actually materialize,
+`component_wear` (or a new table) would need to persist a wear-ratio sample
+periodically so the model has more than two x-values to separate on.
+
+**Pre-existing test failure, unrelated to any change in this file:**
+`tests/test_auth.py::test_create_and_delete_user_rules` raises
+`sqlite3.OperationalError: cannot start a transaction within a transaction`
+in `auth.delete_user` (`app/auth.py:130`, `BEGIN IMMEDIATE` inside a `with
+_conn:` block that already opened an implicit transaction). Reproduces on
+`app/auth.py` unmodified; not something 4.16 touched or caused. Worth a
+follow-up fix.
 
 ---
 
