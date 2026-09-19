@@ -256,7 +256,10 @@ function predictiveAlertMessage(alert) {
   return null;
 }
 
+const MAX_NOTIFICATIONS = 20;
 let unreadCount = 0;
+const notifications = []; // most recent first: {message, time}
+
 function bumpUnread() {
   unreadCount += 1;
   const badge = document.getElementById("ml-bell-badge");
@@ -264,10 +267,33 @@ function bumpUnread() {
   badge.textContent = unreadCount > 99 ? "99+" : String(unreadCount);
 }
 
-document.getElementById("ml-bell-btn").addEventListener("click", () => {
+function pushNotification(message) {
+  notifications.unshift({ message, time: Date.now() });
+  notifications.length = Math.min(notifications.length, MAX_NOTIFICATIONS);
+  renderBellPopover();
+}
+
+function renderBellPopover() {
+  const list = document.getElementById("ml-bell-list");
+  if (!notifications.length) {
+    list.replaceChildren(h("div", { class: "bell-empty", text: "No notifications yet." }));
+    return;
+  }
+  list.replaceChildren(...notifications.map(n => h("div", { class: "bell-item" },
+    h("span", { text: n.message }),
+    h("span", { class: "time", text: new Date(n.time).toLocaleTimeString() }))));
+}
+
+renderBellPopover();
+const bellPopover = document.getElementById("ml-bell-popover");
+document.getElementById("ml-bell-btn").addEventListener("click", (event) => {
+  event.stopPropagation();
   unreadCount = 0;
   document.getElementById("ml-bell-badge").hidden = true;
-  location.href = "/ml-insights";
+  bellPopover.hidden = !bellPopover.hidden;
+});
+document.addEventListener("click", (event) => {
+  if (!bellPopover.hidden && !event.target.closest(".bell-wrap")) bellPopover.hidden = true;
 });
 
 document.addEventListener("keydown", (event) => {
@@ -281,6 +307,7 @@ window.addEventListener("park-alert", event => {
     const message = predictiveAlertMessage(alert);
     if (message) {
       toast(message, alert.alert_type === "GHOST_CAR_RESOLVED" ? "ok" : "warn", { dismissible: true, lifetimeMs: 15000 });
+      pushNotification(message);
       bumpUnread();
     }
     return;
