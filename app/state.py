@@ -127,6 +127,10 @@ class Zone:
     gas_co_level: float = 0.0
     risk: str = "Safe"
     danger_level: str = "Safe"
+    # Trailing (monotonic_timestamp, co_level) readings, for the predictive
+    # ventilation forecast in app.ml_agent. Bounded so a long-running level
+    # can't grow this unbounded; not a durable log (see db.py for that).
+    co_history: deque = field(default_factory=lambda: deque(maxlen=180))
 
 
 @dataclass
@@ -472,6 +476,23 @@ class ParkingState:
             zone = self.zones.setdefault(name, Zone(name=name))
             zone.gas_co_level = co_level
             zone.danger_level = danger_level
+            zone.co_history.append((time.monotonic(), co_level))
+
+    def co_history(self, zone_name: str) -> list[tuple[float, float]]:
+        """Trailing CO readings for a zone, oldest first. Empty if unknown."""
+        with self._lock:
+            zone = self.zones.get(zone_name)
+            return list(zone.co_history) if zone else []
+
+    def occupancy_ratio(self, zone_name: str) -> float:
+        """Fraction (0..1) of this zone's parking spots currently occupied."""
+        with self._lock:
+            spots = [s for s in self.spots.values()
+                     if s.zone_parent == zone_name and s.purpose == "Park"]
+            if not spots:
+                return 0.0
+            occupied = sum(1 for s in spots if s.status == SpotStatus.OCCUPIED)
+            return occupied / len(spots)
 
     def fans_in_zone(self, zone_name: str) -> list[str]:
         with self._lock:
