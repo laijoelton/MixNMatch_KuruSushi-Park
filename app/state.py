@@ -59,6 +59,10 @@ class Spot:
     under_maintenance: bool = False
     occupant_plate: Optional[str] = None
 
+    # When the spot was promised to a car, so a reservation for a car that
+    # never arrives can be swept instead of holding the spot forever.
+    reserved_at: Optional[float] = None
+
     @property
     def dispatchable(self) -> bool:
         return (
@@ -241,6 +245,30 @@ class ParkingState:
     # ------------------------------------------------------------------ #
     # Spot mutations
     # ------------------------------------------------------------------ #
+    def expire_stale_reservations(self, ttl_seconds: float) -> list[str]:
+        """Release reservations for cars that never turned up.
+
+        A reservation is a promise that a specific car is on its way. If the
+        car is neglected at the entry and drives off, or a dispatch command
+        fails, nothing else ever frees that spot -- and the lot slowly reports
+        itself full while standing empty. Sweeping here (rather than on a
+        timer) keeps it lazy and lock-free from the caller's point of view.
+        """
+        released: list[str] = []
+        cutoff = time.monotonic() - ttl_seconds
+        with self._lock:
+            for spot in self.spots.values():
+                if (
+                    spot.status == SpotStatus.RESERVED
+                    and spot.reserved_at is not None
+                    and spot.reserved_at < cutoff
+                ):
+                    spot.status = SpotStatus.AVAILABLE
+                    spot.occupant_plate = None
+                    spot.reserved_at = None
+                    released.append(spot.name)
+        return released
+
     def available_spots(self, car_type: str = "Any") -> list[str]:
         with self._lock:
             return [
@@ -255,7 +283,19 @@ class ParkingState:
                 return False
             spot.status = SpotStatus.RESERVED
             spot.occupant_plate = plate
+            spot.reserved_at = time.monotonic()
             return True
+
+    def release_reservation(self, spot_name: str, plate: str) -> None:
+        """Undo a reservation when the dispatch command did not actually go out."""
+        with self._lock:
+            spot = self.spots.get(spot_name)
+            if spot is None or spot.status != SpotStatus.RESERVED:
+                return
+            if spot.occupant_plate == plate:
+                spot.status = SpotStatus.AVAILABLE
+                spot.occupant_plate = None
+                spot.reserved_at = None
 
     def mark_spot_occupied(self, spot_name: str, plate: str) -> None:
         with self._lock:

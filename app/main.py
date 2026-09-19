@@ -29,6 +29,7 @@ from app import db
 from app.client import client
 from app.config import settings
 from app.routing import find_best_spot, has_distance_table, load_distance_table, ring
+from app.seed import load_level
 from app.signature import verify as verify_signature
 from app.state import SessionPhase, state
 
@@ -125,6 +126,21 @@ async def lifespan(app: FastAPI):
         # waiting for the simulator to start.
         log.error("startup sync failed (is the simulator running?): %s", exc)
         log.error("listener is up anyway - call POST /resync once the simulator is available")
+
+        # Offline development: fall back to the level file so the dispatcher
+        # has a park to reason about without the simulator running.
+        if settings.seed_from_level:
+            seeded = load_level(settings.seed_from_level)
+            if seeded:
+                state.load_spots(seeded["spots"])
+                state.load_barriers(seeded["barriers"])
+                state.load_zones(seeded["zones"])
+                state.load_fans(seeded["fans"])
+                ring.rebuild(list(state.spots.keys()) + list(state.barriers.keys()))
+                log.warning(
+                    "running on SEEDED layout from %s - not live simulator state",
+                    settings.seed_from_level,
+                )
 
     # Real driving distances from the C/C++ pathfinder, if it has produced them.
     if load_distance_table():
@@ -251,6 +267,12 @@ async def _dispatch_arrival(payload: dict[str, Any], plate: str, spot_name: str)
     car_type = payload.get("CarType", "Normal")
     state.start_session(plate, gate=spot_name, car_type=car_type)
 
+    # Sweep promises made to cars that never turned up, otherwise the lot
+    # reports itself full while standing empty.
+    freed = state.expire_stale_reservations(settings.reservation_ttl_s)
+    if freed:
+        log.info("released %d stale reservation(s): %s", len(freed), ", ".join(freed[:5]))
+
     candidate_type = "Electric" if car_type.strip().lower() == "electric" else "Any"
     candidates = state.available_spots(car_type=candidate_type)
     target = find_best_spot(spot_name, candidates)
@@ -268,8 +290,22 @@ async def _dispatch_arrival(payload: dict[str, Any], plate: str, spot_name: str)
             return
 
     state.assign_spot(plate, target)
-    await act(f"open {settings.entry_gate} for {plate}", lambda: client.barrier_open(settings.entry_gate))
-    await act(f"car {plate} -> {target}", lambda: client.car_goto(plate, target))
+    await act(
+        f"open {settings.entry_gate} for {plate}",
+        lambda: client.barrier_open(settings.entry_gate),
+    )
+    dispatched = await act(
+        f"car {plate} -> {target}", lambda: client.car_goto(plate, target)
+    )
+
+    if not dispatched:
+        # The command was skipped (dry-run) or failed. Holding the reservation
+        # would leak the spot, since the car will never arrive to claim it.
+        state.release_reservation(target, plate)
+        state.complete_session(plate)
+        log.info("would dispatch %s from %s to %s (reservation released)", plate, spot_name, target)
+        return
+
     log.info("dispatched %s from %s to %s", plate, spot_name, target)
 
 

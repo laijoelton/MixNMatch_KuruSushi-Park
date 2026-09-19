@@ -41,6 +41,8 @@ class Settings:
     database_path: str
     entry_gate: str
     co_fan_on_threshold: float
+    reservation_ttl_s: float
+    seed_from_level: str
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -76,6 +78,15 @@ class Settings:
             database_path=os.environ.get("DATABASE_PATH", "data/park.db"),
             entry_gate=os.environ.get("ENTRY_GATE", "gateA"),
             co_fan_on_threshold=_env_float("CO_FAN_ON_THRESHOLD", 50.0),
+
+            # How long a spot stays promised to a car that has not arrived.
+            # Cars that are neglected at the entry drive off, and their
+            # reservation must not hold the spot forever.
+            reservation_ttl_s=_env_float("RESERVATION_TTL_S", 120.0),
+
+            # Offline dev only: load the park from settings/<level>.json when
+            # the simulator is not running. Empty disables it.
+            seed_from_level=os.environ.get("SEED_FROM_LEVEL", "lvl1"),
         )
 
 
