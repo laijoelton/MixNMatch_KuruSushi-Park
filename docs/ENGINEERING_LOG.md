@@ -1289,6 +1289,66 @@ Full suite: **258 passed**.
 **Verification:** full suite on the merged tree: **258 passed**. Two simdev tests
 had stubbed main's old return types, a number, and were updated to the dicts.
 
+### 4.37 Entry gates can stay open between streams: `GATE_HOLD_OPEN` (20 September 2026)
+
+**Requirement:** no penalty in the simulator's published list punishes leaving a
+gate open. Closing a zone's entry gate after every stream and reopening it for
+the next car is therefore pure avoidable cost: a wear cycle per open/close pair
+(4.28 counts these toward the repair rotation) plus the `GATE_OPEN_WAIT_S` stall
+before the next goto can be sent. Exit gates are the opposite: gate2/4/6 are the
+`Penalty_CarEscapedWithoutPaying` interlock and must never be held open.
+
+**Stale comment noticed along the way:** `app/config.py`'s gate block comment
+("Gates: every gate starts closed and zone gates open per car. The main gate is
+left to the operator...") already undersold the real behaviour before this
+change — 4.21 and 4.32 made a zone's entry gate stay open for an entire stream
+of cars, not open-close per single car. It is now more incomplete still: it
+says nothing about a gate staying open across streams too when
+`GATE_HOLD_OPEN=true`. Left as-is: this task's `app/config.py` edit is scoped to
+adding the new field beside `gate_close_delay_s`, not rewriting the surrounding
+comment. Flagging per this file's "correct stale text, do not leave two
+versions of the truth" rule — a follow-up should reword it.
+
+**Fix:**
+- `gate_hold_open: bool` in `Settings` (`app/config.py`), read from
+  `GATE_HOLD_OPEN` via the existing `_env_bool` helper. Default `false`, so
+  every existing gate test is unaffected unless it opts in.
+- `_close_idle_gates` (`app/main.py:274`) builds `held_entries`: when
+  `settings.gate_hold_open` is true, it walks `_all_zones()` (the zones with at
+  least one gate registered — already used by `_schedule_gate_repairs` at
+  `app/main.py:413` to rotate maintenance) and resolves each one's entry gate
+  with `_zone_entry_gate(zone, None)` (the same helper `_entry_gate_for_session`
+  uses at `app/main.py:251-253`, passing `None` for the sensor argument since
+  there is no specific car/sensor in this context — `zones.entry_gate_for_zone`
+  resolves every Level 2 zone's entry gate from its `zone_parent` tag before
+  ever falling back to the sensor). A zone's entry gate is added to
+  `held_entries` unless that zone is draining (present in
+  `state.zone_maintenance`): a zone under repair needs its gate shut so the
+  gate itself can be repaired, and operating a component under maintenance is
+  itself a penalty. `held_entries` only ever contains entry gates, so exit gates
+  (gate2/4/6) are untouched and close exactly as before.
+
+**Verification:**
+- `tests/test_gate_hold_open.py` (4 new tests, TDD): entry gate stays open while
+  holding; still closes when not holding (the default); exit gate always closes
+  even while holding; a draining zone's entry gate still closes while holding.
+  RED first — `TypeError: Settings.__init__() got an unexpected keyword
+  argument 'gate_hold_open'` — then GREEN after the `app/config.py` and
+  `app/main.py` changes.
+- The shared `lvl2` fixture moved from `tests/test_zone_gates.py` into
+  `tests/conftest.py` unchanged, so `test_gate_hold_open.py` can use it too.
+  `tests/test_zone_gates.py` re-run immediately after the move, before any new
+  code was written: all of its tests passed, unaffected. (That file has 37
+  tests, not the 39 this task's brief assumed — recounted directly with
+  `pytest --collect-only`; every one still passes both before and after this
+  change, since they all run with `gate_hold_open` defaulting to `false`.)
+- Full suite: **270 passed** (266 + 4 new), same 2 pre-existing
+  starlette/anyio deprecation warnings as before this change.
+- Not yet done: the live-simulator check from the plan (`GATE_HOLD_OPEN=true`,
+  `AUTOPILOT=true`, watch a full stream, confirm no car enters a zone without a
+  `goto` and no penalty webhook arrives). Automated tests cannot prove that; do
+  it before enabling the flag for a judged run.
+
 ---
 
 ## 5. Edge cases and how they are handled
@@ -1348,6 +1408,7 @@ Everything lives in `.env` (see `.env.example`). The ones that matter:
 | `SIMULATOR_LOG` | `data/simulator.log` | Simulator console captured by START.bat; its `Load Game` line triggers the level reset (4.19). Empty disables it |
 | `MAIN_GATE` | `gate7` | Operator-only gate; never opened or closed automatically (4.18) |
 | `GATE_CLOSE_DELAY_S` | `3.0` | Simulated seconds after `ExitSpot/CarOut` before the exit gate closes (4.18) |
+| `GATE_HOLD_OPEN` | `false` | **Keep false until live-verified.** When true, zone entry gates stay open between streams instead of closing and reopening; no published penalty punishes an open gate. Exit gates are never held — they guard `Penalty_CarEscapedWithoutPaying` (4.37) |
 
 Two traps worth knowing:
 

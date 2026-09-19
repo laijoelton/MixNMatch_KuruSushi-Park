@@ -273,8 +273,16 @@ def _gates_in_use() -> set[str]:
 
 async def _close_idle_gates(*, include_main: bool = False) -> None:
     in_use = _gates_in_use()
+    draining = {info.get("entry") for info in state.zone_maintenance.values()}
+    held_entries: set[str] = set()
+    if settings.gate_hold_open:
+        for zone in _all_zones():
+            entry = _zone_entry_gate(zone, None)
+            if entry and entry not in draining:
+                held_entries.add(entry)
     for name, barrier in list(state.barriers.items()):
-        if (name in in_use or (name == settings.main_gate and not include_main) or barrier.operator_open
+        if (name in in_use or name in held_entries
+                or (name == settings.main_gate and not include_main) or barrier.operator_open
                 or barrier.state not in (BarrierPosition.OPEN, BarrierPosition.OPENING)
                 or barrier.broken or barrier.under_maintenance or name in state.pending_repairs):
             continue

@@ -104,6 +104,10 @@ class Settings:
     # leaves the exit sensor, since no sensor reports it clearing the gate.
     main_gate: str
     gate_close_delay_s: float
+    # Entry gates stay open between streams. No penalty punishes an open gate,
+    # and every open/close pair is a wear cycle plus a GATE_OPEN_WAIT_S stall.
+    # Exit gates are never held: they are the CarEscapedWithoutPaying interlock.
+    gate_hold_open: bool
     # Send a car to its zone's entry sensor first and open that zone's gate
     # only when it is waiting there, instead of opening it at ENTRY1.
     zone_gate_at_sensor: bool
@@ -251,6 +255,7 @@ class Settings:
             exit_charge_delay_s=_env_float("EXIT_CHARGE_DELAY_S", 2.0),
             main_gate=os.environ.get("MAIN_GATE", "gate7").strip(),
             gate_close_delay_s=_env_float("GATE_CLOSE_DELAY_S", 3.0),
+            gate_hold_open=_env_bool("GATE_HOLD_OPEN", False),
             zone_gate_at_sensor=_env_bool("ZONE_GATE_AT_SENSOR", False),
             entry_gate_close_delay_s=_env_float("ENTRY_GATE_CLOSE_DELAY_S", 1.5),
             simulator_log=os.environ.get("SIMULATOR_LOG", "data/simulator.log").strip(),
