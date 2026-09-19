@@ -27,11 +27,12 @@ class Settings:
     max_processed_events: int
     parking_rate_per_minute: float
     minimum_charge: float
+    broadcast_interval_s: float
 
     @classmethod
     def from_env(cls) -> "Settings":
         return cls(
-            simulator_base_url=os.environ.get("SIMULATOR_BASE_URL", "http://127.0.0.1:5000").rstrip("/"),
+            simulator_base_url=os.environ.get("SIMULATOR_BASE_URL", "http://127.0.0.1:9898").rstrip("/"),
             simulator_email=os.environ.get("SIMULATOR_EMAIL", ""),
             simulator_password=os.environ.get("SIMULATOR_PASSWORD", ""),
             webhook_secret=os.environ.get("WEBHOOK_SECRET", ""),
@@ -41,6 +42,7 @@ class Settings:
             max_processed_events=_env_int("MAX_PROCESSED_EVENTS", 5000),
             parking_rate_per_minute=_env_float("PARKING_RATE_PER_MINUTE", 0.20),
             minimum_charge=_env_float("MINIMUM_CHARGE", 1.00),
+            broadcast_interval_s=_env_float("BROADCAST_INTERVAL_S", 1.0),
         )
 
 
