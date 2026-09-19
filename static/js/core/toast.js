@@ -16,7 +16,8 @@ export function toast(message, kind = "info", { dismissible = false, lifetimeMs 
     dismissible ? h("button", { class: "toast-close", type: "button", "aria-label": "Dismiss", text: "✕", onclick: remove }) : null);
   host.append(el);
   while (host.children.length > 4) host.firstChild.remove();
-  setTimeout(remove, lifetimeMs ?? LIFETIME_MS[kind] ?? 4000);
+  // lifetimeMs: 0 = stays until the user closes it (e.g. a fake payment awaiting a decision).
+  if (lifetimeMs !== 0) setTimeout(remove, lifetimeMs ?? LIFETIME_MS[kind] ?? 4000);
 }
 
 // Promise-based confirm dialog for actions with side effects.

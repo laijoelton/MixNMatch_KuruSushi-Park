@@ -264,8 +264,11 @@ def _gates_in_use() -> set[str]:
     parks, and its exit gate from payment until it has left the facility."""
     used: set[Optional[str]] = set(_holding_gate.values())
     for session in list(state.sessions.values()):
-        if session.phase == SessionPhase.ASSIGNED and session.parked_at is None and not session.passed_zone_gate:
-            used.add(_entry_gate_for_session(session))   # a stream keeps its gate open (4.32)
+        if (session.phase == SessionPhase.ASSIGNED and session.parked_at is None and not session.passed_zone_gate
+                and (session.reached_zone or not settings.zone_gate_close_while_driving)):
+            # 4.32: a car still to go through keeps its gate open. With the 4.37
+            # experiment only a car already at its zone's sensor does.
+            used.add(_entry_gate_for_session(session))
         if session.paid and session.exit_gate:
             used.add(_barrier_for_sensor(session.exit_gate))
     return {name for name in used if name}
@@ -1004,8 +1007,9 @@ async def dispatch_entry(plate: str, gate_name: str, car_type: str = "Normal",
         session = state.start_session(plate, gate=gate_name, car_type=car_type,
                                       planned_minutes=planned_minutes)
     state.assign_spot(plate, target)
-    if _barrier_for_sensor(gate_name) == _entry_gate_for_session(session):
-        session.reached_zone = True   # e.g. a ZONE1 car: ENTRY1 is its zone's own sensor
+    zone_gate = _entry_gate_for_session(session)
+    if zone_gate is None or _barrier_for_sensor(gate_name) == zone_gate:
+        session.reached_zone = True   # e.g. a ZONE1 car: ENTRY1 is its zone's own sensor; no gates: nothing to wait for
     _left_entry.discard(plate)
     _waiting_at.pop(plate, None)
     _holding_gate.pop(plate, None)
@@ -1607,6 +1611,8 @@ async def simulator_webhook(request: Request) -> JSONResponse:
         reason = "no recipe matched the provided signature" if signature else "signature missing"
         db.record_unsigned_webhook(payload.get("EventId"), reason, payload)
         log.warning("webhook rejected (enforce mode): %s (EventId=%s)", reason, payload.get("EventId"))
+        if payload.get("EventClass") == "payment_made":
+            await _flag_forged_payment(payload)
         raise HTTPException(status_code=401, detail="invalid webhook signature")
 
     # Persist first: EventId is the table's primary key, so a redelivery is
@@ -1780,8 +1786,18 @@ async def _handle_car_spot_action(payload: dict[str, Any]) -> None:
         _retire_previous_visit(plate)
     if spot_type == "EntrySpot" and direction == "CarIn" and plate in state.active_dispatches:
         session = state.get_session(plate)
-        if session is not None and _barrier_for_sensor(spot_name) == _entry_gate_for_session(session):
+        zone_gate = _entry_gate_for_session(session) if session is not None else None
+        if zone_gate and _barrier_for_sensor(spot_name) == zone_gate:
             session.reached_zone = True   # at its own zone's sensor: that zone lights up
+            if (settings.zone_gate_close_while_driving and spot_name != session.entry_gate
+                    and session.phase == SessionPhase.ASSIGNED and not session.passed_zone_gate):
+                # 4.37: reopen the zone gate for this car and send it on from here.
+                _waiting_at[plate] = spot_name
+                _left_entry.discard(plate)
+                session.entry_departed = False
+                _persist(plate)
+                _start_dispatch_retry(plate, session.assigned_spot, sensor=spot_name)
+                return
         if session is not None and session.staged_via == spot_name and session.phase == SessionPhase.ASSIGNED:
             # The car has reached its zone's own sensor and is waiting at the
             # closed zone gate: open it now and send the car on to its bay.
@@ -1812,6 +1828,12 @@ async def _handle_car_spot_action(payload: dict[str, Any]) -> None:
                 _holding_gate.pop(plate, None)
                 _spawn(_close_idle_gates_later(settings.entry_gate_close_delay_s))
             elif _holding_gate.get(plate) and _holding_gate[plate] == _barrier_for_sensor(spot_name):
+                _holding_gate.pop(plate, None)
+                _spawn(_close_idle_gates_later(settings.entry_gate_close_delay_s))
+            elif (settings.zone_gate_close_while_driving and spot_name == session.entry_gate
+                  and _holding_gate.get(plate) == _entry_gate_for_session(session)):
+                # 4.37: the route is planned; shut the zone gate while the car
+                # drives down. It reopens when the car reaches its zone sensor.
                 _holding_gate.pop(plate, None)
                 _spawn(_close_idle_gates_later(settings.entry_gate_close_delay_s))
         return
@@ -1913,6 +1935,7 @@ def _archive(plate: str) -> None:
         "payment_ok": 1 if session.paid else 0 if session.payment_suspect else None,
     })
     state.complete_session(plate)
+    state.fake_payments.discard(plate)
     _left_entry.discard(plate)
     _waiting_at.pop(plate, None)
     _holding_gate.pop(plate, None)
@@ -1960,6 +1983,32 @@ async def _charge_at_exit(plate: str, spot_name: str) -> None:
                      lambda: client.car_charge(plate, parking, charging))
     state.log_activity(f"Invoice {'sent' if sent else 'attempt failed; staff review required'} for {plate}: {session.expected_amount:.2f}",
                        capability="logs:view_fin")
+
+
+
+async def _flag_forged_payment(payload: dict[str, Any]) -> None:
+    """A payment_made whose signature failed (4.38). The simulator's fake
+    payers send exactly this after we bill them; the car never really pays and
+    leaves as "escaped" once bored. The webhook is untrusted, so it may only
+    make us more careful: for a car we billed at an exit, hold it there and
+    tell staff. It never marks a car paid and never releases one."""
+    plate = str(payload.get("CarPlateNumber") or "")
+    session = state.get_session(plate)
+    if session is None or not session.exit_gate or not session.charge_attempted or session.paid:
+        return
+    session.payment_suspect = True
+    _persist(plate)
+    await _hold_exit(plate, session.exit_gate)
+    if plate in state.fake_payments:
+        return
+    state.fake_payments.add(plate)
+    state.log_activity(f"FAKE PAYMENT from {plate} at {session.exit_gate} (forged signature) - held for staff",
+                       level="error", capability="logs:view_fin")
+    try:
+        await manager.broadcast({"type": "alert", "alert_type": "FAKE_PAYMENT", "plate": plate,
+                                 "gate": session.exit_gate, "server_time": time.time()})
+    except Exception:  # noqa: BLE001 - the hold must stand even if the notice fails
+        log.exception("fake-payment broadcast failed for %s", plate)
 
 
 async def _hold_exit(plate: str, sensor: str) -> None:
@@ -2276,10 +2325,14 @@ async def _handle_payment_made(payload: dict[str, Any]) -> None:
         return
 
     if session.ghost_id:
-        state.log_activity(f"Ghost car {plate} paid ({amount:.2f}) - waiting for staff to release it",
-                           capability="logs:view_fin")
+        # 4.38: billed with the ML fee and paid - let it go, and tell staff.
+        state.log_activity(f"Ghost car {plate} paid ({amount:.2f}) - releasing", capability="logs:view_fin")
+        session.release_authorized = True
+        db.resolve_ghost_car(session.ghost_id, "paid")
         _persist(plate)
-        await _broadcast_ghost(session.ghost_id, plate, session.exit_gate)
+        await _broadcast_ghost(session.ghost_id, plate, session.exit_gate, resolved=True,
+                               fallback_charge=session.expected_amount)
+        await _release_paid(session)
         return
     state.log_activity(f"Payment accepted for {plate} ({amount:.2f}) - releasing", capability="logs:view_fin")
     _persist(plate)

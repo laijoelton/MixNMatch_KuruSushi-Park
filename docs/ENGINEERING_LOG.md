@@ -1289,6 +1289,103 @@ Full suite: **258 passed**.
 **Verification:** full suite on the merged tree: **258 passed**. Two simdev tests
 had stubbed main's old return types, a number, and were updated to the dicts.
 
+### 4.37 Experiment: shut a zone gate while its car drives, reopen at the zone sensor (20 September 2026)
+
+**Symptom:** gate5 (ENTRY3) looked "always open".
+
+**Evidence:** gate5 opened and closed correctly for every ZONE3 car; the
+simulator log shows open at line 882, close at 3274, open at 3940. But ZONE3 was
+receiving a car about every 14 s (20:14:34, 20:15:02, 20:15:16 …), and each car
+needs the gate open for about 15–16 s, from dispatch at ENTRY1 until it drives
+through. The route is planned at goto time (4.20, 4.27). So under 4.32's stream
+rule the gate could not close between cars. The 11-minute "open" at 20:03:29 was
+a ZONE3 car (VLK 172) caught mid-way when the run was stopped.
+
+**Change** (`ZONE_GATE_CLOSE_WHILE_DRIVING`, default **true**, experiment):
+1. At dispatch: open the zone gate, wait for `Open`, goto. The route is planned.
+2. When the car leaves ENTRY1 (`CarOut` at its dispatch sensor): release its hold
+   and close the zone gate `ENTRY_GATE_CLOSE_DELAY_S` later. A car on the road no
+   longer holds its zone gate (`_gates_in_use`); only a car already at the zone
+   sensor does.
+3. At that zone's sensor (`CarIn` at ENTRY2/3, `reached_zone`): start a leg from
+   there (`_waiting_at`, `_start_dispatch_retry(sensor=…)`). It reopens the gate,
+   waits for `Open` and re-sends the goto. A car the simulator paused at the
+   barrier continues; one still moving ignores it ("not waiting at the entrance").
+4. On `CarOut` at the zone sensor: passed, so close as before.
+
+ZONE1 cars are unaffected, because ENTRY1 is their own sensor.
+
+**Found on the way:** the zone-sensor check compared `None == None` when no
+gates are known, so a gateless setup counted every sensor as "the car's zone
+sensor". It now requires a real gate, which also fixes 4.31's lighting check.
+
+**Not verified live:** whether the simulator lets a car wait at a closed barrier.
+If cars get stuck before ZONE2/ZONE3 gates, set `ZONE_GATE_CLOSE_WHILE_DRIVING=false`
+and the 4.32 stream behaviour returns. Costs about two gate cycles per ZONE2/3
+car, so gate repairs come more often.
+
+**Verification:**
+- gate5 opens at dispatch, closes after ENTRY1, is untouched at ENTRY2, and
+  reopens with a resend at ENTRY3;
+- a car waiting at ENTRY3 keeps the gate open;
+- ZONE1 is unchanged;
+- the two 4.32 tests now pin the switch off.
+
+Full suite: **261 passed**.
+
+### 4.38 "Ghost car" escapes were the simulator's fake payers; staff were never told (20 September 2026)
+
+**Symptom:** cars at the exit left without paying and drew "Car escaped without
+paying". It looked like the ghost-car path failing to bill.
+
+**Evidence:** all **5 of 5** escapes in the run (WTA 631, TJF 962, LXP 592, RBR 351,
+RWB 244) were ordinary cars, scanned at ENTRY1 and parked, and **all were
+billed**. Each time the simulator log shows, right after our `charge`:
+
+    [WARN] Car (TJF 962) will generated a fake payment.
+    Won't Register profit for car: (TJF 962) because genValidPayment is false.
+    [WARN] Computing incorrect signature
+    Received response from webhook: ({"detail":"invalid webhook signature"})
+
+Our webhook correctly refused the forged payment (401). But that happens before
+`_handle_payment_made`, so no suspect hold and no dashboard notice followed. The
+car never really paid, waited about 2.5 min, took the escape route, and was
+fined. The ghost-car records themselves were all from earlier runs, resolved on
+level reload.
+
+**Fix:**
+- `_flag_forged_payment` runs on a signature failure for a `payment_made`, and
+  only for a car we billed that is waiting at an exit. It holds the car, marks it
+  `payment_suspect`, and records the plate once in `state.fake_payments`.
+  - It never marks paid and never releases, because the webhook is untrusted.
+  - It then logs an error and broadcasts `FAKE_PAYMENT`. The webhook still
+    returns 401.
+- The dashboard shows it to **admins and operators alike**:
+  - a toast and bell entry that **stays until closed** (`toast` now treats
+    `lifetimeMs: 0` as "until dismissed");
+  - the orange gate ring;
+  - "FAK 001 (fake payment) at gate6" under Needs attention.
+
+  Staff press **Open** to let the car go, or keep it held. Other held cars are
+  labelled `ghost car`, `payment did not match the bill` or `awaiting clearance`.
+- **Ghost cars** (never scanned at entry): still billed automatically with the ML
+  fee, and now **released automatically once they pay**, with the ghost event
+  resolved and a "resolved" toast. Staff release (4.33) remains for an unpaid one.
+
+**Limits:** a fake payer cannot be made to pay. Billing it again risks
+`ChargeCarForParkingTwice`. If it is held until it gets bored and escapes, the
+simulator fines the escape anyway. What this adds is visibility and a staff
+decision.
+
+**Verification:**
+- a forged payment for a billed car holds it with the "fake payment" note;
+- one for a car we never billed is ignored;
+- through the real webhook endpoint it is still a 401, but flagged;
+- a paying ghost car is released, gate open before `leavepark`, and resolved.
+
+The sprint ghost test was updated to the auto-release rule. Full suite: **264
+passed**.
+
 ---
 
 ## 5. Edge cases and how they are handled
@@ -1314,7 +1411,8 @@ had stubbed main's old return types, a number, and were updated to the dicts.
 | A plate returns (plates are recycled from `settings/plates.txt`) | EntrySpot `CarIn` for a session that already parked/exited/was billed archives it and starts a fresh visit; a car still driving to its bay keeps its session (4.19) |
 | A level is (re)loaded in the simulator | Console `Load Game` line → previous level's live sessions, holds and model dropped, one sync, all gates closed (4.19) |
 | A zone gate needs repair (broken or preventive) | One zone in maintenance at a time, in rotation: closed to new cars for the first repair (the repaired gate is closed outright), back on automatic as soon as the second gate's repair starts. A gate breaking in another zone is repaired first but does not close its zone (4.26, 4.32, 4.34) |
-| A car reaches an exit without an entry scan (unknown, or appeared in a bay) | Ghost car: exit held, billed automatically with the ML fee; the gate is ringed orange and staff press Open on it to let the car out (4.25, 4.33) |
+| A car reaches an exit without an entry scan (unknown, or appeared in a bay) | Ghost car: exit held and billed automatically with the ML fee; released automatically once it pays, with a notice; staff can also press Open on the orange-ringed gate (4.25, 4.33, 4.38) |
+| A payment arrives with a forged signature (the simulator's fake payers) | Still rejected (401). If it is for a car we billed at an exit, that car is held, its gate ringed orange, and a notice that stays until closed goes to admins and operators; staff Open or keep it held. Never marks paid or releases (4.38) |
 | Staff open or close a gate from the dashboard | Staff win: the gate is held open or held closed until staff press Automatic. The automation (idle close, rotation, exit holds) never moves it, and a queued repair is cancelled. Only a broken gate or one under repair refuses (4.33) |
 | Admin clears a page's records (red dustbin on History / Payments / Penalties) | `DELETE /api/admin/data/{history,payments,penalties}`, gated by the admin-only `admin:reset` capability (other roles get `403`; the icon is hidden via `data-cap`). History deletes `sessions` + `neglected_vehicles`; Payments deletes `payments`; Penalties deletes `penalties` and zeroes the in-memory fine counters. `active_sessions`/live sessions are never touched — clearing them mid-run would lose billing state and cause `CarEscapedWithoutPaying`. `events` is never touched — it is the `EventId` de-duplication record. Every clear is written to the audit log with the row count |
 | `numpy`/`scikit-learn` missing or import fails | Every `app/ml_agent.py` function falls back to its documented deterministic rule instead of raising (4.22) |
@@ -1344,6 +1442,7 @@ Everything lives in `.env` (see `.env.example`). The ones that matter:
 | `GATE_REPAIR_MIN_OPENS` | `1` | Zones are maintained in rotation, one at a time; a zone whose gates have fewer opens than this since repair is skipped (4.28, 4.32) |
 | `LIGHT_HOLD_S` | `0` | At night a zone stays lit this many simulated seconds after its last moving car; 0 = dark as soon as it parks (4.29, 4.30) |
 | `SPOT_PREVENTIVE_PARKS` | `9` | Preventive bay repair after this many parks since the last repair; bays broke after 13-19 (4.24) |
+| `ZONE_GATE_CLOSE_WHILE_DRIVING` | `true` | Experiment: shut a ZONE2/3 gate while its car drives, reopen at the zone sensor; false = 4.32 stream behaviour (4.37) |
 | `ZONE_GATE_AT_SENSOR` | `false` | **Keep false.** When true, ZONE2/3 cars are sent to their zone sensor first, which the simulator treats as parking there (4.20, 4.27) |
 | `SIMULATOR_LOG` | `data/simulator.log` | Simulator console captured by START.bat; its `Load Game` line triggers the level reset (4.19). Empty disables it |
 | `MAIN_GATE` | `gate7` | Operator-only gate; never opened or closed automatically (4.18) |

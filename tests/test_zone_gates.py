@@ -197,6 +197,7 @@ def test_the_next_car_keeps_the_gate_open_and_closes_it_after_itself(lvl2):
 
 
 def test_leaving_entry1_does_not_close_a_farther_zone_gate(lvl2, monkeypatch):
+    monkeypatch.setattr(main, "settings", dataclasses.replace(main.settings, zone_gate_close_while_driving=False))
     monkeypatch.setattr(main, "HOP_ATTEMPTS", 0)          # the old way: gate5 opened from ENTRY1
     _fill("ZONE3", ["P69"])
     _assigned("ZON 007", "P69")
@@ -444,8 +445,9 @@ def test_the_main_gate_is_never_repaired_preventively(lvl2, monkeypatch):
     assert not _in_repair()
 
 
-def test_a_steady_stream_keeps_the_zone_gate_open(lvl2):
-    # 4.32: while another car is already heading into the zone, do not close.
+def test_a_steady_stream_keeps_the_zone_gate_open(lvl2, monkeypatch):
+    # 4.32 (switch off): while another car is already heading into the zone, do not close.
+    monkeypatch.setattr(main, "settings", dataclasses.replace(main.settings, zone_gate_close_while_driving=False))
     _fill("ZONE3", ["P69", "P70"])
     for plate, bay in (("ZON 030", "P69"), ("ZON 031", "P70")):
         _assigned(plate, bay)
@@ -574,3 +576,65 @@ def test_a_stuck_gate_ends_its_zone_maintenance_and_clears_when_fixed(lvl2, monk
     assert "ZONE1" not in state.zone_maintenance, "the rotation must be able to move on"
     asyncio.run(main._handle_component_fixed({"Type": "BarrierGate", "Name": "gate1"}))
     assert "gate1" not in state.stuck_repairs
+
+
+# --------------------------------------------------------------------------- #
+# 4.37 (experiment, ZONE_GATE_CLOSE_WHILE_DRIVING): a ZONE2/3 gate is open at
+# dispatch (the simulator plans the route then), shut while the car drives
+# down the road, and reopened when the car reaches that zone's sensor.
+# --------------------------------------------------------------------------- #
+def test_zone_gate_shuts_while_the_car_drives_and_reopens_at_its_sensor(lvl2, monkeypatch):
+    monkeypatch.setattr(main, "settings", dataclasses.replace(main.settings, zone_gate_close_while_driving=True))
+    _fill("ZONE3", ["P69"])
+    _assigned("ZON 050", "P69")
+
+    async def scenario():
+        main._start_dispatch_retry("ZON 050", "P69")
+        await asyncio.sleep(0.1)
+        assert lvl2[:2] == [("open", "gate5"), ("goto", "ZON 050", "P69")], "open at dispatch: route planned"
+        await main._handle_car_spot_action(_sensor("ZON 050", "ENTRY1", "CarOut"))
+        await asyncio.sleep(0.3)
+        assert ("close", "gate5") in lvl2, "shut while the car drives down the road"
+        n = len(lvl2)
+        await main._handle_car_spot_action(_sensor("ZON 050", "ENTRY2", "CarIn"))
+        await main._handle_car_spot_action(_sensor("ZON 050", "ENTRY2", "CarOut"))
+        await asyncio.sleep(0.1)
+        assert lvl2[n:] == [], "passing ENTRY2 does nothing to gate5"
+        await main._handle_car_spot_action(_sensor("ZON 050", "ENTRY3", "CarIn"))
+        await asyncio.sleep(0.1)
+        assert lvl2[n:n + 2] == [("open", "gate5"), ("goto", "ZON 050", "P69")], "reopened on arrival, car resent"
+        await main._handle_car_spot_action(_sensor("ZON 050", "ENTRY3", "CarOut"))
+        await asyncio.sleep(0.3)
+
+    asyncio.run(scenario())
+    assert lvl2.count(("close", "gate5")) == 2
+
+
+def test_a_car_waiting_at_the_zone_sensor_keeps_its_gate_open(lvl2, monkeypatch):
+    monkeypatch.setattr(main, "settings", dataclasses.replace(main.settings, zone_gate_close_while_driving=True))
+    _fill("ZONE3", ["P69", "P70"])
+    waiting = _assigned("ZON 051", "P69")
+    waiting.reached_zone = True                                  # at ENTRY3, about to go through
+    state.barriers["gate5"].state = BarrierPosition.OPEN
+    _assigned("ZON 052", "P70")
+
+    async def scenario():
+        await main._handle_car_spot_action(_sensor("ZON 052", "ENTRY1", "CarOut"))
+        await asyncio.sleep(0.3)
+    asyncio.run(scenario())
+    assert ("close", "gate5") not in lvl2
+
+
+def test_zone1_cars_are_unchanged_by_the_experiment(lvl2, monkeypatch):
+    monkeypatch.setattr(main, "settings", dataclasses.replace(main.settings, zone_gate_close_while_driving=True))
+    _fill("ZONE1", ["S1"])
+    session = _assigned("ZON 053", "S1")
+    session.reached_zone = True                                  # ENTRY1 is ZONE1's own sensor
+
+    async def scenario():
+        main._start_dispatch_retry("ZON 053", "S1")
+        await asyncio.sleep(0.1)
+        await main._handle_car_spot_action(_sensor("ZON 053", "ENTRY1", "CarOut"))
+        await asyncio.sleep(0.3)
+    asyncio.run(scenario())
+    assert lvl2.count(("open", "gate1")) == 1 and lvl2.count(("close", "gate1")) == 1

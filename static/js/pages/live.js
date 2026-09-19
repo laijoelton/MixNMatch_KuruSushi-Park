@@ -248,7 +248,8 @@ function fanView(snap, name) {
 // The full ML telemetry (ventilation forecast / component health / anomaly
 // log) lives on its own nav page (/ml-insights, pages/ml_insights.js). The
 // bell here only signals that something predictive just fired.
-const PREDICTIVE_ALERT_TYPES = new Set(["PREDICTIVE_CO_WARNING", "PREDICTIVE_MAINTENANCE_WARNING", "GHOST_CAR_RESOLVED"]);
+const PREDICTIVE_ALERT_TYPES = new Set(["PREDICTIVE_CO_WARNING", "PREDICTIVE_MAINTENANCE_WARNING", "GHOST_CAR_RESOLVED",
+  "UNREGISTERED_VEHICLE_EXIT", "FAKE_PAYMENT"]);
 
 function predictiveAlertMessage(alert) {
   if (alert.alert_type === "PREDICTIVE_CO_WARNING") {
@@ -256,6 +257,14 @@ function predictiveAlertMessage(alert) {
   }
   if (alert.alert_type === "PREDICTIVE_MAINTENANCE_WARNING") {
     return `🔧 ${alert.component} (${alert.component_type}) predicted to fail in ${alert.days_to_failure}d (${Math.round(alert.failure_probability * 100)}% risk)`;
+  }
+  // 4.38: seen by admins and operators alike (toast + bell); the gate is ringed orange.
+  if (alert.alert_type === "FAKE_PAYMENT") {
+    return `🚫 ${alert.plate} sent a fake payment at ${alert.gate} — held. Open the gate to let it go, or keep it held.`;
+  }
+  if (alert.alert_type === "UNREGISTERED_VEHICLE_EXIT") {
+    return alert.payment_received ? null
+      : `👻 Ghost car ${alert.plate} at ${alert.gate} — billed the estimated fee; it leaves once it pays.`;
   }
   if (alert.alert_type === "GHOST_CAR_RESOLVED") {
     return alert.fallback_charge != null
@@ -317,7 +326,9 @@ window.addEventListener("park-alert", event => {
   if (PREDICTIVE_ALERT_TYPES.has(alert.alert_type)) {
     const message = predictiveAlertMessage(alert);
     if (message) {
-      toast(message, alert.alert_type === "GHOST_CAR_RESOLVED" ? "ok" : "warn", { dismissible: true, lifetimeMs: 15000 });
+      const sticky = alert.alert_type === "FAKE_PAYMENT";   // stays until closed: staff must decide
+      toast(message, alert.alert_type === "GHOST_CAR_RESOLVED" ? "ok" : "warn",
+        sticky ? { dismissible: true, lifetimeMs: 0 } : { dismissible: true, lifetimeMs: 15000 });
       pushNotification(message);
       bumpUnread();
     }

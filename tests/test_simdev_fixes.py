@@ -24,6 +24,7 @@ def sim(monkeypatch):
     main._waiting_at.clear()
     main._holding_gate.clear()
     main._last_motion.clear()
+    state.fake_payments.clear()
     sent = []
 
     def recorder(kind):
@@ -163,21 +164,14 @@ def test_a_car_that_appeared_in_a_bay_is_a_ghost_too(ghost):
     assert db.query("SELECT COUNT(*) AS n FROM ghost_car_events WHERE plate = 'GHO 101'")[0]["n"] == 1
 
 
-def test_payment_never_releases_a_ghost_only_staff_do(ghost):
+def test_a_ghost_car_that_pays_is_let_out_automatically(ghost):
+    # 4.38: bill with the ML fee; a valid payment releases it (with a notice).
     ghost_id = _arrive_ghost("GHO 102")
-    asyncio.run(main._handle_payment_made(_pay("GHO 102", 4.0)))
-    asyncio.run(main._ensure_barriers_open())                 # the usual resume path must skip it too
-    assert not any(c[0] == "car_goto" for c in ghost), "paid ghost still waits for staff"
-    # operators need the payment status to decide on release, but not the amount
-    listed = [g for g in asyncio.run(main.list_ghost_cars(resolved=False, user=STAFF)) if g["id"] == ghost_id]
-    assert listed and listed[0]["payment_received"] is True and "fallback_charge" not in listed[0]
 
-    async def release():
-        loop = asyncio.get_running_loop()
-        loop.call_later(0.02, state.update_barrier_state, "gate6", "Open")
-        return await main.ghost_car_release(ghost_id, main.GhostReleaseIn(), STAFF)
-    result = asyncio.run(release())
-    assert result["released"] and ("car_goto", "GHO 102", "leavepark") in ghost
+    async def pay():
+        asyncio.get_running_loop().call_later(0.02, state.update_barrier_state, "gate6", "Open")
+        await main._handle_payment_made(_pay("GHO 102", 4.0))
+    asyncio.run(pay())
     assert ghost.index(("barrier_open", "gate6")) < ghost.index(("car_goto", "GHO 102", "leavepark"))
     assert db.query("SELECT resolved FROM ghost_car_events WHERE id = ?", (ghost_id,))[0]["resolved"] == 1
 
@@ -383,3 +377,40 @@ def test_staff_open_on_the_ringed_gate_lets_the_ghost_car_out(ghost):
     assert result["released"] == ["GHO 110"]
     assert ("car_goto", "GHO 110", "leavepark") in ghost
     assert db.query("SELECT resolved FROM ghost_car_events WHERE id = ?", (ghost_id,))[0]["resolved"] == 1
+
+
+
+# --------------------------------------------------------------------------- #
+# 4.38: a forged payment (bad signature) for a car we billed at an exit is
+# rejected as before, but the car is held and staff are told. The untrusted
+# webhook only ever makes us more careful: it never marks paid or releases.
+# --------------------------------------------------------------------------- #
+def _billed_at_exit(plate):
+    session = VehicleSession(plate=plate, entry_gate="ENTRY1", phase=SessionPhase.CHARGED, exit_gate="Exit100")
+    session.charge_attempted, session.expected_amount, session.parked_at = True, 2.2, 1.0
+    state.sessions[plate] = session
+    return session
+
+
+def test_a_forged_payment_holds_the_car_and_tells_staff(ghost):
+    session = _billed_at_exit("FAK 001")
+    asyncio.run(main._flag_forged_payment({"EventClass": "payment_made", "CarPlateNumber": "FAK 001", "Amount": "2.20"}))
+    assert not session.paid and session.payment_suspect
+    gate6 = next(b for b in state.snapshot()["barriers"] if b["name"] == "gate6")
+    assert gate6["held_plates"] == ["FAK 001"] and gate6["held_notes"]["FAK 001"] == "fake payment"
+    assert not any(c[0] == "car_goto" for c in ghost)
+
+
+def test_a_forged_payment_for_a_car_we_did_not_bill_is_ignored(ghost):
+    asyncio.run(main._flag_forged_payment({"EventClass": "payment_made", "CarPlateNumber": "NOB 001", "Amount": "9"}))
+    assert not state.fake_payments and not state.barriers["gate6"].held_vehicles
+
+
+def test_the_webhook_still_rejects_a_forged_payment_but_flags_it(ghost):
+    from fastapi.testclient import TestClient
+    _billed_at_exit("FAK 002")
+    response = TestClient(main.app).post("/webhooks/simulator", json={
+        "EventClass": "payment_made", "CarPlateNumber": "FAK 002", "Amount": "2.20",
+        "EventId": "fake-evt-1", "Signature": "0" * 32})
+    assert response.status_code == 401
+    assert "FAK 002" in state.fake_payments and "FAK 002" in state.barriers["gate6"].held_vehicles

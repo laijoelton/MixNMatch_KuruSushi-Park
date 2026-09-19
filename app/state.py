@@ -250,6 +250,8 @@ class ParkingState:
         self.zone_maintenance: dict[str, dict[str, Any]] = {}
         # Gates whose repair the simulator accepted but never finished (4.35).
         self.stuck_repairs: set[str] = set()
+        # Cars whose payment arrived with a forged signature (4.38).
+        self.fake_payments: set[str] = set()
         self.penalty_count: int = 0
         self.total_fines: float = 0.0
         self.penalty_log: deque = deque(maxlen=200)
@@ -795,6 +797,16 @@ class ParkingState:
                 "component": component_name, "at": time.time(),
             })
 
+    def _hold_note(self, plate: str) -> str:
+        session = self.sessions.get(plate)
+        if plate in self.fake_payments:
+            return "fake payment"
+        if session is not None and session.ghost_id:
+            return "ghost car"
+        if session is not None and session.payment_suspect:
+            return "payment did not match the bill"
+        return "awaiting clearance"
+
     def clear_penalties(self) -> None:
         """Forget recorded fines; paired with an admin clearing the penalties table."""
         with self._lock:
@@ -810,7 +822,7 @@ class ParkingState:
             dropped = len(self.sessions)
             for table in (self.sessions, self.active_dispatches, self.spots, self.barriers, self.zones,
                           self.fans, self.lights, self.pending_repairs, self.deferred_repairs,
-                          self.zone_maintenance, self.stuck_repairs):
+                          self.zone_maintenance, self.stuck_repairs, self.fake_payments):
                 table.clear()
             self.neglected_vehicles.clear()
             return dropped
@@ -881,6 +893,7 @@ class ParkingState:
                      "operator_override": b.operator_override,
                      "operator_open": b.operator_open,
                      "held_plates": sorted(b.held_vehicles),
+                     "held_notes": {plate: self._hold_note(plate) for plate in b.held_vehicles},
                      "repair_stuck": b.name in self.stuck_repairs,
                      "hold_reason": "Held closed by operator" if b.operator_override else
                                     "Held open by operator" if b.operator_open else

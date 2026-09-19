@@ -167,8 +167,8 @@ def test_accessible_prefers_accessible_bay(park):
 
 
 def test_ghost_car_closes_barrier_and_waits_for_real_payment(park):
-    # 4.25: a ghost car is invoiced automatically; a payment does not release
-    # it - only a staff release does.
+    # 4.25/4.38: a ghost car is invoiced automatically and held; a valid
+    # payment then releases it.
     state.barriers["exitGate"] = Barrier("exitGate", state=BarrierPosition.OPEN)
     async def scenario():
         await main._handle_ghost_car("GHOST", "EXIT", {})
@@ -178,13 +178,9 @@ def test_ghost_car_closes_barrier_and_waits_for_real_payment(park):
         assert len(rows) == 1
         main.client.barrier_close.assert_awaited()
         main.client.car_charge.assert_awaited_once()
-        assert not state.sessions["GHOST"].paid
-        await main._handle_payment_made({"CarPlateNumber": "GHOST", "Amount": state.sessions["GHOST"].expected_amount})
-        assert state.sessions["GHOST"].paid
         main.client.car_goto.assert_not_awaited()
         asyncio.get_running_loop().call_later(0.02, state.update_barrier_state, "exitGate", "Open")
-        await main.ghost_car_release(rows[0]["id"], main.GhostReleaseIn(),
-                                     {"username": "operator", "role": "facility_operator"})
+        await main._handle_payment_made({"CarPlateNumber": "GHOST", "Amount": state.sessions["GHOST"].expected_amount})
         main.client.car_goto.assert_awaited_once_with("GHOST", "leavepark")
     asyncio.run(scenario())
 

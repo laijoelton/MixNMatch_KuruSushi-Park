@@ -111,6 +111,9 @@ class Settings:
     # front of it: the sensor sits ~140 px before the gate, and cars were seen
     # covering 230-870 px/s, so ~0.6 s at worst plus margin.
     entry_gate_close_delay_s: float
+    # Experiment (4.37): shut a ZONE2/3 gate while its car drives down from
+    # ENTRY1, reopen it when the car reaches that zone's sensor.
+    zone_gate_close_while_driving: bool
     # The simulator console, tee'd to a file by START.bat; its "Load Game"
     # line is our only signal that a level was (re)loaded. Empty disables it.
     simulator_log: str
@@ -253,6 +256,7 @@ class Settings:
             gate_close_delay_s=_env_float("GATE_CLOSE_DELAY_S", 3.0),
             zone_gate_at_sensor=_env_bool("ZONE_GATE_AT_SENSOR", False),
             entry_gate_close_delay_s=_env_float("ENTRY_GATE_CLOSE_DELAY_S", 1.5),
+            zone_gate_close_while_driving=_env_bool("ZONE_GATE_CLOSE_WHILE_DRIVING", True),
             simulator_log=os.environ.get("SIMULATOR_LOG", "data/simulator.log").strip(),
 
             broadcast_interval_s=_env_float("BROADCAST_INTERVAL_S", 1.0),

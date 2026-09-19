@@ -59,8 +59,9 @@ export function deriveAlerts(snapshot, stats, { isAdmin } = {}) {
   }
   for (const gate of snapshot.barriers || []) {
     if (gate.held_plates?.length) {
-      add(`hold-${gate.name}`, "warn", `${gate.held_plates.join(", ")} waiting at ${gate.name}`,
-        "Open the gate to let the car out", { kind: "gate", name: gate.name });
+      const why = gate.held_plates.map((p) => `${p} (${gate.held_notes?.[p] || "held"})`).join(", ");
+      add(`hold-${gate.name}`, "warn", `${why} at ${gate.name}`,
+        "Open the gate to let the car out, or keep it held", { kind: "gate", name: gate.name });
     } else if (gate.hold_reason) {
       add(`hold-${gate.name}`, "warn", `${gate.name}: ${gate.hold_reason}`, "Press Automatic to hand it back", { kind: "gate", name: gate.name });
     }
