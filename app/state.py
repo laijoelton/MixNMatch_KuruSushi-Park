@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import threading
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
 from app.config import settings
 
@@ -182,6 +182,11 @@ class ParkingState:
         self.sessions: dict[str, VehicleSession] = {}
         self.last_sequence_id: int = 0
         self.deferred_repairs: dict[str, str] = {}
+        self.penalty_count: int = 0
+        self.total_fines: float = 0.0
+        self.penalty_log: deque = deque(maxlen=200)
+        self.activity_log: deque = deque(maxlen=200)
+        self.started_at: float = time.time()
         self._events = _BoundedEventCache(max_processed_events)
 
     # ------------------------------------------------------------------ #
@@ -200,6 +205,8 @@ class ParkingState:
         """
         with self._lock:
             for item in raw:
+                # The live simulator reports this as either a plate-name list
+                # or a bare occupancy count depending on build - handle both.
                 detected = item.get("detectedCars")
                 if isinstance(detected, list):
                     occupied = bool(detected)
@@ -503,5 +510,94 @@ class ParkingState:
         with self._lock:
             return self.sessions.pop(plate, None)
 
+    # ------------------------------------------------------------------ #
+    # Telemetry: penalties, activity log, dashboard snapshot
+    # ------------------------------------------------------------------ #
+    def entry_gates(self) -> list[str]:
+        with self._lock:
+            return sorted(s.name for s in self.spots.values() if s.purpose == "EntrySpot")
+
+    def record_penalty(self, reason: str, fine: float, component_type: str, component_name: str) -> None:
+        with self._lock:
+            self.penalty_count += 1
+            self.total_fines += fine
+            self.penalty_log.appendleft({
+                "reason": reason, "fine": fine, "type": component_type,
+                "component": component_name, "at": time.time(),
+            })
+
+    def log_activity(self, message: str, level: str = "info") -> None:
+        with self._lock:
+            self.activity_log.appendleft({"message": message, "level": level, "at": time.time()})
+
+    def broken_components(self) -> list[dict[str, Any]]:
+        with self._lock:
+            out: list[dict[str, Any]] = []
+            for s in self.spots.values():
+                if s.broken or s.under_maintenance:
+                    out.append({"name": s.name, "type": "ParkingSpot",
+                               "broken": s.broken, "under_maintenance": s.under_maintenance,
+                               "occupied": s.occupant_plate is not None})
+            for b in self.barriers.values():
+                if b.broken or b.under_maintenance:
+                    out.append({"name": b.name, "type": "BarrierGate",
+                               "broken": b.broken, "under_maintenance": b.under_maintenance,
+                               "occupied": False})
+            for f in self.fans.values():
+                if f.broken or f.under_maintenance:
+                    out.append({"name": f.name, "type": "ExhaustFan",
+                               "broken": f.broken, "under_maintenance": f.under_maintenance,
+                               "occupied": False})
+            return out
+
+    def occupancy_counts(self) -> dict[str, int]:
+        with self._lock:
+            counts = {status.value: 0 for status in SpotStatus}
+            for s in self.spots.values():
+                if s.purpose == "Park":
+                    counts[s.status.value] += 1
+            return counts
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "spots": [
+                    {"name": s.name, "purpose": s.purpose, "status": s.status.value,
+                     "broken": s.broken, "under_maintenance": s.under_maintenance,
+                     "occupant_plate": s.occupant_plate, "zone": s.zone_parent,
+                     "car_type": s.parking_for_car_type}
+                    for s in self.spots.values()
+                ],
+                "barriers": [
+                    {"name": b.name, "state": b.state.value, "broken": b.broken,
+                     "under_maintenance": b.under_maintenance, "zone": b.zone_parent}
+                    for b in self.barriers.values()
+                ],
+                "fans": [
+                    {"name": f.name, "is_on": f.is_on, "broken": f.broken,
+                     "under_maintenance": f.under_maintenance, "zone": f.zone_parent}
+                    for f in self.fans.values()
+                ],
+                "zones": [
+                    {"name": z.name, "co_level": z.gas_co_level, "risk": z.risk,
+                     "danger_level": z.danger_level}
+                    for z in self.zones.values()
+                ],
+                "sessions": [
+                    {"plate": s.plate, "entry_gate": s.entry_gate, "phase": s.phase.value,
+                     "assigned_spot": s.assigned_spot, "exit_gate": s.exit_gate,
+                     "charged": s.charged, "paid": s.paid}
+                    for s in self.sessions.values()
+                ],
+                "occupancy": {status.value: sum(1 for s in self.spots.values()
+                                                if s.purpose == "Park" and s.status == status)
+                             for status in SpotStatus},
+                "penalties": {"count": self.penalty_count, "total_fines": round(self.total_fines, 2),
+                             "recent": list(self.penalty_log)[:20]},
+                "activity": list(self.activity_log)[:30],
+                "deferred_repairs": dict(self.deferred_repairs),
+                "last_sequence_id": self.last_sequence_id,
+                "uptime_s": round(time.time() - self.started_at, 1),
+            }
 
 state = ParkingState(max_processed_events=settings.max_processed_events)

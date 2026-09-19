@@ -45,15 +45,34 @@ class SimulatorClient:
         return {"Authorization": f"Bearer {self._token}"}
 
     async def _request(self, method: str, path: str, *, params: Optional[dict] = None,
-                       json_body: Optional[dict] = None, retry: bool = True) -> httpx.Response:
-        headers = await self._headers()
-        response = await self._http.request(method, path, headers=headers, params=params, json=json_body)
-        if response.status_code == 401 and retry:
-            log.warning("simulator auth: token rejected, re-authenticating")
-            self._token = None
-            return await self._request(method, path, params=params, json_body=json_body, retry=False)
-        response.raise_for_status()
-        return response
+                       json_body: Optional[dict] = None, retry: bool = True,
+                       transient_attempts: int = 3, transient_delay_s: float = 0.5) -> httpx.Response:
+        last_exc: Optional[Exception] = None
+        for attempt in range(1, transient_attempts + 1):
+            try:
+                headers = await self._headers()
+                response = await self._http.request(method, path, headers=headers, params=params, json=json_body)
+            except httpx.TransportError as exc:
+                last_exc = exc
+                log.warning("simulator transport error on %s %s (attempt %d/%d): %s",
+                           method, path, attempt, transient_attempts, exc)
+                if attempt < transient_attempts:
+                    await asyncio.sleep(transient_delay_s * attempt)
+                    continue
+                raise
+            if response.status_code == 401 and retry:
+                log.warning("simulator auth: token rejected, re-authenticating")
+                self._token = None
+                return await self._request(method, path, params=params, json_body=json_body, retry=False)
+            if response.status_code >= 500 and attempt < transient_attempts:
+                log.warning("simulator 5xx on %s %s (attempt %d/%d): %s",
+                           method, path, attempt, transient_attempts, response.status_code)
+                await asyncio.sleep(transient_delay_s * attempt)
+                continue
+            response.raise_for_status()
+            return response
+        assert last_exc is not None
+        raise last_exc
 
     # ------------------------------------------------------------------ #
     # Startup sync (called ONCE at boot / reconnect - never polled)

@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ team_name }} — Operator HUD</title>
+  <link rel="stylesheet" href="/static/css/dashboard.css?v={{ asset_version }}" />
+</head>
+<body>
+  <div class="hud">
+    <div class="hud-header">
+      <div class="hud-title">
+        <span class="status-dot" id="status-dot"></span>
+        <div>
+          <h1>{{ team_name }} — Grand Park Auto Dispatch</h1>
+          <div class="subtitle" id="subtitle">connecting…</div>
+        </div>
+      </div>
+      <div class="row">
+        <button class="secondary" id="btn-sync">Manual Sync</button>
+        <a class="hint" href="/gate" style="align-self:center;">Open gate portal →</a>
+      </div>
+    </div>
+
+    <div class="cards">
+      <div class="card accent"><div class="label">Available</div><div class="value" id="c-available">0</div></div>
+      <div class="card"><div class="label">Occupied</div><div class="value" id="c-occupied">0</div></div>
+      <div class="card warn"><div class="label">Reserved</div><div class="value" id="c-reserved">0</div></div>
+      <div class="card"><div class="label">Broken</div><div class="value" id="c-broken">0</div></div>
+      <div class="card"><div class="label">Active Sessions</div><div class="value" id="c-sessions">0</div></div>
+      <div class="card danger"><div class="label">Penalties</div><div class="value" id="c-penalties">0</div></div>
+      <div class="card danger"><div class="label">Fines</div><div class="value" id="c-fines">0.00</div></div>
+      <div class="card"><div class="label">Queue Depth</div><div class="value" id="c-queue">0</div></div>
+    </div>
+
+    <div class="grid-two">
+      <div class="panel">
+        <h2>Live parking lot</h2>
+        <div id="twin-wrap"><canvas id="twin"></canvas></div>
+      </div>
+
+      <div class="panel stack">
+        <h2>Manual Controls</h2>
+        <form id="form-arrival" class="controls-form wide">
+          <input type="text" id="in-plate" placeholder="Plate (e.g. WCT759)" required />
+          <select id="in-gate"></select>
+          <select id="in-cartype">
+            <option value="Normal">Normal</option>
+            <option value="Electric">Electric</option>
+          </select>
+          <label class="checkbox-row"><input type="checkbox" id="in-dryrun" /> Dry run (preview only)</label>
+          <button type="submit">Simulate Arrival / Dispatch</button>
+        </form>
+        <div class="hint" id="arrival-result"></div>
+
+        <h2 style="margin-top:8px;">Barriers</h2>
+        <div class="list" id="barrier-list"></div>
+
+        <h2 style="margin-top:8px;">Broken Components</h2>
+        <div class="list" id="broken-list"></div>
+      </div>
+    </div>
+
+    <div class="grid-two">
+      <div class="panel">
+        <h2>Activity Log</h2>
+        <div class="list" id="activity-list"></div>
+      </div>
+      <div class="panel">
+        <h2>Penalty Log</h2>
+        <div class="list" id="penalty-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/js/canvas_twin.js?v={{ asset_version }}"></script>
+  <script>
+    const twin = new DigitalTwin(document.getElementById("twin"));
+    const statusDot = document.getElementById("status-dot");
+    const subtitle = document.getElementById("subtitle");
+    let ws;
+
+    function fmt(n) { return Number(n).toFixed(2); }
+
+    function renderList(el, items, render) {
+      el.innerHTML = "";
+      if (!items.length) {
+        el.innerHTML = '<div class="hint">nothing yet</div>';
+        return;
+      }
+      for (const item of items) {
+        const row = document.createElement("div");
+        row.className = "list-row" + (render.cls ? " " + render.cls(item) : "");
+        row.innerHTML = render.html(item);
+        el.appendChild(row);
+      }
+    }
+
+    function applySnapshot(snap) {
+      const occ = snap.occupancy || {};
+      document.getElementById("c-available").textContent = occ.AVAILABLE || 0;
+      document.getElementById("c-occupied").textContent = occ.OCCUPIED || 0;
+      document.getElementById("c-reserved").textContent = occ.RESERVED || 0;
+      document.getElementById("c-broken").textContent = (occ.BROKEN || 0) + (occ.MAINTENANCE || 0);
+      document.getElementById("c-sessions").textContent = (snap.sessions || []).length;
+      document.getElementById("c-penalties").textContent = (snap.penalties || {}).count || 0;
+      document.getElementById("c-fines").textContent = fmt((snap.penalties || {}).total_fines || 0);
+      document.getElementById("c-queue").textContent = (snap.maintenance_queue || {}).pending || 0;
+
+      twin.update(snap.spots || [], snap.barriers || []);
+
+      renderList(document.getElementById("barrier-list"), snap.barriers || [], {
+        html: (b) => `<span>${b.name}</span><span class="badge ${b.state === "Open" ? "available" : "occupied"}">${b.state}</span>`,
+      });
+
+      const gateSelect = document.getElementById("in-gate");
+      const entryGates = (snap.spots || []).filter((s) => s.purpose === "EntrySpot").map((s) => s.name);
+      const current = gateSelect.value;
+      if (gateSelect.dataset.count != entryGates.length) {
+        gateSelect.innerHTML = entryGates.map((g) => `<option value="${g}">${g}</option>`).join("");
+        gateSelect.dataset.count = entryGates.length;
+        if (entryGates.includes(current)) gateSelect.value = current;
+      }
+
+      const brokenItems = (snap.spots || []).filter((s) => s.broken || s.under_maintenance)
+        .concat((snap.barriers || []).filter((b) => b.broken || b.under_maintenance))
+        .concat((snap.fans || []).filter((f) => f.broken || f.under_maintenance));
+      renderList(document.getElementById("broken-list"), brokenItems, {
+        html: (c) => `<span>${c.name}</span><span class="badge broken">${c.broken ? "broken" : "maintenance"}</span>`,
+      });
+
+      renderList(document.getElementById("activity-list"), snap.activity || [], {
+        cls: (a) => a.level === "error" ? "error" : a.level === "warn" ? "warn" : "",
+        html: (a) => `<span>${a.message}</span><span class="time">${new Date(a.at * 1000).toLocaleTimeString()}</span>`,
+      });
+
+      renderList(document.getElementById("penalty-list"), (snap.penalties || {}).recent || [], {
+        cls: () => "error",
+        html: (p) => `<span>${p.reason} (${p.type} ${p.component})</span><span class="time">-${fmt(p.fine)}</span>`,
+      });
+    }
+
+    function connect() {
+      const proto = location.protocol === "https:" ? "wss" : "ws";
+      ws = new WebSocket(`${proto}://${location.host}/ws/live`);
+      ws.onopen = () => { statusDot.classList.add("live"); subtitle.textContent = "live"; };
+      ws.onclose = () => { statusDot.classList.remove("live"); subtitle.textContent = "disconnected — retrying…"; setTimeout(connect, 1500); };
+      ws.onerror = () => ws.close();
+      ws.onmessage = (evt) => applySnapshot(JSON.parse(evt.data));
+    }
+    connect();
+
+    document.getElementById("btn-sync").addEventListener("click", async () => {
+      const res = await fetch("/api/manual/sync", { method: "POST" });
+      const data = await res.json();
+      document.getElementById("arrival-result").textContent =
+        `Synced: ${data.spots} spots, ${data.barriers} barriers, ${data.zones} zones, ${data.fans} fans`;
+    });
+
+    document.getElementById("form-arrival").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const plate = document.getElementById("in-plate").value.trim();
+      const gate = document.getElementById("in-gate").value;
+      const car_type = document.getElementById("in-cartype").value;
+      const dry_run = document.getElementById("in-dryrun").checked;
+      if (!plate || !gate) return;
+      const res = await fetch("/api/manual/arrival", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ plate, gate, car_type, dry_run }),
+      });
+      const data = await res.json();
+      document.getElementById("arrival-result").textContent = JSON.stringify(data);
+    });
+  </script>
+</body>
+</html>

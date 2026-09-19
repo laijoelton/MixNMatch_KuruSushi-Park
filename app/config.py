@@ -14,7 +14,7 @@ from pathlib import Path
 try:
     from dotenv import load_dotenv
 
-    load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
+    load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
 except ImportError:  # pragma: no cover - dotenv ships with uvicorn[standard]
     pass
 
@@ -33,7 +33,7 @@ def _env_bool(name: str, default: bool) -> bool:
     raw = os.environ.get(name)
     if raw in (None, ""):
         return default
-    return raw.strip().lower() in ("1", "true", "yes", "on")
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 @dataclass(frozen=True)
@@ -57,6 +57,11 @@ class Settings:
     co_fan_on_threshold: float
     reservation_ttl_s: float
     seed_from_level: str
+    unknown_car_minutes: float
+    billing_rounding: str
+    # Dashboard: how often the operator HUD is pushed over the WebSocket.
+    broadcast_interval_s: float
+    webhook_debug: bool
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -101,6 +106,25 @@ class Settings:
             # Offline dev only: load the park from settings/<level>.json when
             # the simulator is not running. Empty disables it.
             seed_from_level=os.environ.get("SEED_FROM_LEVEL", "lvl1"),
+
+            # A car that reaches the exit without us ever seeing it park (it
+            # was already in the lot at startup, or survived a restart) has no
+            # measurable duration. Charging 0 reads as "not charged" and earns
+            # Penalty_CarShouldBeChargedAtExit, so bill a plausible estimate
+            # instead: the midpoint of the simulator's MinParkingTime (1) and
+            # MaxParkingTime (5) from settings.json.
+            unknown_car_minutes=_env_float("UNKNOWN_CAR_MINUTES", 3.0),
+
+            # How measured minutes become a billable figure: "round" (nearest,
+            # the default), "ceil" (a started minute is charged), or "exact"
+            # (send the raw fraction). The simulator draws planned durations as
+            # whole minutes (MinParkingTime..MaxParkingTime), so our measured
+            # 1.02 should bill as 1, not 2 - an off-by-one here means the car
+            # refuses to pay and escapes. Tune with live evidence.
+            billing_rounding=os.environ.get("BILLING_ROUNDING", "round").strip().lower(),
+
+            broadcast_interval_s=_env_float("BROADCAST_INTERVAL_S", 1.0),
+            webhook_debug=_env_bool("WEBHOOK_DEBUG", False),
         )
 
 
