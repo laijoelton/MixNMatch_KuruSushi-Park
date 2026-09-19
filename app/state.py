@@ -89,6 +89,8 @@ class Barrier:
     state: BarrierPosition = BarrierPosition.CLOSED
     broken: bool = False
     under_maintenance: bool = False
+    # Wear: one cycle per open/close command sent to the simulator.
+    cycle_count: int = 0
 
 
 @dataclass
@@ -98,6 +100,20 @@ class ExhaustFan:
     is_on: bool = False
     broken: bool = False
     under_maintenance: bool = False
+    # Wear: one cycle per on/off toggle, plus accumulated seconds spent on.
+    cycle_count: int = 0
+    runtime_seconds: float = 0.0
+    turned_on_at: Optional[float] = None
+
+
+@dataclass
+class Light:
+    name: str
+    zone_parent: str = ""
+    is_on: bool = True
+    cycle_count: int = 0
+    runtime_seconds: float = 0.0
+    turned_on_at: Optional[float] = field(default_factory=time.monotonic)
 
 
 @dataclass
@@ -182,6 +198,7 @@ class ParkingState:
         self.spots: dict[str, Spot] = {}
         self.barriers: dict[str, Barrier] = {}
         self.fans: dict[str, ExhaustFan] = {}
+        self.lights: dict[str, Light] = {}
         self.zones: dict[str, Zone] = {}
         self.sessions: dict[str, VehicleSession] = {}
         self.last_sequence_id: int = 0
@@ -253,6 +270,15 @@ class ParkingState:
                     is_on=bool(item.get("isOn", False)),
                     broken=bool(item.get("broken", False)),
                     under_maintenance=bool(item.get("isUnderMaintenance", False)),
+                )
+
+    def load_lights(self, raw: list[dict]) -> None:
+        with self._lock:
+            for item in raw:
+                self.lights[item["name"]] = Light(
+                    name=item["name"],
+                    zone_parent=item.get("zoneParent", ""),
+                    is_on=bool(item.get("isOn", True)),
                 )
 
     def load_zones(self, raw: list[dict]) -> None:
@@ -405,9 +431,15 @@ class ParkingState:
         with self._lock:
             barrier = self.barriers.setdefault(name, Barrier(name=name))
             try:
-                barrier.state = BarrierPosition(state_value)
+                new_state = BarrierPosition(state_value)
             except ValueError:
-                pass
+                return
+            # Count a wear cycle each time the barrier actually starts moving,
+            # i.e. transitions into Opening/Closing - not on every repeated
+            # "Open"/"Closed" webhook while it sits still.
+            if new_state in (BarrierPosition.OPENING, BarrierPosition.CLOSING) and barrier.state != new_state:
+                barrier.cycle_count += 1
+            barrier.state = new_state
 
     def update_zone(self, name: str, co_level: float, danger_level: str) -> None:
         with self._lock:
@@ -418,6 +450,88 @@ class ParkingState:
     def fans_in_zone(self, zone_name: str) -> list[str]:
         with self._lock:
             return [f.name for f in self.fans.values() if f.zone_parent == zone_name]
+
+    def lights_in_zone(self, zone_name: str) -> list[str]:
+        with self._lock:
+            return [l.name for l in self.lights.values() if l.zone_parent == zone_name]
+
+    def zone_names(self) -> list[str]:
+        with self._lock:
+            names = {z for z in self.zones.keys()}
+            names |= {b.zone_parent for b in self.barriers.values() if b.zone_parent}
+            names |= {f.zone_parent for f in self.fans.values() if f.zone_parent}
+            names |= {l.zone_parent for l in self.lights.values() if l.zone_parent}
+            names |= {s.zone_parent for s in self.spots.values() if s.zone_parent}
+            return sorted(names)
+
+    # ------------------------------------------------------------------ #
+    # Wear tracking (Level 2): cycles on barriers/fans/lights, runtime on
+    # fans/lights. Persisted separately via app.db.upsert_component_wear -
+    # this only holds the live counters the dashboard reads.
+    # ------------------------------------------------------------------ #
+    def record_barrier_cycle(self, name: str) -> int:
+        """One open/close command was actually sent. Returns the new count."""
+        with self._lock:
+            barrier = self.barriers.setdefault(name, Barrier(name=name))
+            barrier.cycle_count += 1
+            return barrier.cycle_count
+
+    def set_fan_on(self, name: str, on: bool) -> tuple[int, float]:
+        """Toggle a fan and update its wear counters. Returns (cycles, runtime_s)."""
+        with self._lock:
+            fan = self.fans.setdefault(name, ExhaustFan(name=name))
+            now = time.monotonic()
+            if on and not fan.is_on:
+                fan.is_on = True
+                fan.cycle_count += 1
+                fan.turned_on_at = now
+            elif not on and fan.is_on:
+                fan.is_on = False
+                fan.cycle_count += 1
+                if fan.turned_on_at is not None:
+                    fan.runtime_seconds += max(0.0, now - fan.turned_on_at)
+                fan.turned_on_at = None
+            return fan.cycle_count, fan.runtime_seconds
+
+    def set_light_on(self, name: str, on: bool) -> tuple[int, float]:
+        with self._lock:
+            light = self.lights.setdefault(name, Light(name=name, turned_on_at=None))
+            now = time.monotonic()
+            if on and not light.is_on:
+                light.is_on = True
+                light.cycle_count += 1
+                light.turned_on_at = now
+            elif not on and light.is_on:
+                light.is_on = False
+                light.cycle_count += 1
+                if light.turned_on_at is not None:
+                    light.runtime_seconds += max(0.0, now - light.turned_on_at)
+                light.turned_on_at = None
+            return light.cycle_count, light.runtime_seconds
+
+    def wear_snapshot(self) -> list[dict[str, Any]]:
+        """Live wear counters for every tracked component, for the wear-threshold sweep."""
+        with self._lock:
+            out: list[dict[str, Any]] = []
+            for b in self.barriers.values():
+                out.append({"name": b.name, "type": "BarrierGate",
+                           "cycle_count": b.cycle_count, "runtime_seconds": 0.0,
+                           "broken": b.broken, "under_maintenance": b.under_maintenance})
+            for f in self.fans.values():
+                runtime = f.runtime_seconds
+                if f.is_on and f.turned_on_at is not None:
+                    runtime += max(0.0, time.monotonic() - f.turned_on_at)
+                out.append({"name": f.name, "type": "ExhaustFan",
+                           "cycle_count": f.cycle_count, "runtime_seconds": runtime,
+                           "broken": f.broken, "under_maintenance": f.under_maintenance})
+            for l in self.lights.values():
+                runtime = l.runtime_seconds
+                if l.is_on and l.turned_on_at is not None:
+                    runtime += max(0.0, time.monotonic() - l.turned_on_at)
+                out.append({"name": l.name, "type": "Light",
+                           "cycle_count": l.cycle_count, "runtime_seconds": runtime,
+                           "broken": False, "under_maintenance": False})
+            return out
 
     # ------------------------------------------------------------------ #
     # Vehicle sessions
@@ -595,6 +709,11 @@ class ParkingState:
                      "under_maintenance": f.under_maintenance, "zone": f.zone_parent}
                     for f in self.fans.values()
                 ],
+                "lights": [
+                    {"name": l.name, "is_on": l.is_on, "zone": l.zone_parent}
+                    for l in self.lights.values()
+                ],
+                "wear": self.wear_snapshot(),
                 "zones": [
                     {"name": z.name, "co_level": z.gas_co_level, "risk": z.risk,
                      "danger_level": z.danger_level}

@@ -60,6 +60,16 @@ async def admin_page(request: Request):
     return _page(request, "admin.html", "admin")
 
 
+@router.get("/penalties", include_in_schema=False)
+async def penalties_page(request: Request):
+    return _page(request, "penalties.html", "penalties")
+
+
+@router.get("/reports", include_in_schema=False)
+async def reports_page(request: Request):
+    return _page(request, "reports.html", "reports")
+
+
 # --------------------------------------------------------------------------- #
 # Sign in / out
 # --------------------------------------------------------------------------- #
@@ -69,14 +79,19 @@ class LoginIn(BaseModel):
 
 
 @router.post("/api/auth/login")
-async def login(body: LoginIn, response: Response) -> dict[str, str]:
+async def login(body: LoginIn, request: Request, response: Response) -> dict[str, Any]:
+    ip = request.client.host if request.client else None
     user = auth.authenticate(body.username, body.password)
+
+    prior = db.prior_login_attempts(body.username, limit=3)
+    db.record_login_attempt(body.username, ip, user is not None)
+
     if user is None:
         raise HTTPException(401, "Invalid username or password")
     token = auth.create_session(user["id"])
     response.set_cookie(auth.COOKIE_NAME, token, max_age=auth.SESSION_TTL_S,
                         httponly=True, samesite="lax", path="/")
-    return {"username": user["username"], "role": user["role"]}
+    return {"username": user["username"], "role": user["role"], "prior_attempts": prior}
 
 
 @router.post("/api/auth/logout")

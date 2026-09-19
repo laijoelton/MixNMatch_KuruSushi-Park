@@ -119,6 +119,55 @@ CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
+
+-- Level 2 --------------------------------------------------------------- --
+
+CREATE TABLE IF NOT EXISTS unsigned_webhook_logs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id    TEXT,
+    reason      TEXT,
+    received_at TEXT NOT NULL,
+    payload     TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS audit_logs (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor_username TEXT,
+    actor_role     TEXT,
+    action         TEXT NOT NULL,
+    detail         TEXT,
+    occurred_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_at ON audit_logs(occurred_at);
+
+CREATE TABLE IF NOT EXISTS login_attempts (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    username    TEXT NOT NULL,
+    ip          TEXT,
+    success     INTEGER NOT NULL,
+    occurred_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_login_attempts_user ON login_attempts(username);
+
+CREATE TABLE IF NOT EXISTS component_wear (
+    name             TEXT PRIMARY KEY,
+    type             TEXT NOT NULL,
+    cycle_count      INTEGER NOT NULL DEFAULT 0,
+    runtime_seconds  REAL NOT NULL DEFAULT 0,
+    last_repaired_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS ghost_car_events (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    plate           TEXT NOT NULL,
+    gate            TEXT,
+    occurred_at     TEXT NOT NULL,
+    fallback_charge REAL,
+    resolved        INTEGER NOT NULL DEFAULT 0,
+    resolved_by     TEXT,
+    resolved_at     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ghost_car_resolved ON ghost_car_events(resolved);
 """
 
 with _lock:
@@ -309,6 +358,145 @@ def query(sql: str, params: tuple = ()) -> list[dict[str, Any]]:
     with _lock:
         rows = _conn.execute(sql, params).fetchall()
     return [dict(r) for r in rows]
+
+
+def record_unsigned_webhook(event_id: Optional[str], reason: str, payload: dict[str, Any]) -> None:
+    """Enforce-mode rejection: log the payload instead of silently dropping it."""
+    with _lock:
+        _conn.execute(
+            """INSERT INTO unsigned_webhook_logs (event_id, reason, received_at, payload)
+               VALUES (?, ?, ?, ?)""",
+            (event_id, reason, _utcnow(), json.dumps(payload, separators=(",", ":"))),
+        )
+        _conn.commit()
+
+
+def record_audit_log(actor_username: Optional[str], actor_role: Optional[str],
+                      action: str, detail: Optional[str] = None) -> None:
+    """Append-only trail of every staff-triggered mutation."""
+    with _lock:
+        _conn.execute(
+            """INSERT INTO audit_logs (actor_username, actor_role, action, detail, occurred_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (actor_username, actor_role, action, detail, _utcnow()),
+        )
+        _conn.commit()
+
+
+def record_login_attempt(username: str, ip: Optional[str], success: bool) -> None:
+    with _lock:
+        _conn.execute(
+            """INSERT INTO login_attempts (username, ip, success, occurred_at)
+               VALUES (?, ?, ?, ?)""",
+            (username, ip, int(success), _utcnow()),
+        )
+        _conn.commit()
+
+
+def prior_login_attempts(username: str, limit: int = 3) -> list[dict[str, Any]]:
+    """The last ``limit`` attempts for ``username`` BEFORE the one just recorded."""
+    with _lock:
+        rows = _conn.execute(
+            """SELECT username, ip, success, occurred_at FROM login_attempts
+               WHERE username = ? ORDER BY id DESC LIMIT 1 OFFSET 1""",
+            (username,),
+        ).fetchall()
+        if len(rows) < limit:
+            rows = _conn.execute(
+                """SELECT username, ip, success, occurred_at FROM login_attempts
+                   WHERE username = ? ORDER BY id DESC LIMIT ? OFFSET 1""",
+                (username, limit),
+            ).fetchall()
+    return [dict(r) for r in rows][:limit]
+
+
+def upsert_component_wear(name: str, type_: str, cycle_delta: int = 0,
+                           runtime_delta: float = 0.0) -> dict[str, Any]:
+    """Add to a component's wear counters, creating the row if needed."""
+    with _lock:
+        _conn.execute(
+            """INSERT INTO component_wear (name, type, cycle_count, runtime_seconds)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(name) DO UPDATE SET
+                 cycle_count     = cycle_count + excluded.cycle_count,
+                 runtime_seconds = runtime_seconds + excluded.runtime_seconds,
+                 type            = excluded.type""",
+            (name, type_, cycle_delta, runtime_delta),
+        )
+        _conn.commit()
+        row = _conn.execute("SELECT * FROM component_wear WHERE name = ?", (name,)).fetchone()
+    return dict(row) if row else {}
+
+
+def sync_component_wear(name: str, type_: str, cycle_count: int, runtime_seconds: float) -> None:
+    """Overwrite a component's wear row with the live absolute counters from
+    ``app.state`` (the in-memory counters are the source of truth; this just
+    makes them durable across restarts). Safer than accumulating deltas here,
+    since the caller may resync the same reading more than once."""
+    with _lock:
+        _conn.execute(
+            """INSERT INTO component_wear (name, type, cycle_count, runtime_seconds)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(name) DO UPDATE SET
+                 cycle_count     = excluded.cycle_count,
+                 runtime_seconds = excluded.runtime_seconds,
+                 type            = excluded.type""",
+            (name, type_, cycle_count, runtime_seconds),
+        )
+        _conn.commit()
+
+
+def mark_component_repaired(name: str) -> None:
+    with _lock:
+        _conn.execute(
+            """UPDATE component_wear SET cycle_count = 0, runtime_seconds = 0,
+               last_repaired_at = ? WHERE name = ?""",
+            (_utcnow(), name),
+        )
+        _conn.commit()
+
+
+def component_wear_rows() -> list[dict[str, Any]]:
+    return query("SELECT * FROM component_wear ORDER BY name")
+
+
+def record_ghost_car(plate: str, gate: Optional[str], fallback_charge: float) -> int:
+    with _lock:
+        cur = _conn.execute(
+            """INSERT INTO ghost_car_events (plate, gate, occurred_at, fallback_charge)
+               VALUES (?, ?, ?, ?)""",
+            (plate, gate, _utcnow(), fallback_charge),
+        )
+        _conn.commit()
+        return cur.lastrowid
+
+
+def resolve_ghost_car(ghost_id: int, resolved_by: str) -> Optional[dict[str, Any]]:
+    with _lock:
+        row = _conn.execute("SELECT * FROM ghost_car_events WHERE id = ?", (ghost_id,)).fetchone()
+        if row is None or row["resolved"]:
+            return None
+        _conn.execute(
+            "UPDATE ghost_car_events SET resolved = 1, resolved_by = ?, resolved_at = ? WHERE id = ?",
+            (resolved_by, _utcnow(), ghost_id),
+        )
+        _conn.commit()
+        row = _conn.execute("SELECT * FROM ghost_car_events WHERE id = ?", (ghost_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def median_parking_cost() -> Optional[float]:
+    rows = query(
+        "SELECT parking_cost FROM sessions WHERE parking_cost IS NOT NULL ORDER BY parking_cost"
+    )
+    values = [r["parking_cost"] for r in rows]
+    n = len(values)
+    if n == 0:
+        return None
+    mid = n // 2
+    if n % 2:
+        return float(values[mid])
+    return float((values[mid - 1] + values[mid]) / 2.0)
 
 
 def counters() -> dict[str, Any]:

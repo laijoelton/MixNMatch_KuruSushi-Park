@@ -21,6 +21,7 @@ import time
 from http.cookies import SimpleCookie
 from typing import Any, Optional
 
+from fastapi import HTTPException, Request
 from starlette.responses import JSONResponse, RedirectResponse
 
 from app import db  # noqa: F401 - importing db creates the data directory
@@ -31,7 +32,9 @@ log = logging.getLogger("dashboard.auth")
 COOKIE_NAME = "pg_session"
 SESSION_TTL_S = 8 * 3600
 PBKDF2_ITERATIONS = 200_000
-ROLES = ("operator", "admin")
+# "maintenance" repairs components; "financial_auditor" sees the revenue
+# section of reporting. "admin" is a superuser over every role check below.
+ROLES = ("operator", "admin", "maintenance", "financial_auditor")
 
 _conn = sqlite3.connect(settings.database_path, check_same_thread=False)
 _conn.row_factory = sqlite3.Row
@@ -195,7 +198,11 @@ def ensure_schema_and_seed() -> None:
     if _one("SELECT COUNT(*) AS n FROM dashboard_users")["n"] == 0:
         create_user("admin", os.environ.get("DASHBOARD_ADMIN_PASSWORD", "admin123"), "admin")
         create_user("operator", os.environ.get("DASHBOARD_OPERATOR_PASSWORD", "operator123"), "operator")
-        log.info("dashboard: seeded default admin and operator accounts")
+        create_user("maintenance", os.environ.get("DASHBOARD_MAINTENANCE_PASSWORD", "maintenance123"),
+                    "maintenance")
+        create_user("auditor", os.environ.get("DASHBOARD_FINANCIAL_AUDITOR_PASSWORD", "auditor123"),
+                    "financial_auditor")
+        log.info("dashboard: seeded default admin, operator, maintenance and financial_auditor accounts")
 
 
 # --------------------------------------------------------------------------- #
@@ -280,6 +287,43 @@ class AuthMiddleware:
             return
 
         await self.app(scope, receive, send)
+
+
+# --------------------------------------------------------------------------- #
+# Per-route role dependencies - fine-grained, on top of AuthMiddleware
+# --------------------------------------------------------------------------- #
+# AuthMiddleware only distinguishes public / signed-in / admin at the path
+# level. Some Level 2 endpoints need a specific staff role (maintenance,
+# financial_auditor) regardless of path, so these are ordinary FastAPI
+# dependencies layered on top - ``user: dict = Depends(require_maintenance)``.
+def require_staff(request: Request) -> dict[str, Any]:
+    """Any signed-in dashboard user."""
+    user = getattr(request.state, "user", None)
+    if user is None:
+        raise HTTPException(401, "Sign in required")
+    return user
+
+
+def require_role(*roles: str):
+    """Dependency factory: the signed-in user must hold one of ``roles``.
+
+    ``admin`` always passes, the same superuser behaviour AuthMiddleware
+    already gives it for path-level admin routes.
+    """
+    allowed = set(roles) | {"admin"}
+
+    def _dependency(request: Request) -> dict[str, Any]:
+        user = require_staff(request)
+        if user["role"] not in allowed:
+            raise HTTPException(403, f"Requires role: {' or '.join(sorted(allowed - {'admin'}))}")
+        return user
+
+    return _dependency
+
+
+require_admin = require_role("admin")
+require_maintenance = require_role("maintenance")
+require_financial_auditor = require_role("financial_auditor")
 
 
 def install(app) -> None:

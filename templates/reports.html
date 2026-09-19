@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Reports{% endblock %}
+{% block heading %}Daily report{% endblock %}
+{% block crumb %}Operational metrics for every signed-in role; revenue for financial_auditor/admin{% endblock %}
+{% block content %}
+<section class="panel" aria-label="Daily report">
+  <div id="r-cards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-bottom:16px"></div>
+
+  <h2 style="margin:18px 0 8px">Throughput by bay</h2>
+  <div class="table-wrap">
+    <table class="table">
+      <thead><tr><th>Bay</th><th class="num">Sessions</th></tr></thead>
+      <tbody id="r-throughput"></tbody>
+    </table>
+  </div>
+
+  <div id="r-revenue-wrap" hidden>
+    <h2 style="margin:18px 0 8px">Revenue</h2>
+    <div id="r-revenue-cards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px"></div>
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script>
+(function () {
+  function card(label, value, note) {
+    return `<div class="panel" style="padding:14px">
+      <div style="font-size:12px;opacity:.7">${label}</div>
+      <div style="font-size:24px;font-weight:600">${value}</div>
+      ${note ? `<div style="font-size:11px;opacity:.6;margin-top:4px">${note}</div>` : ''}
+    </div>`;
+  }
+
+  async function load() {
+    const res = await fetch('/api/reports/daily', { credentials: 'same-origin' });
+    if (!res.ok) {
+      document.getElementById('r-cards').innerHTML = '<div class="panel">Failed to load report (role permission?)</div>';
+      return;
+    }
+    const data = await res.json();
+    document.getElementById('r-cards').innerHTML = [
+      card('CO mitigation events', data.co_mitigation_events),
+      card('Preventive repairs', data.preventive_repairs),
+      card('Unexpected breakdowns', data.unexpected_breakdowns),
+      card('Open ghost-car alerts', data.ghost_car_events_open),
+      card('Energy conserved (est.)', `${data.energy_conserved_wh_estimate} Wh`, data.energy_conserved_note),
+    ].join('');
+
+    document.getElementById('r-throughput').innerHTML = (data.throughput_by_spot || []).map((row) => `
+      <tr><td>${row.spot}</td><td class="num">${row.sessions}</td></tr>`).join('');
+
+    if (data.revenue) {
+      document.getElementById('r-revenue-wrap').hidden = false;
+      document.getElementById('r-revenue-cards').innerHTML = [
+        card('Paid total', data.revenue.paid_total.toFixed(2)),
+        card('Penalty total', data.revenue.penalty_total.toFixed(2)),
+        card('Net revenue', data.revenue.net_revenue.toFixed(2)),
+      ].join('');
+    }
+  }
+
+  load();
+})();
+</script>
+{% endblock %}

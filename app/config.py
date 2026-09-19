@@ -105,6 +105,35 @@ class Settings:
     broadcast_interval_s: float
     webhook_debug: bool
 
+    # --- Level 2: environmental control hysteresis ---
+    # Below this the fan switches off; above co_fan_on_threshold it switches
+    # on. Keeping the two apart stops the fan flapping on/off every reading
+    # while the CO level hovers around a single threshold.
+    co_fan_off_threshold: float
+
+    # --- Level 2: multi-zone wear tracking ---
+    wear_cycle_threshold: int
+    wear_runtime_threshold_s: float
+
+    # --- Level 2: vehicle-class billing multipliers (on top of the existing
+    # per-minute rate; kept distinct from electric_multiplier, which bills the
+    # electricity line, not the parking line). ---
+    class_multiplier_sedan: float
+    class_multiplier_suv: float
+    class_multiplier_ev: float
+
+    # --- Level 2: reporting ---
+    # Assumed wattage per light for the "energy conserved" estimate in
+    # /api/reports/daily. Explicitly an estimate - there is no real meter.
+    light_watts_estimate: float
+
+    # --- Level 2: environmental control loop cadence ---
+    environment_loop_interval_s: float
+    # Hour-of-day (0-23, from ServerDateTime) at/after which lights go OFF for
+    # day, and at/after which they go back ON for night.
+    day_start_hour: int
+    night_start_hour: int
+
     @classmethod
     def from_env(cls) -> "Settings":
         return cls(
@@ -194,6 +223,21 @@ class Settings:
 
             broadcast_interval_s=_env_float("BROADCAST_INTERVAL_S", 1.0),
             webhook_debug=_env_bool("WEBHOOK_DEBUG", False),
+
+            co_fan_off_threshold=_env_float("CO_FAN_OFF_THRESHOLD", 20.0),
+
+            wear_cycle_threshold=_env_int("WEAR_CYCLE_THRESHOLD", 500),
+            wear_runtime_threshold_s=_env_float("WEAR_RUNTIME_THRESHOLD_S", 36000.0),
+
+            class_multiplier_sedan=_env_float("CLASS_MULTIPLIER_SEDAN", 1.0),
+            class_multiplier_suv=_env_float("CLASS_MULTIPLIER_SUV", 1.25),
+            class_multiplier_ev=_env_float("CLASS_MULTIPLIER_EV", 1.1),
+
+            light_watts_estimate=_env_float("LIGHT_WATTS_ESTIMATE", 60.0),
+
+            environment_loop_interval_s=_env_float("ENVIRONMENT_LOOP_INTERVAL_S", 15.0),
+            day_start_hour=_env_int("DAY_START_HOUR", 7),
+            night_start_hour=_env_int("NIGHT_START_HOUR", 19),
         )
 
 

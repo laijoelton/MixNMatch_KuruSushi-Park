@@ -26,7 +26,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
-from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -95,6 +95,27 @@ def _round_minutes(minutes: float) -> float:
     return float(max(1, round(minutes)))
 
 
+def billing_multiplier(car_type: str) -> float:
+    """Vehicle-class multiplier applied on top of the per-minute parking rate.
+
+    Distinct from ``electric_multiplier``, which bills the electricity LINE
+    for a car whose ``car_type`` is "Electric" - this multiplies the PARKING
+    line for the vehicle's physical class (Sedan/SUV/EV), so an EV pays both
+    its class multiplier on parking and the electric surcharge on charging.
+    The simulator's documented CarType values seen so far are "Normal" and
+    "Electric" only; Sedan/SUV are anticipated but unverified against live
+    traffic, so unmatched types fall back to 1.0x rather than guessing.
+    """
+    key = (car_type or "").strip().lower()
+    if key == "sedan":
+        return settings.class_multiplier_sedan
+    if key == "suv":
+        return settings.class_multiplier_suv
+    if key == "ev":
+        return settings.class_multiplier_ev
+    return 1.0
+
+
 def compute_charge(session) -> tuple[float, float, float]:
     """Return (parking_cost, charging_cost, minutes) for a session.
 
@@ -130,6 +151,7 @@ def compute_charge(session) -> tuple[float, float, float]:
             minutes = settings.unknown_car_minutes
         billable = _round_minutes(minutes)
     base = round(max(settings.minimum_charge, billable * settings.parking_rate_per_minute), 2)
+    base = round(base * billing_multiplier(session.car_type), 2)
     if not session.is_electric:
         return base, 0.0, billable
     if settings.electric_split_charging:
@@ -273,6 +295,105 @@ async def _ensure_barriers_open() -> None:
                 log.exception("failed to auto-open barrier %s", barrier.name)
 
 
+async def _wear_check_loop() -> None:
+    """Preventive maintenance: repair a component nearing its wear threshold
+    during an idle lull (maintenance queue empty), rather than waiting for it
+    to actually break and earn a penalty.
+    """
+    while True:
+        try:
+            if len(maintenance_queue) == 0:
+                for row in state.wear_snapshot():
+                    if row["broken"] or row["under_maintenance"]:
+                        continue
+                    over_cycles = row["cycle_count"] >= settings.wear_cycle_threshold
+                    over_runtime = row["runtime_seconds"] >= settings.wear_runtime_threshold_s
+                    if not (over_cycles or over_runtime):
+                        continue
+                    name, component_type = row["name"], row["type"]
+                    if component_type == "Light":
+                        # Lights have no repair endpoint / broken state - just
+                        # reset the counters so the dashboard stops flagging it.
+                        db.mark_component_repaired(name)
+                        db.record_component_event(name, component_type, "repair_triggered_proactive")
+                        state.log_activity(f"Preventive reset of light {name} wear counters")
+                        continue
+                    db.set_meta(f"pending_proactive_repair:{name}", "1")
+                    db.record_component_event(name, component_type, "repair_triggered_proactive")
+                    await _queue_repair(component_type, name)
+                    state.log_activity(
+                        f"Preventive maintenance: {component_type} {name} queued for repair "
+                        f"(cycles={row['cycle_count']}, runtime={row['runtime_seconds']:.0f}s)")
+                    db.record_audit_log(None, "system", "preventive_repair",
+                                        f"{component_type}:{name} cycles={row['cycle_count']} "
+                                        f"runtime={row['runtime_seconds']:.0f}s")
+        except Exception:  # noqa: BLE001 - the sweep must never die
+            log.exception("wear-check sweep failed")
+        await asyncio.sleep(settings.environment_loop_interval_s)
+
+
+def _latest_server_hour() -> Optional[int]:
+    """Hour-of-day from the most recent webhook's ServerDateTime, if any."""
+    rows = db.query(
+        "SELECT server_datetime FROM events WHERE server_datetime IS NOT NULL "
+        "ORDER BY received_at DESC LIMIT 1"
+    )
+    if not rows or not rows[0]["server_datetime"]:
+        return None
+    raw = rows[0]["server_datetime"]
+    match = re.search(r"[T ](\d{1,2}):", str(raw))
+    if not match:
+        return None
+    try:
+        return int(match.group(1)) % 24
+    except ValueError:
+        return None
+
+
+_lights_are_day: Optional[bool] = None
+
+
+async def _environment_loop() -> None:
+    """Day/night light control, driven by the simulator's own ServerDateTime.
+
+    There is no dedicated day/night webhook field, so this reads the hour out
+    of the most recent event's ServerDateTime (falls back to doing nothing
+    until at least one event has arrived). "Light group" is assumed to be the
+    zone name, since list-lights exposes no other grouping - VERIFY against a
+    live level; if the simulator uses a different group id this silently
+    no-ops (the client call 404s and act() logs+swallows it).
+    """
+    global _lights_are_day
+    while True:
+        try:
+            hour = _latest_server_hour()
+            if hour is not None:
+                is_day = settings.day_start_hour <= hour < settings.night_start_hour
+                if is_day != _lights_are_day:
+                    for zone in state.zone_names():
+                        lights = state.lights_in_zone(zone) or [zone]
+                        if is_day:
+                            if await act(f"lights OFF for {zone} (hour={hour}, day)",
+                                        lambda z=zone: client.light_group_off(z)):
+                                for light_name in lights:
+                                    cycles, runtime = state.set_light_on(light_name, False)
+                                    db.sync_component_wear(light_name, "Light", cycles, runtime)
+                                    db.record_component_event(light_name, "Light", "off")
+                        else:
+                            if await act(f"lights ON for {zone} (hour={hour}, night)",
+                                        lambda z=zone: client.light_group_on(z)):
+                                for light_name in lights:
+                                    cycles, runtime = state.set_light_on(light_name, True)
+                                    db.sync_component_wear(light_name, "Light", cycles, runtime)
+                                    db.record_component_event(light_name, "Light", "on")
+                    state.log_activity(f"Environmental control: lights set for "
+                                       f"{'day' if is_day else 'night'} (hour={hour})")
+                    _lights_are_day = is_day
+        except Exception:  # noqa: BLE001 - the environment loop must never die
+            log.exception("environment loop tick failed")
+        await asyncio.sleep(settings.environment_loop_interval_s)
+
+
 async def _broadcast_loop() -> None:
     while True:
         try:
@@ -321,14 +442,19 @@ async def lifespan(app: FastAPI):
 
     maintenance_queue.start()
     broadcaster = asyncio.create_task(_broadcast_loop(), name="dispatcher-broadcaster")
+    wear_checker = asyncio.create_task(_wear_check_loop(), name="dispatcher-wear-check")
+    environment = asyncio.create_task(_environment_loop(), name="dispatcher-environment")
+    background_tasks = (broadcaster, wear_checker, environment)
     try:
         yield
     finally:
-        broadcaster.cancel()
-        try:
-            await broadcaster
-        except asyncio.CancelledError:
-            pass
+        for task in background_tasks:
+            task.cancel()
+        for task in background_tasks:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
         await maintenance_queue.stop()
         await client.aclose()
 
@@ -590,33 +716,201 @@ async def manual_arrival(body: ManualArrivalIn) -> dict[str, Any]:
 
 
 @app.post("/api/manual/barrier/{name}/open")
-async def manual_barrier_open(name: str) -> dict[str, Any]:
+async def manual_barrier_open(name: str, user: dict = Depends(auth.require_staff)) -> dict[str, Any]:
     await client.barrier_open(name)
     state.update_barrier_state(name, "Open")
+    cycles = state.record_barrier_cycle(name)
+    db.upsert_component_wear(name, "BarrierGate", cycle_delta=0)  # ensure row exists
+    db.sync_component_wear(name, "BarrierGate", cycles, 0.0)
     state.log_activity(f"Operator opened barrier {name}")
+    db.record_audit_log(user["username"], user["role"], "barrier_open", name)
     return {"ok": True, "name": name, "state": "Open"}
 
 
 @app.post("/api/manual/barrier/{name}/close")
-async def manual_barrier_close(name: str) -> dict[str, Any]:
+async def manual_barrier_close(name: str, user: dict = Depends(auth.require_staff)) -> dict[str, Any]:
     await client.barrier_close(name)
     state.update_barrier_state(name, "Closed")
+    cycles = state.record_barrier_cycle(name)
+    db.sync_component_wear(name, "BarrierGate", cycles, 0.0)
     state.log_activity(f"Operator closed barrier {name}")
+    db.record_audit_log(user["username"], user["role"], "barrier_close", name)
     return {"ok": True, "name": name, "state": "Closed"}
 
 
 @app.post("/api/manual/repair/{name}")
-async def manual_repair(name: str) -> dict[str, Any]:
+async def manual_repair(name: str, user: dict = Depends(auth.require_role("maintenance"))) -> dict[str, Any]:
     component_type = (
         "ParkingSpot" if name in state.spots
         else "BarrierGate" if name in state.barriers
         else "ExhaustFan" if name in state.fans
+        else "Light" if name in state.lights
         else None
     )
     if component_type is None:
         raise HTTPException(404, f"unknown component {name}")
-    await _queue_repair(component_type, name)
+    if component_type == "Light":
+        db.mark_component_repaired(name)  # lights have no broken/fixed webhook - reset immediately
+    else:
+        await _queue_repair(component_type, name)  # counters reset when component_fixed arrives
+    db.record_audit_log(user["username"], user["role"], "manual_repair", f"{component_type}:{name}")
     return {"ok": True, "name": name, "type": component_type, "queued": True}
+
+
+@app.post("/api/manual/fan/{name}/on")
+async def manual_fan_on(name: str, user: dict = Depends(auth.require_role("maintenance"))) -> dict[str, Any]:
+    if name not in state.fans:
+        raise HTTPException(404, f"unknown fan {name}")
+    await client.fan_on(name)
+    cycles, runtime = state.set_fan_on(name, True)
+    db.sync_component_wear(name, "ExhaustFan", cycles, runtime)
+    state.log_activity(f"Operator switched on fan {name}")
+    db.record_audit_log(user["username"], user["role"], "fan_on", name)
+    return {"ok": True, "name": name, "is_on": True}
+
+
+@app.post("/api/manual/fan/{name}/off")
+async def manual_fan_off(name: str, user: dict = Depends(auth.require_role("maintenance"))) -> dict[str, Any]:
+    if name not in state.fans:
+        raise HTTPException(404, f"unknown fan {name}")
+    await client.fan_off(name)
+    cycles, runtime = state.set_fan_on(name, False)
+    db.sync_component_wear(name, "ExhaustFan", cycles, runtime)
+    state.log_activity(f"Operator switched off fan {name}")
+    db.record_audit_log(user["username"], user["role"], "fan_off", name)
+    return {"ok": True, "name": name, "is_on": False}
+
+
+@app.post("/api/manual/light/{name}/on")
+async def manual_light_on(name: str, user: dict = Depends(auth.require_staff)) -> dict[str, Any]:
+    await client.light_on(name)
+    cycles, runtime = state.set_light_on(name, True)
+    db.sync_component_wear(name, "Light", cycles, runtime)
+    state.log_activity(f"Operator switched on light {name}")
+    db.record_audit_log(user["username"], user["role"], "light_on", name)
+    return {"ok": True, "name": name, "is_on": True}
+
+
+@app.post("/api/manual/light/{name}/off")
+async def manual_light_off(name: str, user: dict = Depends(auth.require_staff)) -> dict[str, Any]:
+    await client.light_off(name)
+    cycles, runtime = state.set_light_on(name, False)
+    db.sync_component_wear(name, "Light", cycles, runtime)
+    state.log_activity(f"Operator switched off light {name}")
+    db.record_audit_log(user["username"], user["role"], "light_off", name)
+    return {"ok": True, "name": name, "is_on": False}
+
+
+@app.post("/api/ghost-cars/{ghost_id}/override")
+async def ghost_car_override(ghost_id: int,
+                              user: dict = Depends(auth.require_role("operator"))) -> dict[str, Any]:
+    """Authenticated operator override: resolves the ghost-car alert, charges
+    the recorded fallback amount, and only then releases the car."""
+    row = db.resolve_ghost_car(ghost_id, user["username"])
+    if row is None:
+        raise HTTPException(404, "no such open ghost-car event, or it is already resolved")
+
+    plate = row["plate"]
+    fallback = float(row["fallback_charge"] or 0.0)
+    session = state.get_session(plate)
+    if session is None:
+        session = state.start_session(plate, gate="(ghost-override)")
+    session.expected_parking = fallback
+    session.expected_charging = 0.0
+    session.expected_amount = round(fallback, 2)
+    state.mark_charged(plate)
+
+    await act(f"charge {plate} parking={fallback} (ghost-car override by {user['username']})",
+              lambda: client.car_charge(plate, fallback, 0.0))
+    state.mark_paid(plate, session.expected_amount)
+    await act(f"car {plate} -> leavepark (ghost-car override)", lambda: client.car_goto(plate, "leavepark"))
+
+    state.log_activity(f"Ghost car {plate} released by operator override ({user['username']})", level="warn")
+    db.record_audit_log(user["username"], user["role"], "ghost_car_override",
+                        f"ghost_id={ghost_id} plate={plate} charge={fallback}")
+    return {"ok": True, "ghost_id": ghost_id, "plate": plate, "charged": fallback}
+
+
+@app.get("/api/ghost-cars")
+async def list_ghost_cars(resolved: Optional[bool] = None,
+                          user: dict = Depends(auth.require_staff)) -> list[dict[str, Any]]:
+    if resolved is None:
+        return db.query("SELECT * FROM ghost_car_events ORDER BY occurred_at DESC LIMIT 200")
+    return db.query("SELECT * FROM ghost_car_events WHERE resolved = ? ORDER BY occurred_at DESC LIMIT 200",
+                    (int(resolved),))
+
+
+# --------------------------------------------------------------------------- #
+# Penalties (staff)
+# --------------------------------------------------------------------------- #
+@app.get("/api/penalties")
+async def get_penalties(limit: int = 200, code: Optional[str] = None,
+                        user: dict = Depends(auth.require_staff)) -> list[dict[str, Any]]:
+    limit = max(1, min(limit, 500))
+    if code:
+        return db.query(
+            "SELECT * FROM penalties WHERE reason LIKE ? ORDER BY server_datetime DESC LIMIT ?",
+            (f"%{code}%", limit))
+    return db.query("SELECT * FROM penalties ORDER BY server_datetime DESC LIMIT ?", (limit,))
+
+
+# --------------------------------------------------------------------------- #
+# Level 2 dynamic reporting
+# --------------------------------------------------------------------------- #
+@app.get("/api/reports/daily")
+async def daily_report(user: dict = Depends(auth.require_staff)) -> dict[str, Any]:
+    """Aggregated operational + (role-gated) financial metrics.
+
+    Operational metrics are visible to any signed-in staff member; the
+    revenue section is only computed for financial_auditor/admin.
+    """
+    # component_wear/spots have no zone column of their own to join against in
+    # SQL, so throughput is reported per spot (the dashboard groups by zone
+    # client-side using the same /api/layout geometry it already has).
+    throughput_by_zone = db.query(
+        """SELECT COALESCE(spot, 'unknown') AS spot, COUNT(*) AS sessions
+           FROM sessions GROUP BY spot ORDER BY sessions DESC LIMIT 50"""
+    )
+
+    light_off_events = db.query(
+        "SELECT COUNT(*) AS n FROM component_events WHERE type = 'Light' AND event = 'off'"
+    )[0]["n"]
+    energy_conserved_wh_estimate = round(
+        light_off_events * settings.light_watts_estimate * (settings.environment_loop_interval_s / 3600.0), 2
+    )
+
+    co_mitigation_events = db.query(
+        "SELECT COUNT(*) AS n FROM component_events WHERE type = 'ExhaustFan' "
+    )[0]["n"]
+
+    preventive = db.query(
+        "SELECT COUNT(*) AS n FROM component_events WHERE event = 'repair_triggered_proactive'"
+    )[0]["n"]
+    reactive = db.query(
+        "SELECT COUNT(*) AS n FROM component_events WHERE event = 'broken'"
+    )[0]["n"]
+
+    out: dict[str, Any] = {
+        "throughput_by_spot": throughput_by_zone,
+        "energy_conserved_wh_estimate": energy_conserved_wh_estimate,
+        "energy_conserved_note": "Estimate: light-off actions x assumed wattage x tick interval - not a real meter.",
+        "co_mitigation_events": co_mitigation_events,
+        "preventive_repairs": preventive,
+        "unexpected_breakdowns": reactive,
+        "ghost_car_events_open": db.query(
+            "SELECT COUNT(*) AS n FROM ghost_car_events WHERE resolved = 0")[0]["n"],
+    }
+
+    if user["role"] in ("financial_auditor", "admin"):
+        paid = db.query("SELECT COALESCE(SUM(paid_amount), 0) AS r FROM sessions WHERE payment_ok = 1")[0]["r"]
+        fines = db.query("SELECT COALESCE(SUM(fine_amount), 0) AS f FROM penalties")[0]["f"]
+        out["revenue"] = {
+            "paid_total": round(paid, 2),
+            "penalty_total": round(fines, 2),
+            "net_revenue": round(paid - fines, 2),
+        }
+
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -705,6 +999,9 @@ async def simulator_webhook(request: Request) -> JSONResponse:
     payload = await request.json()
     signature = payload.get("Signature")
     if not verify_signature(payload, signature):
+        reason = "no recipe matched the provided signature" if signature else "signature missing"
+        db.record_unsigned_webhook(payload.get("EventId"), reason, payload)
+        log.warning("webhook rejected (enforce mode): %s (EventId=%s)", reason, payload.get("EventId"))
         raise HTTPException(status_code=401, detail="invalid webhook signature")
 
     # Persist first: EventId is the table's primary key, so a redelivery is
@@ -810,15 +1107,16 @@ async def _handle_car_spot_action(payload: dict[str, Any]) -> None:
 
     if spot_type == "ExitSpot" and direction == "CarIn":
         session = state.get_session(plate)
-        if session is None:
-            # Unknown car at the exit. We cannot know how long it really
-            # stayed, but charging an estimate beats letting it leave unpaid:
-            # billing zero reads to the simulator as not charging at all.
-            session = state.start_session(plate, gate="(adopted)",
-                                          car_type=payload.get("CarType", "Normal"),
-                                          planned_minutes=_planned_of(payload))
-            log.warning("unknown car %s at exit %s - charging an estimate", plate, spot_name)
-            state.log_activity(f"Unknown car {plate} at exit - charging estimate", level="warn")
+        if session is None or session.parked_at is None:
+            # Ghost car: arrived at the exit barrier with no matching entry
+            # session (no VehicleSession, or one with no recorded parked_at -
+            # e.g. it was already in the lot when we started and we never saw
+            # it park). Unlike a car we tracked but measured imprecisely, we
+            # have literally no record of it ever entering - do not estimate
+            # and quietly charge it. Hold it at the barrier and raise an alert
+            # for a human instead; see _handle_ghost_car.
+            await _handle_ghost_car(plate, spot_name, payload)
+            return
         if session.charged:
             return
         state.mark_at_exit(plate)
@@ -932,10 +1230,45 @@ async def _charge_at_exit(plate: str, spot_name: str) -> None:
                        level="error")
 
 
+async def _handle_ghost_car(plate: str, exit_spot: str, payload: dict[str, Any]) -> None:
+    """A car with zero registration reached an exit barrier.
+
+    Charging silently on our usual estimate (unknown_car_minutes) is what the
+    dispatcher already does for a car it tracked but lost precise timing for.
+    This is a stricter case - there is no session at all, so the exit barrier
+    is left alone (we never call barrier_open for it here) and the car waits
+    for an authenticated operator to review and release it via
+    POST /api/ghost-cars/{id}/override.
+    """
+    fallback = db.median_parking_cost()
+    if fallback is None:
+        fallback = round(settings.unknown_car_minutes * settings.parking_rate_per_minute, 2)
+    ghost_id = db.record_ghost_car(plate, exit_spot, fallback)
+    state.log_activity(
+        f"UNREGISTERED_VEHICLE_EXIT: {plate} at {exit_spot} - held for operator review "
+        f"(fallback charge {fallback:.2f})", level="error")
+    log.error("UNREGISTERED_VEHICLE_EXIT: %s at %s has no prior entry session - holding at barrier "
+              "(ghost_id=%d, fallback=%.2f)", plate, exit_spot, ghost_id, fallback)
+    try:
+        await manager.broadcast({
+            "type": "alert", "alert_type": "UNREGISTERED_VEHICLE_EXIT",
+            "plate": plate, "gate": exit_spot, "ghost_id": ghost_id,
+            "fallback_charge": fallback, "server_time": time.time(),
+        })
+    except Exception:  # noqa: BLE001 - a broadcast failure must not lose the alert
+        log.exception("failed to broadcast ghost-car alert for %s", plate)
+
+
 async def _handle_component_broken(payload: dict[str, Any]) -> None:
     component_type = payload["Type"]
     name = payload["Name"]
     state.set_component_broken(component_type, name)
+    db.set_meta(f"pending_proactive_repair:{name}", "0")  # it broke on its own - reactive
+    try:
+        fine_amount = float(payload.get("FineAmount") or 0.0)
+    except (TypeError, ValueError):
+        fine_amount = None
+    db.record_component_event(name, component_type, "broken", amount=fine_amount)
     state.log_activity(f"{component_type} {name} broken (fine {payload.get('FineAmount')})", level="warn")
     log.warning("component broken: %s %s (fine %s)", component_type, name, payload.get("FineAmount"))
 
@@ -952,6 +1285,11 @@ async def _handle_component_fixed(payload: dict[str, Any]) -> None:
     component_type = payload["Type"]
     name = payload["Name"]
     state.set_component_fixed(component_type, name)
+    db.mark_component_repaired(name)
+    was_proactive = db.get_meta(f"pending_proactive_repair:{name}") == "1"
+    db.set_meta(f"pending_proactive_repair:{name}", "0")
+    db.record_component_event(name, component_type,
+                              "fixed_proactive" if was_proactive else "fixed_reactive")
     state.log_activity(f"{component_type} {name} fixed")
     log.info("component fixed: %s %s", component_type, name)
 
@@ -965,21 +1303,27 @@ async def _handle_carbon_monoxide_event(payload: dict[str, Any]) -> None:
                        level="warn" if danger_level in ("High", "Critical") else "info")
     log.warning("CO event in %s: level=%.2f danger=%s", zone_name, co_level, danger_level)
 
-    # Docs: fans reduce CO but consume electricity, so keep them off below 50.
-    should_run = co_level >= settings.co_fan_on_threshold
+    # Hysteresis: switch ON at/above co_fan_on_threshold, but only switch OFF
+    # once the level drops below the lower co_fan_off_threshold. A single
+    # shared threshold made the fan flap on/off on every reading that
+    # hovered around it - two distinct edges stop that.
     for fan_name in state.fans_in_zone(zone_name):
         fan = state.fans[fan_name]
         if fan.broken or fan.under_maintenance:
             continue
-        if should_run and not fan.is_on:
+        if not fan.is_on and co_level >= settings.co_fan_on_threshold:
             if await act(f"fan {fan_name} ON (zone {zone_name} CO={co_level:.1f})",
                          lambda n=fan_name: client.fan_on(n)):
-                fan.is_on = True
+                cycles, runtime = state.set_fan_on(fan_name, True)
+                db.sync_component_wear(fan_name, "ExhaustFan", cycles, runtime)
+                db.record_component_event(fan_name, "ExhaustFan", "on", amount=co_level)
                 state.log_activity(f"Exhaust fan {fan_name} switched on for {zone_name}")
-        elif not should_run and fan.is_on:
+        elif fan.is_on and co_level < settings.co_fan_off_threshold:
             if await act(f"fan {fan_name} OFF (zone {zone_name} CO={co_level:.1f})",
                          lambda n=fan_name: client.fan_off(n)):
-                fan.is_on = False
+                cycles, runtime = state.set_fan_on(fan_name, False)
+                db.sync_component_wear(fan_name, "ExhaustFan", cycles, runtime)
+                db.record_component_event(fan_name, "ExhaustFan", "off", amount=co_level)
                 state.log_activity(f"Exhaust fan {fan_name} switched off for {zone_name}")
 
 
