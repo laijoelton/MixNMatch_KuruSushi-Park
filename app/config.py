@@ -36,6 +36,43 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _simulator_game_speed(default: float = 1.0) -> float:
+    """Read GameSpeedMultiplier out of the simulator's own settings.json.
+
+    Our waits (settling before charging, waiting for payment) are wall-clock,
+    but the simulator's patience -- a driver gives up after five minutes -- is
+    simulated time. Raise the multiplier and those five minutes elapse in a
+    fraction of the wall-clock time, while our fixed 2s does not shrink, so we
+    silently consume a much larger share of the budget and cars start escaping.
+
+    Reading it here lets the timings scale automatically instead of needing a
+    second place to remember. GAME_SPEED_MULTIPLIER overrides it.
+    """
+    override = os.environ.get("GAME_SPEED_MULTIPLIER")
+    if override not in (None, ""):
+        try:
+            return max(0.1, float(override))
+        except ValueError:
+            pass
+
+    candidates = [
+        Path("ParkingSimulator-win-x64/ParkingSimulator-win-x64/settings/settings.json"),
+        Path("settings/settings.json"),
+    ]
+    for path in candidates:
+        try:
+            if not path.exists():
+                continue
+            import json
+
+            raw = json.loads(path.read_text(encoding="utf-8-sig"))
+            value = float(raw.get("GameSpeedMultiplier", default))
+            return max(0.1, value)
+        except (OSError, ValueError, TypeError):
+            continue
+    return default
+
+
 @dataclass(frozen=True)
 class Settings:
     simulator_base_url: str
@@ -58,6 +95,7 @@ class Settings:
     reservation_ttl_s: float
     seed_from_level: str
     unknown_car_minutes: float
+    game_speed: float
     billing_rounding: str
     exit_charge_delay_s: float
     payment_wait_s: float
@@ -117,6 +155,10 @@ class Settings:
             # instead: the midpoint of the simulator's MinParkingTime (1) and
             # MaxParkingTime (5) from settings.json.
             unknown_car_minutes=_env_float("UNKNOWN_CAR_MINUTES", 3.0),
+
+            # Read from the simulator's settings.json so our wall-clock waits
+            # stay proportional to the simulator's own sense of time.
+            game_speed=_simulator_game_speed(),
 
             # How measured minutes become a billable figure: "round" (nearest,
             # the default), "ceil" (a started minute is charged), or "exact"

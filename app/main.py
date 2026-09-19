@@ -225,7 +225,8 @@ async def lifespan(app: FastAPI):
         log.warning("routing: no data/distances.json - falling back to the name-ordered "
                     "synthetic ring, which is NOT physical distance")
 
-    log.info("autopilot=%s  signature_mode=%s", settings.autopilot, settings.webhook_signature_mode)
+    log.info("autopilot=%s  signature_mode=%s  game_speed=%sx",
+             settings.autopilot, settings.webhook_signature_mode, settings.game_speed)
 
     maintenance_queue.start()
     broadcaster = asyncio.create_task(_broadcast_loop(), name="dispatcher-broadcaster")
@@ -288,8 +289,19 @@ async def dispatch_entry(plate: str, gate_name: str, car_type: str = "Normal",
             return {"plate": plate, "gate": gate_name, "target": None, "dispatched": False}
 
     state.assign_spot(plate, target)
-    await act(f"open {gate_name} barrier for {plate}",
-              lambda: client.barrier_open(settings.entry_gate))
+
+    # Only touch the barrier if it is not already open. _ensure_barriers_open()
+    # and the gate_action reopen keep it open in normal running, so opening it
+    # per car was a wasted HTTP round trip on the entry critical path -- which
+    # is exactly where arrivals queue up at higher game speeds. It also burned
+    # gate open/close cycles, and gates need repair after a fixed number of
+    # them.
+    barrier = state.barriers.get(settings.entry_gate)
+    if barrier is not None and barrier.state != BarrierPosition.OPEN \
+            and not barrier.broken and not barrier.under_maintenance:
+        await act(f"open {settings.entry_gate} barrier for {plate}",
+                  lambda: client.barrier_open(settings.entry_gate))
+
     sent = await act(f"car {plate} -> {target}", lambda: client.car_goto(plate, target))
 
     if not sent:
@@ -677,7 +689,15 @@ async def _charge_at_exit(plate: str, spot_name: str) -> None:
     again if nothing comes. The 5-minute driver patience gives us room for
     several attempts.
     """
-    await asyncio.sleep(settings.exit_charge_delay_s)
+    # Scale by the simulator's clock. Our waits are wall-clock but the driver's
+    # five minutes of patience is simulated time, so at 5x speed that budget is
+    # gone in 60 real seconds while an unscaled 2s delay stays 2s -- thirty
+    # times more of the window than at 1x.
+    speed = max(0.1, settings.game_speed)
+    settle = settings.exit_charge_delay_s / speed
+    payment_window = settings.payment_wait_s / speed
+
+    await asyncio.sleep(settle)
 
     for attempt in range(1, max(1, settings.charge_max_attempts) + 1):
         session = state.get_session(plate)
@@ -702,10 +722,11 @@ async def _charge_at_exit(plate: str, spot_name: str) -> None:
         # pays quickly is released quickly. A correction from the simulator
         # (see _handle_penalty) also lands here as a changed expected_amount.
         waited = 0.0
+        tick = min(1.0, max(0.1, 1.0 / speed))
         charged_amount = session.expected_amount
-        while waited < settings.payment_wait_s:
-            await asyncio.sleep(1.0)
-            waited += 1.0
+        while waited < payment_window:
+            await asyncio.sleep(tick)
+            waited += tick
             current = state.get_session(plate)
             if current is None or current.paid:
                 return
@@ -717,7 +738,7 @@ async def _charge_at_exit(plate: str, spot_name: str) -> None:
                 waited = 0.0
 
         log.warning("%s has not paid %.2f after %.0fs - recharging",
-                    plate, session.expected_amount, settings.payment_wait_s)
+                    plate, session.expected_amount, payment_window)
 
     log.error("%s never paid after %d attempts - it will likely escape",
               plate, settings.charge_max_attempts)
