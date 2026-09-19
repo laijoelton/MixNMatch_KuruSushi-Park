@@ -764,6 +764,10 @@ queue callback when the threshold is crossed. No live simulator mutations.
 *Numbered 4.16 on `main`; renumbered to 4.22 when merged with the
 `codex/level2-requirements-audit` branch, which already had a 4.16.*
 
+*START.bat previously ran `pip install -r requirements.txt` only when `.venv` was
+missing, so existing installs never received numpy/scikit-learn and this layer ran
+on its fallbacks without saying so. START.bat now re-checks dependencies on every start.*
+
 ---
 
 ## 5. Edge cases and how they are handled
