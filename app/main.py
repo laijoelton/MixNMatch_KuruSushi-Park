@@ -25,7 +25,7 @@ from app.client import client
 from app.config import settings
 from app.queue_worker import maintenance_queue
 from app.routing import rank_spots, ring
-from app.state import state
+from app.state import BarrierPosition, state
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("dispatcher.main")
@@ -75,11 +75,36 @@ async def sync_from_simulator() -> dict[str, int]:
     state.load_zones(zones)
     state.load_fans(fans)
     ring.rebuild(list(state.spots.keys()) + list(state.barriers.keys()))
+    await _ensure_barriers_open()
     counts = {"spots": len(state.spots), "barriers": len(state.barriers),
               "zones": len(state.zones), "fans": len(state.fans)}
     state.log_activity(f"Manual sync: {counts['spots']} spots, {counts['barriers']} barriers, "
                        f"{counts['zones']} zones, {counts['fans']} fans")
     return counts
+
+
+async def _ensure_barriers_open() -> None:
+    """Keep every operable barrier open by default.
+
+    This is a fully automated, unmanned lot - there is no attendant to raise
+    a physical arm per car. A barrier left ``Closed`` (the simulator's own
+    default on some levels) silently strands every dispatched vehicle at the
+    entry spot with no error and no further webhook, since the car can never
+    physically reach its assigned bay. Broken or under-maintenance barriers
+    are left alone; opening those would just trigger
+    ``Penalty_OperateElementWhileUnderRepair``.
+    """
+    for barrier in list(state.barriers.values()):
+        if barrier.broken or barrier.under_maintenance:
+            continue
+        if barrier.state != BarrierPosition.OPEN:
+            try:
+                await client.barrier_open(barrier.name)
+                state.update_barrier_state(barrier.name, "Open")
+                state.log_activity(f"Auto-opened barrier {barrier.name} (was {barrier.state.value})")
+                log.info("auto-opened barrier %s to clear the entry path", barrier.name)
+            except Exception:  # noqa: BLE001 - one stuck barrier must not block the others
+                log.exception("failed to auto-open barrier %s", barrier.name)
 
 
 @asynccontextmanager
@@ -279,6 +304,9 @@ async def simulator_webhook(request: Request) -> JSONResponse:
     if gap:
         log.warning("webhook sequence gap detected: %d missing event(s) before SequenceId=%s", gap, sequence_id)
 
+    if settings.webhook_debug:
+        log.info("RAW WEBHOOK PAYLOAD: %s", payload)
+
     event_class = payload.get("EventClass", "")
     handler = _HANDLERS.get(event_class)
     if handler is None:
@@ -404,6 +432,13 @@ async def _handle_gate_action(payload: dict[str, Any]) -> None:
     name = payload["Name"]
     action = payload.get("Action", "")
     state.update_barrier_state(name, action)
+
+    barrier = state.barriers.get(name)
+    if barrier is not None and action == "Closed" and not barrier.broken and not barrier.under_maintenance:
+        # Unmanned lot: nothing should leave a barrier closed once it settles -
+        # a car sitting behind it would otherwise strand silently with no
+        # further webhook. Reopen it off the critical path.
+        await maintenance_queue.submit(f"reopen barrier {name}", lambda: client.barrier_open(name), priority=5)
 
 
 async def _handle_payment_made(payload: dict[str, Any]) -> None:
