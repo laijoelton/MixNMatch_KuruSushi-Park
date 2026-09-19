@@ -12,4 +12,4 @@ dispatcher.err.log
 ParkingSimulator-win-x64/ParkingSimulator-win-x64/settings/game.db
 tmp/
 output/
-rules/
+rules/*.log
