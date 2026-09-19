@@ -167,17 +167,24 @@ def test_accessible_prefers_accessible_bay(park):
 
 
 def test_ghost_car_closes_barrier_and_waits_for_real_payment(park):
+    # 4.25: a ghost car is invoiced automatically; a payment does not release
+    # it - only a staff release does.
     state.barriers["exitGate"] = Barrier("exitGate", state=BarrierPosition.OPEN)
     async def scenario():
         await main._handle_ghost_car("GHOST", "EXIT", {})
         await main._handle_ghost_car("GHOST", "EXIT", {})
+        await asyncio.sleep(0.05)
         rows = db.query("SELECT * FROM ghost_car_events")
         assert len(rows) == 1
         main.client.barrier_close.assert_awaited()
-        await main.ghost_car_override(rows[0]["id"], {"username": "operator", "role": "facility_operator"})
+        main.client.car_charge.assert_awaited_once()
         assert not state.sessions["GHOST"].paid
-        main.client.car_goto.assert_not_awaited()
         await main._handle_payment_made({"CarPlateNumber": "GHOST", "Amount": state.sessions["GHOST"].expected_amount})
+        assert state.sessions["GHOST"].paid
+        main.client.car_goto.assert_not_awaited()
+        asyncio.get_running_loop().call_later(0.02, state.update_barrier_state, "exitGate", "Open")
+        await main.ghost_car_release(rows[0]["id"], main.GhostReleaseIn(),
+                                     {"username": "operator", "role": "facility_operator"})
         main.client.car_goto.assert_awaited_once_with("GHOST", "leavepark")
     asyncio.run(scenario())
 
@@ -207,7 +214,7 @@ def test_environment_dynamic_ids_and_hysteresis(park):
         assert main.client.light_off.await_count == 1
         await schedule_lights("2026-09-19 19:00:00", state, main.client, main.act)
         main.client.light_on.assert_awaited_once_with("unusual-light-42")
-        for value in (51, 45, 30, 29):
+        for value in (51, 45, 16, 14):   # on above 50, off only below 15 (4.23)
             await main._handle_carbon_monoxide_event({"ZoneName": "Z", "CarbonMonoxideLevel": value})
         main.client.fan_on.assert_awaited_once_with("F")
         main.client.fan_off.assert_awaited_once_with("F")
@@ -276,23 +283,26 @@ def test_dry_run_skips_gate_fan_light_and_charge(park, monkeypatch):
 
 
 def test_wear_85_percent_defers_occupied_bay_and_resets(park, monkeypatch):
-    monkeypatch.setattr(main, "settings", dataclasses.replace(main.settings, wear_cycle_threshold=100))
+    # Bays: preventive after SPOT_PREVENTIVE_PARKS parks (4.24). Gates: ranked
+    # by opens since repair (4.28). Both reset when the repair completes.
+    monkeypatch.setattr(main, "settings", dataclasses.replace(main.settings, spot_preventive_parks=85,
+                                                            gate_repair_min_opens=5))
     queued = AsyncMock()
     monkeypatch.setattr(main.maintenance_queue, "submit", queued)
     state.spots["S1"].cycle_count = 85
     state.spots["S1"].occupant_plate = "OCCUPANT"
-    state.barriers["WORN"] = Barrier("WORN", cycle_count=84)
+    state.barriers["WORN"] = Barrier("WORN", opens_since_repair=4)
     async def scenario():
         await main.check_wear()
         assert state.deferred_repairs["S1"] == "ParkingSpot"
         queued.assert_not_awaited()
-        state.barriers["WORN"].cycle_count = 85
+        state.barriers["WORN"].opens_since_repair = 5
         await main.check_wear()
         assert queued.await_count == 1
         await main.check_wear()
         assert queued.await_count == 1
         await main._handle_component_fixed({"Type": "BarrierGate", "Name": "WORN"})
-        assert state.barriers["WORN"].cycle_count == 0
+        assert state.barriers["WORN"].cycle_count == 0 and state.barriers["WORN"].opens_since_repair == 0
         assert db.query("SELECT cycle_count FROM component_wear WHERE name = 'WORN'")[0]["cycle_count"] == 0
     asyncio.run(scenario())
 

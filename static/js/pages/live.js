@@ -189,14 +189,22 @@ function gateView(snap, name) {
   const gate = (snap.barriers || []).find((x) => x.name === name);
   if (!gate) return null;
   const state = gateState(gate);
-  const out = state === "fault";
-  const reason = out ? (gate.repair_pending ? "This gate is unavailable while its repair is queued." : "Operating a gate that is broken or under repair is penalised.") : null;
+  // 4.33: staff commands win. Only a broken gate or one actually under repair
+  // refuses (operating it is penalised); a merely queued repair is cancelled.
+  const out = gate.broken || gate.under_maintenance;
+  const reason = out ? "Operating a gate that is broken or under repair is penalised." : null;
   const call = (verb) => api(`/api/manual/barrier/${encodeURIComponent(name)}/${verb}`, { method: "POST" });
+  const waiting = gate.held_plates || [];
 
-  const openBtn = h("button", { class: "btn", type: "button", text: "Open / release hold", disabled: out || (gate.state === "Open" && !gate.operator_override),
+  const openBtn = h("button", { class: `btn${waiting.length ? " primary" : ""}`, type: "button",
+    text: waiting.length ? `Open & let ${waiting.join(", ")} out` : "Open (hold open)",
+    disabled: out || (gate.operator_open && !waiting.length),
     onclick: () => runAction(openBtn, () => call("open"), `Opening ${name}`) });
-  const closeBtn = h("button", { class: "btn", type: "button", text: "Hold closed", disabled: out || (gate.state === "Closed" && gate.operator_override),
+  const closeBtn = h("button", { class: "btn", type: "button", text: "Hold closed", disabled: out || gate.operator_override,
     onclick: () => runAction(closeBtn, () => call("close"), `Closing ${name}`) });
+  const autoBtn = h("button", { class: "btn ghost", type: "button", text: "Automatic",
+    disabled: !(gate.operator_open || gate.operator_override),
+    onclick: () => runAction(autoBtn, () => call("auto"), `${name} back on automatic`) });
   const repairBtn = h("button", { class: `btn ${gate.broken ? "primary" : "ghost"}`, type: "button", text: "Repair",
     disabled: gate.under_maintenance || gate.repair_pending,
     onclick: () => runAction(repairBtn, () => api(`/api/manual/repair/${encodeURIComponent(name)}`, { method: "POST" }), `Repair queued for ${name}`) });
@@ -208,10 +216,11 @@ function gateView(snap, name) {
     body: detailList([
       ["Position", h("span", { class: `tag ${state === "open" ? "free" : state === "fault" ? "fault" : state === "moving" ? "reserved" : ""}`, text: gate.state })],
       ["Condition", gate.broken ? "Broken" : gate.under_maintenance ? "Under repair" : gate.repair_pending ? "Repair queued" : "Good"],
+      ["Opens since repair", String(gate.opens_since_repair ?? 0)],
       ["Zone", gate.zone || "Perimeter"],
       ["Service state", gate.hold_reason || GATE_STATE_LABEL[state]],
     ]),
-    actions: [...(canGate ? [openBtn, closeBtn] : []), ...(canRepair ? [repairBtn] : []), reasonLine(reason)],
+    actions: [...(canGate ? [openBtn, closeBtn, autoBtn] : []), ...(canRepair ? [repairBtn] : []), reasonLine(reason)],
   };
 }
 
@@ -243,7 +252,7 @@ const PREDICTIVE_ALERT_TYPES = new Set(["PREDICTIVE_CO_WARNING", "PREDICTIVE_MAI
 
 function predictiveAlertMessage(alert) {
   if (alert.alert_type === "PREDICTIVE_CO_WARNING") {
-    return `⚠️ Zone ${alert.zone}: CO predicted to hit ${alert.predicted_ppm}ppm in ${alert.minutes_to_threshold} min — fan starting early`;
+    return `⚠️ Zone ${alert.zone}: CO predicted to hit ${alert.predicted_ppm}ppm in ${alert.minutes_to_threshold} min — fans switch on above 50`;
   }
   if (alert.alert_type === "PREDICTIVE_MAINTENANCE_WARNING") {
     return `🔧 ${alert.component} (${alert.component_type}) predicted to fail in ${alert.days_to_failure}d (${Math.round(alert.failure_probability * 100)}% risk)`;
@@ -301,6 +310,8 @@ document.addEventListener("keydown", (event) => {
 });
 window.addEventListener("beforeunload", closeDrawer);
 
+// Ghost cars and held vehicles: the gate is ringed orange on the map and listed
+// under Needs attention; staff open it from the gate drawer (4.33).
 window.addEventListener("park-alert", event => {
   const alert = event.detail;
   if (PREDICTIVE_ALERT_TYPES.has(alert.alert_type)) {
@@ -312,17 +323,4 @@ window.addEventListener("park-alert", event => {
     }
     return;
   }
-  if (alert.alert_type !== "UNREGISTERED_VEHICLE_EXIT") return;
-  const content = [h("b", { text: `Unregistered vehicle ${alert.plate} at ${alert.gate}. ` }), "Awaiting staff clearance."];
-  if (canGate) {
-    const button = h("button", { class: "btn small", text: "Authorize fallback invoice", onclick: async () => {
-      await runAction(button, () => api("/api/ghost-car/override", { method: "POST", body: { ghost_id: alert.ghost_id } }), "Invoice attempted; awaiting payment");
-    } });
-    content.push(button);
-  }
-  setBanner(`ghost-${alert.ghost_id}`, { kind: "bad", text: content });
 });
-const ghosts = await api("/api/ghost-cars?resolved=false");
-for (const ghost of ghosts) window.dispatchEvent(new CustomEvent("park-alert", { detail: {
-  type: "alert", alert_type: "UNREGISTERED_VEHICLE_EXIT", plate: ghost.plate, gate: ghost.gate, ghost_id: ghost.id,
-} }));

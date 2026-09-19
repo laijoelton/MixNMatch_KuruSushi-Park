@@ -398,6 +398,11 @@ kbd {
 .tw-gate .post { fill: var(--paint); }
 .tw-gate text { fill: var(--muted); font: 600 22px var(--mono); text-anchor: middle; }
 .tw-gate.is-selected .arm { stroke: var(--accent); }
+/* A car (ghost / unverified payment) is held here: staff open the gate (4.33). */
+.tw-gate.needs-attention .post { stroke: #ff8a1f; stroke-width: 10; }
+.tw-gate.needs-attention { filter: drop-shadow(0 0 14px #ff8a1f); animation: gate-attention 1.2s ease-in-out infinite alternate; }
+@keyframes gate-attention { from { opacity: 1; } to { opacity: 0.55; } }
+@media (prefers-reduced-motion: reduce) { .tw-gate.needs-attention { animation: none; } }
 
 .tw-fan { cursor: pointer; }
 .tw-fan circle { fill: var(--surface-3); stroke: var(--muted); stroke-width: 4; }

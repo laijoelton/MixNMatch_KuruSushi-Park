@@ -370,6 +370,59 @@ def latest_insights() -> dict[str, Any]:
 # Background training/sweep loop
 # --------------------------------------------------------------------- #
 
+
+async def predictive_sweep_once(
+    wear_snapshot: Callable[[], list[dict[str, Any]]],
+    queue_repair: Callable[[str, str], Awaitable[None]],
+    broadcast: Optional[Callable[[dict[str, Any]], Awaitable[None]]] = None,
+) -> None:
+    """One retrain + sweep: records insights and early warnings (main, 4.22),
+    but only queues repairs when ML_PREDICTIVE_REPAIRS is on. Trained on 107
+    breakdowns against 1 preventive repair, the model gave ~99% failure for
+    every component at any wear and queued them all (4.31). Gates are never
+    queued here: app.main._schedule_gate_repairs owns them (4.28)."""
+    global _repair_model
+    _repair_model = _train_repair_model()
+    component_rows: list[dict[str, Any]] = []
+    for row in wear_snapshot():
+        if row["broken"] or row["under_maintenance"] or row["type"] == "Light":
+            _warned_components.discard(row["name"])
+            continue
+        name, component_type = row["name"], row["type"]
+        prediction = repair_period_prediction(name, row["cycle_count"], row["runtime_seconds"])
+        component_rows.append({"name": name, "type": component_type, **prediction})
+
+        if prediction["days_to_failure"] <= MAINTENANCE_WARNING_DAYS:
+            if broadcast is not None and name not in _warned_components:
+                _warned_components.add(name)
+                try:
+                    await broadcast({
+                        "type": "alert", "alert_type": "PREDICTIVE_MAINTENANCE_WARNING",
+                        "component": name, "component_type": component_type,
+                        "days_to_failure": prediction["days_to_failure"],
+                        "failure_probability": prediction["failure_probability"],
+                    })
+                except Exception:  # noqa: BLE001 - a broadcast failure must not lose the sweep
+                    log.exception("failed to broadcast maintenance warning for %s", name)
+        else:
+            _warned_components.discard(name)
+
+        if (not settings.ml_predictive_repairs or component_type == "BarrierGate"
+                or not prediction["needs_repair"]):
+            continue
+        if db.get_meta(f"pending_proactive_repair:{name}") == "1":
+            continue
+        if settings.autopilot:
+            db.set_meta(f"pending_proactive_repair:{name}", "1")
+            db.record_component_event(name, component_type, "repair_triggered_predictive")
+        log.info("ml_agent: %s %s predicted failure probability %.2f - queuing early repair",
+                 component_type, name, prediction["failure_probability"])
+        await queue_repair(component_type, name)
+
+    component_rows.sort(key=lambda c: c["days_to_failure"])
+    record_component_insights(component_rows)
+
+
 async def run_predictive_loop(
     *,
     wear_snapshot: Callable[[], list[dict[str, Any]]],
@@ -394,47 +447,9 @@ async def run_predictive_loop(
     recovers so it can fire again on a future decline instead of going
     silent forever.
     """
-    global _repair_model
     while True:
         try:
-            _repair_model = _train_repair_model()
-            component_rows: list[dict[str, Any]] = []
-            for row in wear_snapshot():
-                if row["broken"] or row["under_maintenance"] or row["type"] == "Light":
-                    _warned_components.discard(row["name"])
-                    continue
-                name, component_type = row["name"], row["type"]
-                prediction = repair_period_prediction(name, row["cycle_count"], row["runtime_seconds"])
-                component_rows.append({"name": name, "type": component_type, **prediction})
-
-                if prediction["days_to_failure"] <= MAINTENANCE_WARNING_DAYS:
-                    if broadcast is not None and name not in _warned_components:
-                        _warned_components.add(name)
-                        try:
-                            await broadcast({
-                                "type": "alert", "alert_type": "PREDICTIVE_MAINTENANCE_WARNING",
-                                "component": name, "component_type": component_type,
-                                "days_to_failure": prediction["days_to_failure"],
-                                "failure_probability": prediction["failure_probability"],
-                            })
-                        except Exception:  # noqa: BLE001 - a broadcast failure must not lose the sweep
-                            log.exception("failed to broadcast maintenance warning for %s", name)
-                else:
-                    _warned_components.discard(name)
-
-                if not prediction["needs_repair"]:
-                    continue
-                if db.get_meta(f"pending_proactive_repair:{name}") == "1":
-                    continue
-                if settings.autopilot:
-                    db.set_meta(f"pending_proactive_repair:{name}", "1")
-                    db.record_component_event(name, component_type, "repair_triggered_predictive")
-                log.info("ml_agent: %s %s predicted failure probability %.2f - queuing early repair",
-                         component_type, name, prediction["failure_probability"])
-                await queue_repair(component_type, name)
-
-            component_rows.sort(key=lambda c: c["days_to_failure"])
-            record_component_insights(component_rows)
+            await predictive_sweep_once(wear_snapshot, queue_repair, broadcast)
         except Exception:  # noqa: BLE001 - a bad sweep must not kill the background task
             log.exception("ml_agent predictive loop tick failed")
         await asyncio.sleep(interval_s / max(settings.game_speed, 0.1))

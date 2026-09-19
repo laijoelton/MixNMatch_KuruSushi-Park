@@ -87,7 +87,8 @@ def test_repair_stops_running_fan_before_repair(maintenance):
 
 
 def test_dropped_proactive_repair_can_be_scheduled_again(maintenance):
-    state.barriers["WORN"] = Barrier("WORN", cycle_count=85)
+    # 4.28: gates are ranked by opens since repair, not the 85%-of-cycles rule.
+    state.barriers["WORN"] = Barrier("WORN", opens_since_repair=main.settings.gate_repair_min_opens)
     async def scenario():
         await main.check_wear()
         callback = maintenance[0][1].get("on_drop")
@@ -150,10 +151,16 @@ def test_light_fault_is_visible_and_not_operated(maintenance):
 
 
 def test_queued_gate_cannot_be_opened_during_repair(maintenance):
+    # 4.33: a merely *queued* repair gives way to staff; a gate actually under
+    # repair still refuses, because operating it is penalised.
     from fastapi import HTTPException
     state.barriers["G"] = Barrier("G")
     async def scenario():
-        await main._queue_repair("BarrierGate", "G")
+        state.pending_repairs["G"] = "BarrierGate"
+        await main.manual_barrier_open("G", {"username": "admin", "role": "admin"})
+        assert "G" not in state.pending_repairs
+        state.barriers["G"].under_maintenance = True
+        main.client.barrier_open.reset_mock()
         with pytest.raises(HTTPException) as exc:
             await main.manual_barrier_open("G", {"username": "admin", "role": "admin"})
         assert exc.value.status_code == 409

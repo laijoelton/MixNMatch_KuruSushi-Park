@@ -40,7 +40,7 @@ from app.queue_worker import maintenance_queue, schedule_lights
 from app.routing import load_distance_table, rank_spots, ring
 from app.seed import load_level
 from app.signature import verify as verify_signature_recipes
-from app.state import BarrierPosition, SessionPhase, VehicleSession, SpotStatus, normalize_car_type, state
+from app.state import Barrier, BarrierPosition, SessionPhase, VehicleSession, SpotStatus, normalize_car_type, state
 from app.policy import has, project_snapshot, project_events, redact
 from app.ws_manager import manager
 
@@ -213,6 +213,41 @@ def _zone_entry_gate(zone: str, sensor: str) -> Optional[str]:
     return gate or _barrier_for_sensor(sensor)
 
 
+def _zone_gates(zone: str) -> tuple[Optional[str], Optional[str]]:
+    """(entry gate, exit gate) of ``zone``. The exit gate is found through the
+    zone's exit sensor, because ZONE1's exit gate (gate2) carries no zone tag."""
+    layout = load_layout(running_level() or "lvl1")
+    positions = {n: (g["x"], g["y"]) for n, g in layout.get("gates", {}).items()}
+    entries = [(s["x"], s["y"]) for s in layout.get("spots", {}).values() if s.get("purpose") == "EntrySpot"]
+    entry = zones.entry_gate_for_zone(zone, state.barriers.values(), positions, entries,
+                                      exclude={settings.main_gate})
+    # Geometry only: _barrier_for_sensor's "the only barrier" fallback would
+    # misread any lone gate as a zone's exit gate.
+    known = {n: xy for n, xy in positions.items() if n in state.barriers and n != settings.main_gate}
+    exit_gate = None
+    for s in layout.get("spots", {}).values():
+        if s.get("purpose") == "ExitSpot" and s.get("zone") == zone and known:
+            exit_gate = min(known, key=lambda n: (known[n][0] - s["x"]) ** 2 + (known[n][1] - s["y"]) ** 2)
+            break
+    return entry, exit_gate
+
+
+def _all_zones() -> list[str]:
+    layout = load_layout(running_level() or "lvl1")
+    names = {s.get("zone") for s in layout.get("spots", {}).values() if s.get("zone")}
+    return sorted((z for z in names if any(g in state.barriers for g in _zone_gates(z))), key=zones._natural)
+
+
+def _zone_of_gate(gate: str) -> Optional[str]:
+    if gate == settings.main_gate:
+        return None
+    layout = load_layout(running_level() or "lvl1")
+    for zone in sorted({s.get("zone") for s in layout.get("spots", {}).values() if s.get("zone")}):
+        if gate in _zone_gates(zone):
+            return zone
+    return None
+
+
 def _entry_gate_for_session(session) -> Optional[str]:
     spot = state.spots.get(session.assigned_spot or "")
     return _zone_entry_gate(spot.zone_parent if spot else "", session.entry_gate)
@@ -229,6 +264,8 @@ def _gates_in_use() -> set[str]:
     parks, and its exit gate from payment until it has left the facility."""
     used: set[Optional[str]] = set(_holding_gate.values())
     for session in list(state.sessions.values()):
+        if session.phase == SessionPhase.ASSIGNED and session.parked_at is None and not session.passed_zone_gate:
+            used.add(_entry_gate_for_session(session))   # a stream keeps its gate open (4.32)
         if session.paid and session.exit_gate:
             used.add(_barrier_for_sensor(session.exit_gate))
     return {name for name in used if name}
@@ -237,13 +274,156 @@ def _gates_in_use() -> set[str]:
 async def _close_idle_gates(*, include_main: bool = False) -> None:
     in_use = _gates_in_use()
     for name, barrier in list(state.barriers.items()):
-        if (name in in_use or (name == settings.main_gate and not include_main)
+        if (name in in_use or (name == settings.main_gate and not include_main) or barrier.operator_open
                 or barrier.state not in (BarrierPosition.OPEN, BarrierPosition.OPENING)
                 or barrier.broken or barrier.under_maintenance or name in state.pending_repairs):
             continue
         if await act(f"close idle gate {name}", lambda n=name: client.barrier_close(n)):
             state.update_barrier_state(name, "Closing")
             db.sync_component_wear(name, "BarrierGate", state.record_barrier_cycle(name), 0)
+
+
+
+# --------------------------------------------------------------------------- #
+# Zone maintenance (4.26). When a zone's entry or exit gate needs repair the
+# zone closes to new cars (dispatch skips it, so the ratio routes cars to the
+# other zones). Its entry gate is repaired once no car is still driving in;
+# its exit gate once the zone has emptied - parked cars leave at the end of
+# their booked stay. A broken gate is repaired at once. The zone reopens only
+# when both gates are fixed, so the entry stays shut until then.
+# --------------------------------------------------------------------------- #
+_maintenance_rotation: list[str] = []   # zones in the order maintenance started them
+
+
+def _start_zone_maintenance(zone: str, trigger: str) -> None:
+    if zone in state.zone_maintenance:
+        return
+    _maintenance_rotation.append(zone)
+    del _maintenance_rotation[:-10]
+    entry, exit_gate = _zone_gates(zone)
+    state.zone_maintenance[zone] = {"entry": entry, "exit": exit_gate, "trigger": trigger,
+                                    "todo": {g for g in (entry, exit_gate) if g}}
+    state.log_activity(f"{zone} closed for maintenance ({trigger}). New cars go to the other zones; "
+                       f"{entry or 'the entry gate'} then {exit_gate or 'the exit gate'} are repaired, one at a time",
+                       level="warn", capability="logs:view_maint")
+
+
+def _zone_inbound_clear(zone: str, entry: Optional[str]) -> bool:
+    if entry and entry in _holding_gate.values():
+        return False
+    for session in list(state.sessions.values()):
+        spot = state.spots.get(session.assigned_spot or "")
+        if session.phase == SessionPhase.ASSIGNED and session.parked_at is None and spot and spot.zone_parent == zone:
+            return False
+    return True
+
+
+
+async def _advance_zone_maintenance() -> None:
+    for zone, info in list(state.zone_maintenance.items()):
+        entry, exit_gate = info["entry"], info["exit"]
+        if entry in info["todo"] and _zone_inbound_clear(zone, entry):
+            await _queue_repair("BarrierGate", entry, via_zone=True)
+        # 4.32: the exit gate follows the entry gate straight away rather than
+        # waiting for the zone to empty; only a car being let out holds it back.
+        if (exit_gate in info["todo"] and (entry not in info["todo"] or not entry)
+                and exit_gate not in _gates_in_use()):
+            await _queue_repair("BarrierGate", exit_gate, via_zone=True)
+        # 4.34: shut for the first repair; back on automatic as soon as the
+        # second (last) gate's repair has started.
+        if len(info["todo"]) == 1:
+            last = next(iter(info["todo"]))
+            barrier = state.barriers.get(last)
+            if last in state.pending_repairs or (barrier and barrier.under_maintenance):
+                if not info.get("reopened"):
+                    info["reopened"] = True
+                    state.log_activity(f"{zone} back on automatic while {last} is repaired",
+                                       capability="logs:view_maint")
+
+
+
+# --------------------------------------------------------------------------- #
+# Balanced gate repairs (4.28). Exactly one gate may be in repair at a time,
+# breakdowns included. When the slot is free: a broken gate first, then the
+# next step of an open zone maintenance, then - preventively - the most-worn
+# idle gate once it has GATE_REPAIR_MIN_OPENS opens since its last repair.
+# Ranking by wear staggers the repairs instead of letting gates come due
+# together. The main gate is never repaired preventively (operator-only).
+# --------------------------------------------------------------------------- #
+_repair_seen_at: dict[str, float] = {}   # gate -> when we first saw it under repair
+
+
+def _gate_repair_slot_holder() -> Optional[str]:
+    """The gate holding the one repair slot. A repair still unfinished after
+    GATE_REPAIR_STUCK_S is declared stuck and no longer holds it (4.35). The
+    clock starts when we first see the gate under repair: a level can load with
+    a gate already half-repaired, and never finish it."""
+    now = time.monotonic()
+    limit = settings.gate_repair_stuck_s / max(settings.game_speed, 0.1)
+    for name, barrier in state.barriers.items():
+        if not (barrier.under_maintenance or name in state.pending_repairs):
+            _repair_seen_at.pop(name, None)
+            continue
+        if name in state.stuck_repairs:
+            continue
+        if barrier.under_maintenance and now - _repair_seen_at.setdefault(name, now) > limit:
+            _mark_repair_stuck(name)
+            continue
+        return name
+    return None
+
+
+def _mark_repair_stuck(name: str) -> None:
+    state.stuck_repairs.add(name)
+    state.pending_repairs.pop(name, None)
+    state.log_activity(f"{name}: the simulator accepted its repair but has not finished it in "
+                       f"{settings.gate_repair_stuck_s:.0f} s - releasing the repair slot; check the simulator",
+                       level="error", capability="logs:view_maint")
+    log.error("gate repair stuck: %s", name)
+    for zone, info in list(state.zone_maintenance.items()):
+        info["todo"].discard(name)
+        if not info["todo"]:
+            state.zone_maintenance.pop(zone, None)
+            state.log_activity(f"{zone} maintenance ended: its remaining repair is stuck",
+                               level="warn", capability="logs:view_maint")
+
+
+async def _schedule_gate_repairs() -> None:
+    if _gate_repair_slot_holder():
+        return
+    for barrier in sorted((b for b in state.barriers.values() if b.broken),
+                          key=lambda b: (-b.opens_since_repair, b.name)):
+        await _queue_repair("BarrierGate", barrier.name)
+        if _gate_repair_slot_holder():
+            return
+    await _advance_zone_maintenance()
+    if _gate_repair_slot_holder() or state.zone_maintenance:
+        return   # one zone at a time; its next gate goes when it is ready
+    # 4.32: zones take turns (ZONE1 -> ZONE2 -> ZONE3 -> ...), so one zone is
+    # always being maintained while the other two take the cars. A zone whose
+    # gates are untouched since their last repair is skipped.
+    zones_in_order = _all_zones()
+    if zones_in_order:
+        last = _maintenance_rotation[-1] if _maintenance_rotation else None
+        start = zones_in_order.index(last) + 1 if last in zones_in_order else 0
+        for zone in zones_in_order[start:] + zones_in_order[:start]:
+            gates = [g for g in _zone_gates(zone) if g in state.barriers]
+            if any(state.barriers[g].operator_open or state.barriers[g].operator_override for g in gates):
+                continue   # staff are holding one of its gates (4.33)
+            if any(state.barriers[g].opens_since_repair >= settings.gate_repair_min_opens for g in gates):
+                _start_zone_maintenance(zone, "scheduled rotation")
+                await _advance_zone_maintenance()
+                return
+    # Gates outside any zone (not the main gate): most worn first.
+    worn = sorted((b for b in state.barriers.values()
+                   if b.name != settings.main_gate and not b.broken and not b.under_maintenance
+                   and _zone_of_gate(b.name) is None
+                   and b.opens_since_repair >= settings.gate_repair_min_opens),
+                  key=lambda b: (-b.opens_since_repair, b.name))
+    if worn:
+        state.log_activity(f"Preventive maintenance: {worn[0].name} ({worn[0].opens_since_repair} opens "
+                           f"since repair)", capability="logs:view_maint")
+        await _queue_repair("BarrierGate", worn[0].name)
 
 
 async def _close_idle_gates_later(delay_s: Optional[float] = None) -> None:
@@ -286,6 +466,8 @@ async def _on_level_loaded(level: str) -> None:
     _left_entry.clear()
     _waiting_at.clear()
     _holding_gate.clear()
+    _last_motion.clear()
+    _repair_seen_at.clear()
     db.reset_live_level()
     dropped = state.reset_for_new_level()
     announce_level(level)
@@ -519,6 +701,7 @@ async def sync_from_simulator() -> dict[str, int]:
             db.set_meta(f"pending_proactive_repair:{row['name']}", "0")
     for barrier in state.barriers.values():
         barrier.operator_override = db.get_meta(f"gate_override:{barrier.name}") == "1"
+        barrier.operator_open = db.get_meta(f"gate_open:{barrier.name}") == "1"
         barrier.held_vehicles = set(json.loads(db.get_meta(f"gate_holds:{barrier.name}", "[]")))
     for row in db.query("SELECT plate, gate FROM ghost_car_events WHERE resolved = 0"):
         gate = _barrier_for_sensor(row["gate"] or "")
@@ -553,12 +736,15 @@ async def check_wear() -> None:
     await reap_orphans()
     for row in state.wear_snapshot():
         db.sync_component_wear(row["name"], row["type"], row["cycle_count"], row["runtime_seconds"])
-        if row["under_maintenance"] or row["type"] == "Light":
-            continue
+        if row["under_maintenance"] or row["type"] in ("Light", "BarrierGate"):
+            continue   # gates: _schedule_gate_repairs (4.28)
         if row["broken"]:
             await _queue_repair(row["type"], row["name"])
             continue
-        if row["cycle_count"] < 0.85 * settings.wear_cycle_threshold and row["runtime_seconds"] < 0.85 * settings.wear_runtime_threshold_s:
+        if row["type"] == "ParkingSpot":
+            if row["cycle_count"] < settings.spot_preventive_parks:
+                continue
+        elif row["cycle_count"] < 0.85 * settings.wear_cycle_threshold and row["runtime_seconds"] < 0.85 * settings.wear_runtime_threshold_s:
             continue
         name, component_type = row["name"], row["type"]
         if db.get_meta(f"pending_proactive_repair:{name}") == "1":
@@ -569,6 +755,7 @@ async def check_wear() -> None:
         await _queue_repair(component_type, name)
         state.log_activity(f"Preventive maintenance: {component_type} {name} reached 85% wear",
                            capability="logs:view_maint")
+    await _schedule_gate_repairs()
 
 
 async def _wear_check_loop() -> None:
@@ -580,12 +767,58 @@ async def _wear_check_loop() -> None:
         await asyncio.sleep(settings.environment_loop_interval_s / max(settings.game_speed, 0.1))
 
 
+_last_motion: dict[str, float] = {}   # zone -> monotonic time a car was last seen moving there
+_light_timer: Optional[asyncio.Task] = None   # switches held zones off when their hold ends
+
+
+def _moving_zones() -> set[str]:
+    """Zones with a car on the move: driving to a bay there, or out of its
+    bay there and not yet gone. Parked cars and empty zones do not count."""
+    zones_moving: set[str] = set()
+    for session in list(state.sessions.values()):
+        spot = state.spots.get(session.assigned_spot or "")
+        zone = session.zone or (spot.zone_parent if spot else "")
+        driving_in = session.phase == SessionPhase.ASSIGNED and session.parked_at is None and session.reached_zone
+        leaving = session.left_spot_at is not None
+        if zone and (driving_in or leaving):
+            zones_moving.add(zone)
+    return zones_moving
+
+
+async def _refresh_lights(server_datetime: Optional[str] = None) -> None:
+    """Night lighting by movement (4.29): the time of day comes from the
+    webhooks' ServerDateTime. At night a zone is lit only while a car moves in
+    it, plus LIGHT_HOLD_S so lights do not flicker between cars. By day, off."""
+    if server_datetime is None:
+        rows = db.query("SELECT server_datetime FROM events WHERE server_datetime IS NOT NULL "
+                        "ORDER BY received_at DESC LIMIT 1")
+        if not rows:
+            return
+        server_datetime = rows[0]["server_datetime"]
+    now = time.monotonic()
+    for zone in _moving_zones():
+        _last_motion[zone] = now
+    hold = settings.light_hold_s / max(settings.game_speed, 0.1)
+    moving = _moving_zones()
+    held = {zone for zone, seen in _last_motion.items() if zone not in moving and now - seen < hold}
+    await schedule_lights(server_datetime, state, client, act, lit_zones=moving | held)
+    # A held zone must go dark when its hold ends even if no webhook arrives
+    # then; waiting for the next event or the 15 s loop left zones lit ~25 s (4.30).
+    global _light_timer
+    if held and (_light_timer is None or _light_timer.done()):
+        wait = min(_last_motion[zone] + hold for zone in held) - now
+        _light_timer = _spawn(_relight_after(max(wait, 0.0) + 0.01, server_datetime))
+
+
+async def _relight_after(delay_s: float, server_datetime: str) -> None:
+    await asyncio.sleep(delay_s)
+    await _refresh_lights(server_datetime)
+
+
 async def _environment_loop() -> None:
     while True:
         try:
-            rows = db.query("SELECT server_datetime FROM events WHERE server_datetime IS NOT NULL ORDER BY received_at DESC LIMIT 1")
-            if rows:
-                await schedule_lights(rows[0]["server_datetime"], state, client, act)
+            await _refresh_lights()
         except Exception:
             log.exception("environment loop tick failed")
         await asyncio.sleep(settings.environment_loop_interval_s / max(settings.game_speed, 0.1))
@@ -731,6 +964,15 @@ async def dispatch_entry(plate: str, gate_name: str, car_type: str = "Normal",
     if kind == "accessible":
         accessible = [n for n in candidates if state.spots[n].is_accessible]
         candidates = accessible or candidates
+    # A zone closed for gate maintenance takes no new cars (4.26); the car
+    # waits rather than being turned away if every suitable zone is closed.
+    open_candidates = [n for n in candidates
+                       if state.spots[n].zone_parent not in state.zone_maintenance
+                       or state.zone_maintenance[state.spots[n].zone_parent].get("reopened")]
+    if candidates and not open_candidates:
+        return {"plate": plate, "gate": gate_name, "target": None, "dispatched": False,
+                "reason": "Zone closed for maintenance"}
+    candidates = open_candidates
     # A zone whose entry gate is held, broken or under repair cannot take the car.
     zone_gate = {z: _zone_entry_gate(z, gate_name) for z in {state.spots[n].zone_parent for n in candidates}}
     reachable = [n for n in candidates if _gate_usable(zone_gate[state.spots[n].zone_parent])]
@@ -762,6 +1004,8 @@ async def dispatch_entry(plate: str, gate_name: str, car_type: str = "Normal",
         session = state.start_session(plate, gate=gate_name, car_type=car_type,
                                       planned_minutes=planned_minutes)
     state.assign_spot(plate, target)
+    if _barrier_for_sensor(gate_name) == _entry_gate_for_session(session):
+        session.reached_zone = True   # e.g. a ZONE1 car: ENTRY1 is its zone's own sensor
     _left_entry.discard(plate)
     _waiting_at.pop(plate, None)
     _holding_gate.pop(plate, None)
@@ -920,43 +1164,70 @@ async def manual_arrival(body: ManualArrivalIn) -> dict[str, Any]:
     return await dispatch_entry(body.plate, body.gate, body.car_type, body.dry_run)
 
 
-@app.post("/api/barriers/{name}/open")
-@app.post("/api/manual/barrier/{name}/open")
-async def manual_barrier_open(name: str, user: dict = Depends(auth.require_capability("ops:control_gates"))) -> dict[str, Any]:
+def _staff_takes_gate(name: str) -> Barrier:
+    """Staff commands beat the automation (4.33). Only a gate that is broken
+    or actually being repaired refuses: operating it is penalised. A repair
+    that is merely queued is cancelled - the rotation comes back to it later."""
     barrier = state.barriers.get(name)
     if barrier is None:
         raise HTTPException(404, "unknown barrier")
-    if barrier.broken or barrier.under_maintenance or barrier.held_vehicles or name in state.pending_repairs:
-        raise HTTPException(409, "Barrier unavailable or vehicle awaiting clearance")
-    before = barrier.operator_override
-    barrier.operator_override = False
-    db.set_meta(f"gate_override:{name}", "0")
+    if barrier.broken or barrier.under_maintenance:
+        raise HTTPException(409, "Gate is broken or under repair; operating it is penalised")
+    if state.pending_repairs.pop(name, None):
+        db.set_meta(f"pending_proactive_repair:{name}", "0")
+        state.log_activity(f"Queued repair of {name} cancelled: staff took control of the gate",
+                           capability="logs:view_maint")
+    return barrier
+
+
+def _set_staff_mode(barrier: Barrier, *, held_open: bool, held_closed: bool) -> None:
+    barrier.operator_open, barrier.operator_override = held_open, held_closed
+    db.set_meta(f"gate_open:{barrier.name}", "1" if held_open else "0")
+    db.set_meta(f"gate_override:{barrier.name}", "1" if held_closed else "0")
+
+
+@app.post("/api/barriers/{name}/open")
+@app.post("/api/manual/barrier/{name}/open")
+async def manual_barrier_open(name: str, user: dict = Depends(auth.require_capability("ops:control_gates"))) -> dict[str, Any]:
+    """Hold the gate open until staff press Hold closed or Automatic. Cars
+    held at it (a ghost car, a suspect payment) are let out."""
+    barrier = _staff_takes_gate(name)
+    before = {"operator_open": barrier.operator_open, "operator_override": barrier.operator_override}
+    _set_staff_mode(barrier, held_open=True, held_closed=False)
+    released = sorted(barrier.held_vehicles)
+    barrier.held_vehicles.clear()
+    db.set_meta(f"gate_holds:{name}", "[]")
     sent = False
-    if barrier.state != BarrierPosition.OPEN:
+    if barrier.state not in (BarrierPosition.OPEN, BarrierPosition.OPENING):
         sent = await act(f"operator opens {name}", lambda: client.barrier_open(name))
         if sent:
             state.update_barrier_state(name, "Opening")
             db.sync_component_wear(name, "BarrierGate", state.record_barrier_cycle(name), 0)
+    for plate in released:
+        session = state.get_session(plate)
+        if session is not None:
+            session.release_authorized = True
+            _persist(plate)
+            await _send_paid_release(session)
+        ghost = db.query("SELECT id FROM ghost_car_events WHERE plate = ? AND resolved = 0", (plate,))
+        if ghost:
+            db.resolve_ghost_car(ghost[0]["id"], user["username"])
     auth.record_audit(user["username"], "POST", f"/api/barriers/{name}/open", 200, name,
-                      {"before": {"operator_override": before}, "after": {"operator_override": False}})
+                      {"before": before, "after": {"operator_open": True, "released": released}})
     await _ensure_barriers_open()
     for session in list(state.sessions.values()):
         if session.paid and not session.released:
             await _release_paid(session)
-    return {"ok": True, "name": name, "sent": sent, "operator_override": False}
+    return {"ok": True, "name": name, "sent": sent, "operator_open": True, "released": released}
 
 
 @app.post("/api/barriers/{name}/close")
 @app.post("/api/manual/barrier/{name}/close")
 async def manual_barrier_close(name: str, user: dict = Depends(auth.require_capability("ops:control_gates"))) -> dict[str, Any]:
-    barrier = state.barriers.get(name)
-    if barrier is None:
-        raise HTTPException(404, "unknown barrier")
-    if barrier.broken or barrier.under_maintenance or name in state.pending_repairs:
-        raise HTTPException(409, "Barrier unavailable")
-    before = barrier.operator_override
-    barrier.operator_override = True
-    db.set_meta(f"gate_override:{name}", "1")
+    """Hold the gate closed until staff press Open or Automatic."""
+    barrier = _staff_takes_gate(name)
+    before = {"operator_open": barrier.operator_open, "operator_override": barrier.operator_override}
+    _set_staff_mode(barrier, held_open=False, held_closed=True)
     sent = False
     if barrier.state not in (BarrierPosition.CLOSED, BarrierPosition.CLOSING):
         sent = await act(f"operator holds {name} closed", lambda: client.barrier_close(name))
@@ -964,8 +1235,26 @@ async def manual_barrier_close(name: str, user: dict = Depends(auth.require_capa
             state.update_barrier_state(name, "Closing")
             db.sync_component_wear(name, "BarrierGate", state.record_barrier_cycle(name), 0)
     auth.record_audit(user["username"], "POST", f"/api/barriers/{name}/close", 200, name,
-                      {"before": {"operator_override": before}, "after": {"operator_override": True}})
+                      {"before": before, "after": {"operator_override": True}})
     return {"ok": True, "name": name, "sent": sent, "operator_override": True}
+
+
+@app.post("/api/barriers/{name}/auto")
+@app.post("/api/manual/barrier/{name}/auto")
+async def manual_barrier_auto(name: str, user: dict = Depends(auth.require_capability("ops:control_gates"))) -> dict[str, Any]:
+    """Hand the gate back to the automation."""
+    barrier = state.barriers.get(name)
+    if barrier is None:
+        raise HTTPException(404, "unknown barrier")
+    before = {"operator_open": barrier.operator_open, "operator_override": barrier.operator_override}
+    _set_staff_mode(barrier, held_open=False, held_closed=False)
+    auth.record_audit(user["username"], "POST", f"/api/barriers/{name}/auto", 200, name,
+                      {"before": before, "after": {"automatic": True}})
+    state.log_activity(f"{name} handed back to automatic control")
+    await _close_idle_gates()
+    await _ensure_barriers_open()
+    await _schedule_gate_repairs()
+    return {"ok": True, "name": name, "automatic": True}
 
 
 @app.post("/api/manual/repair/{name}")
@@ -1097,12 +1386,48 @@ async def ghost_override_alias(body: GhostOverrideIn, user: dict = Depends(auth.
     return await ghost_car_override(body.ghost_id, user)
 
 
+class GhostReleaseIn(BaseModel):
+    confirm_unpaid: bool = False
+
+
+@app.post("/api/ghost-cars/{ghost_id}/release")
+async def ghost_car_release(ghost_id: int, body: GhostReleaseIn,
+                            user: dict = Depends(auth.require_capability("ops:control_gates"))) -> dict[str, Any]:
+    """Staff let a held ghost car leave (4.25). A car that has not paid yet is
+    only released with ``confirm_unpaid``: it would leave unpaid, and the
+    simulator fines CarEscapedWithoutPaying."""
+    rows = db.query("SELECT * FROM ghost_car_events WHERE id = ? AND resolved = 0", (ghost_id,))
+    if not rows:
+        raise HTTPException(404, "no open ghost-car event")
+    plate, gate = rows[0]["plate"], rows[0]["gate"]
+    session = state.get_session(plate)
+    paid = bool(session and session.paid)
+    if not paid and not body.confirm_unpaid:
+        raise HTTPException(409, "Not paid yet. Releasing now lets the car leave unpaid "
+                                 "(CarEscapedWithoutPaying) - confirm to release anyway.")
+    if session is None:
+        session = state.start_session(plate, gate="(ghost)")
+        session.exit_gate, session.exit_confirmed, session.ghost_id = gate, True, ghost_id
+    session.release_authorized = True
+    _persist(plate)
+    await _send_paid_release(session)
+    db.resolve_ghost_car(ghost_id, user["username"])
+    auth.record_audit(user["username"], "POST", f"/api/ghost-cars/{ghost_id}/release", 200, plate,
+                      {"before": {"held": True, "paid": paid}, "after": {"released": session.released}})
+    state.log_activity(f"Ghost car {plate} released by {user['username']}" + ("" if paid else " (unpaid)"),
+                       level="info" if paid else "warn")
+    await _broadcast_ghost(ghost_id, plate, gate, resolved=True)
+    return {"ok": True, "ghost_id": ghost_id, "plate": plate, "paid": paid, "released": session.released}
+
+
 @app.get("/api/ghost-cars")
 async def list_ghost_cars(resolved: Optional[bool] = None,
                           user: dict = Depends(auth.require_staff)) -> list[dict[str, Any]]:
     where = " WHERE resolved = ?" if resolved is not None else ""
     rows = db.query("SELECT * FROM ghost_car_events" + where + " ORDER BY occurred_at DESC LIMIT 200",
                     (int(resolved),) if resolved is not None else ())
+    for row in rows:
+        row.update(_ghost_status(row["plate"]))   # status for the banner; amounts stay fin:view only
     return redact(rows, has(user, "fin:view"))
 
 
@@ -1326,6 +1651,11 @@ async def simulator_webhook(request: Request) -> JSONResponse:
         try:
             await handler(payload)
             db.mark_processed(event_id)
+            if event_class == "car_spot_action":
+                try:   # a car moved: relight at once rather than at the next environment tick
+                    await _refresh_lights(payload.get("ServerDateTime"))
+                except Exception:  # noqa: BLE001 - lighting must never fail a webhook
+                    log.exception("light refresh failed")
         except Exception as exc:  # noqa: BLE001 - retain failed events for redelivery
             log.exception("handler failed for EventClass=%s EventId=%s", event_class, event_id)
             db.mark_failed(event_id, str(exc))
@@ -1339,10 +1669,32 @@ async def simulator_webhook(request: Request) -> JSONResponse:
 # --------------------------------------------------------------------------- #
 # Maintenance queue helper
 # --------------------------------------------------------------------------- #
-async def _queue_repair(component_type: str, name: str) -> None:
+async def _queue_repair(component_type: str, name: str, *, via_zone: bool = False) -> None:
     component = state.spots.get(name) or state.barriers.get(name) or state.fans.get(name)
     if name in state.pending_repairs or (component and component.under_maintenance):
         return
+    if component_type == "BarrierGate" and not via_zone:
+        zone = _zone_of_gate(name)
+        if zone:
+            # 4.26: a zone gate is repaired as part of closing the whole zone.
+            # A broken gate goes now; a healthy one waits for its turn.
+            # Only one zone in maintenance at a time (4.32). A gate breaking in
+            # another zone is repaired on its own, first in the queue.
+            if not any(z != zone for z in state.zone_maintenance):
+                _start_zone_maintenance(zone, name)
+            if not (component and component.broken):
+                await _schedule_gate_repairs()
+                return
+    if component_type == "BarrierGate" and component and not component.broken and (
+            component.operator_open or component.operator_override):
+        return   # staff are holding this gate; the rotation returns to it later (4.33)
+    if component_type == "BarrierGate":
+        holder = _gate_repair_slot_holder()
+        if holder and holder != name:
+            return   # one gate in repair at a time (4.28); _schedule_gate_repairs retries
+        if component and not component.broken and settings.autopilot:
+            db.set_meta(f"pending_proactive_repair:{name}", "1")   # logged as fixed_proactive
+            db.record_component_event(name, component_type, "repair_triggered_proactive")
     if component_type == "ParkingSpot":
         action: Callable[[], Awaitable[None]] = lambda: client.spot_repair(name)
     elif component_type == "BarrierGate":
@@ -1351,6 +1703,11 @@ async def _queue_repair(component_type: str, name: str) -> None:
         action = lambda: client.fan_repair(name)
     else:
         return
+    if component_type == "ExhaustFan" and component is not None:
+        for other in state.fans.values():
+            if (other.name != name and other.zone_parent == component.zone_parent
+                    and (other.under_maintenance or other.name in state.pending_repairs)):
+                return   # one fan per zone in repair: the zone keeps ventilating (4.31)
     if component_type == "ParkingSpot":
         spot = state.spots.get(name)
         if spot and (spot.occupant_plate or spot.status in (SpotStatus.OCCUPIED, SpotStatus.RESERVED)):
@@ -1379,7 +1736,7 @@ async def _queue_repair(component_type: str, name: str) -> None:
         if component_type == "BarrierGate" and component and not component.broken:
             if component.state in (BarrierPosition.OPENING, BarrierPosition.CLOSING):
                 raise RuntimeError("wait for gate movement to finish before repair")
-            if component.operator_override or component.held_vehicles:
+            if component.operator_override or component.operator_open or component.held_vehicles:
                 raise RuntimeError("gate is in operational use; postpone preventive repair")
         if component_type == "ExhaustFan" and component and component.is_on and not component.broken:
             zone = state.zones.get(component.zone_parent)
@@ -1423,6 +1780,8 @@ async def _handle_car_spot_action(payload: dict[str, Any]) -> None:
         _retire_previous_visit(plate)
     if spot_type == "EntrySpot" and direction == "CarIn" and plate in state.active_dispatches:
         session = state.get_session(plate)
+        if session is not None and _barrier_for_sensor(spot_name) == _entry_gate_for_session(session):
+            session.reached_zone = True   # at its own zone's sensor: that zone lights up
         if session is not None and session.staged_via == spot_name and session.phase == SessionPhase.ASSIGNED:
             # The car has reached its zone's own sensor and is waiting at the
             # closed zone gate: open it now and send the car on to its bay.
@@ -1445,9 +1804,14 @@ async def _handle_car_spot_action(payload: dict[str, Any]) -> None:
             _left_entry.add(plate)
             session.entry_departed = True
             _persist(plate)
-            if _holding_gate.get(plate) and _holding_gate[plate] == _barrier_for_sensor(spot_name):
-                # Out of the box in front of its gate: the car is going through.
-                # Close behind it unless the next car already holds the gate.
+            if _barrier_for_sensor(spot_name) == _entry_gate_for_session(session):
+                # Out of the box in front of its zone gate: the car is going
+                # through. Close behind it unless another car is still heading
+                # into this zone - then a steady stream keeps it open (4.32).
+                session.passed_zone_gate = True
+                _holding_gate.pop(plate, None)
+                _spawn(_close_idle_gates_later(settings.entry_gate_close_delay_s))
+            elif _holding_gate.get(plate) and _holding_gate[plate] == _barrier_for_sensor(spot_name):
                 _holding_gate.pop(plate, None)
                 _spawn(_close_idle_gates_later(settings.entry_gate_close_delay_s))
         return
@@ -1472,6 +1836,7 @@ async def _handle_car_spot_action(payload: dict[str, Any]) -> None:
         state.log_activity(f"{plate} parked at {spot_name}")
         _holding_gate.pop(plate, None)   # backstop if the sensor exit was missed
         await _close_idle_gates()
+        await _schedule_gate_repairs()   # a car inbound to a closed zone has arrived
         return
 
     if spot_type == "Park" and direction == "CarOut":
@@ -1487,7 +1852,9 @@ async def _handle_car_spot_action(payload: dict[str, Any]) -> None:
 
     if spot_type == "ExitSpot" and direction == "CarIn":
         session = state.get_session(plate)
-        if session is None:
+        if session is None or ((session.entry_gate == "(adopted)" or session.ghost_id) and _valid_exit(session)):
+            # Never seen at an entrance: either unknown here, or it appeared
+            # straight into a bay ("adopted"). Both are ghost cars (4.25).
             await _handle_ghost_car(plate, spot_name, payload)
             return
         if not _valid_exit(session):
@@ -1512,11 +1879,13 @@ async def _handle_car_spot_action(payload: dict[str, Any]) -> None:
         state.log_activity(f"{plate} left the facility via {spot_name}")
         log.info("%s left the facility via %s", plate, spot_name)
         _spawn(_close_idle_gates_later())   # no sensor past the exit gate: give the car time to clear it
+        await _schedule_gate_repairs()   # the zone this car left may now be empty
         return
 
 
 def _valid_exit(session) -> bool:
-    return ((session.parked_at is not None or session.left_spot_at is not None or session.entry_gate == "(ghost-override)")
+    return ((session.parked_at is not None or session.left_spot_at is not None
+             or session.entry_gate == "(ghost-override)" or session.ghost_id)
             and time.monotonic() - session.created_at >= settings.min_dwell_time_s / max(settings.game_speed, 0.1))
 
 
@@ -1599,6 +1968,9 @@ async def _hold_exit(plate: str, sensor: str) -> None:
         state.log_activity(f"Unable to map exit sensor {sensor} to a barrier; review {plate}", level="error")
         return
     barrier = state.barriers[name]
+    if barrier.operator_open:
+        state.log_activity(f"{plate} would be held at {name}, but staff are holding it open", level="warn")
+        return
     barrier.held_vehicles.add(plate)
     db.set_meta(f"gate_holds:{name}", json.dumps(sorted(barrier.held_vehicles)))
     if (not barrier.broken and not barrier.under_maintenance and name not in state.pending_repairs
@@ -1609,44 +1981,94 @@ async def _hold_exit(plate: str, sensor: str) -> None:
 
 
 async def _handle_ghost_car(plate: str, exit_spot: str, payload: dict[str, Any]) -> None:
-    """A car with zero registration reached an exit barrier.
+    """A car that was never seen at an entrance reached an exit (4.25).
 
-    Charging silently on our usual estimate (unknown_car_minutes) is what the
-    dispatcher already does for a car it tracked but lost precise timing for.
-    This is a stricter case - there is no session at all, so the exit barrier
-    is left alone (we never call barrier_open for it here) and the car waits
-    for an authenticated operator to review and release it via
-    POST /api/ghost-cars/{id}/override.
+    Either it is unknown here, or it appeared straight into a bay (an
+    "adopted" session). It is billed automatically with the ML-estimated fee
+    (``POST /car/{plate}/charge`` is the simulator's "ask car for payment"),
+    its exit barrier is held closed, and a payment does NOT release it: staff
+    release it from the dashboard banner (POST /api/ghost-cars/{id}/release).
     """
     confidence = None
     median_duration = None
     try:
         imputed = ml_agent.ghost_car_anomaly_imputation(plate, payload.get("CarType", "Normal"))
-        fallback = imputed["imputed_fee"]
+        fee = imputed["imputed_fee"]
         confidence = imputed["confidence_score"]
         median_duration = imputed["median_duration"]
     except Exception:  # noqa: BLE001 - the hold must proceed even if imputation fails
         log.exception("ghost_car_anomaly_imputation failed for %s; using median/flat fallback", plate)
-        fallback = db.median_parking_cost()
-        if fallback is None:
-            fallback = round(settings.unknown_car_minutes * settings.parking_rate_per_minute, 2)
-    ghost_id = db.record_ghost_car(plate, exit_spot, fallback)
+        fee = db.median_parking_cost()
+        if fee is None:
+            fee = round(settings.unknown_car_minutes * settings.parking_rate_per_minute, 2)
+    ghost_id = db.record_ghost_car(plate, exit_spot, fee)
     await _hold_exit(plate, exit_spot)
-    state.log_activity(
-        f"UNREGISTERED_VEHICLE_EXIT: {plate} at {exit_spot} - held for operator review "
-        f"(staff review required)", level="error")
-    log.error("UNREGISTERED_VEHICLE_EXIT: %s at %s has no prior entry session - holding at barrier "
-              "(ghost_id=%d, fallback=%.2f)", plate, exit_spot, ghost_id, fallback)
+    session = state.get_session(plate) or state.start_session(
+        plate, gate="(ghost)", car_type=payload.get("CarType", "Normal"))
+    session.ghost_id = ghost_id
+    session.exit_gate = exit_spot
+    session.exit_confirmed = True
+    if not session.charge_attempted:
+        session.expected_parking = float(fee)
+        session.expected_charging = 0.0
+        session.expected_amount = session.expected_parking
+    state.mark_at_exit(plate)
+    _persist(plate)
+    state.log_activity(f"Ghost car {plate} at {exit_spot}: never scanned at an entrance - "
+                       f"billing the estimated fee and holding it for staff release", level="error")
+    log.error("GHOST CAR %s at %s (ghost_id=%d, fee=%.2f) - invoiced and held for staff",
+              plate, exit_spot, ghost_id, fee)
+    _spawn(_invoice_ghost(plate))
+    await _broadcast_ghost(ghost_id, plate, exit_spot, fallback_charge=fee,
+                           confidence_score=confidence, median_duration=median_duration)
+
+
+async def _invoice_ghost(plate: str) -> None:
+    session = state.get_session(plate)
+    if session is None:
+        return
+    identity = session.session_id
+    # Same settling wait as a normal exit invoice: a charge sent on the CarIn
+    # itself is rejected with "Car is not waiting at the exit".
+    await asyncio.sleep(settings.exit_charge_delay_s / max(settings.game_speed, 0.1))
+    session = state.get_session(plate)
+    if session is None or session.session_id != identity or session.charge_attempted or session.paid:
+        return
+    fee = session.expected_parking or 0.0
+    if not settings.autopilot:
+        await act(f"ghost invoice {plate}", lambda: client.car_charge(plate, fee, 0.0))
+        return
+    if not db.claim_charge(session):   # at most one invoice per visit (ChargeCarForParkingTwice)
+        session.charge_attempted = True
+        return
+    session.charge_attempted = True
+    state.mark_charged(plate)
+    _persist(plate)
+    sent = await act(f"ghost invoice {plate} {fee:.2f}", lambda: client.car_charge(plate, fee, 0.0))
+    state.log_activity(f"Ghost car {plate} invoiced {fee:.2f}" if sent else
+                       f"Ghost car {plate}: invoice failed - staff review required",
+                       level="info" if sent else "error", capability="logs:view_fin")
+    if session.ghost_id:
+        await _broadcast_ghost(session.ghost_id, plate, session.exit_gate)
+
+
+def _ghost_status(plate: str) -> dict[str, Any]:
+    session = state.get_session(plate)
+    return {"invoiced": bool(session and session.charge_attempted),
+            "payment_received": bool(session and session.paid)}
+
+
+async def _broadcast_ghost(ghost_id: int, plate: str, gate: Optional[str], *, resolved: bool = False,
+                           **ml_detail: Any) -> None:
     try:
         await manager.broadcast({
-            "type": "alert", "alert_type": "UNREGISTERED_VEHICLE_EXIT",
-            "plate": plate, "gate": exit_spot, "ghost_id": ghost_id,
-            "fallback_charge": fallback, "confidence_score": confidence,
-            "median_duration": median_duration, "server_time": time.time(),
+            "type": "alert", "alert_type": "GHOST_CAR_RESOLVED" if resolved else "UNREGISTERED_VEHICLE_EXIT",
+            "plate": plate, "gate": gate, "ghost_id": ghost_id, **_ghost_status(plate),
+            **ml_detail,   # main's ML toast detail: fallback_charge, confidence_score, median_duration
+            "server_time": time.time(),
         })
-    except Exception:  # noqa: BLE001 - a broadcast failure must not lose the alert
-        log.exception("failed to broadcast ghost-car alert for %s", plate)
-
+    except Exception:  # noqa: BLE001 - a broadcast failure must not lose the hold
+        log.exception("ghost-car broadcast failed for %s", plate)
 
 async def _handle_component_broken(payload: dict[str, Any]) -> None:
     component_type = payload["Type"]
@@ -1693,6 +2115,21 @@ async def _handle_component_fixed(payload: dict[str, Any]) -> None:
             await _handle_carbon_monoxide_event({"ZoneName": zone.name,
                 "CarbonMonoxideLevel": zone.gas_co_level, "DangerLevel": zone.danger_level})
     elif component_type == "BarrierGate":
+        state.stuck_repairs.discard(name)
+        _repair_seen_at.pop(name, None)
+        barrier = state.barriers.get(name)
+        if (barrier is not None and _zone_of_gate(name) and not barrier.operator_open
+                and name not in _gates_in_use()):
+            # 4.34: keep the repaired gate shut. The simulator does not always
+            # report the gate's position after a repair, so do not trust ours.
+            if await act(f"close {name} after its repair", lambda: client.barrier_close(name)):
+                state.update_barrier_state(name, "Closing")
+        for zone, info in list(state.zone_maintenance.items()):
+            info["todo"].discard(name)
+            if not info["todo"]:
+                state.zone_maintenance.pop(zone, None)
+                state.log_activity(f"{zone} reopened: its gates are repaired", capability="logs:view_maint")
+        await _schedule_gate_repairs()
         await _ensure_barriers_open()
 
 
@@ -1706,11 +2143,10 @@ async def _handle_carbon_monoxide_event(payload: dict[str, Any]) -> None:
                        level="warn" if danger_level in ("High", "Critical") else "info")
     log.warning("CO event in %s: level=%.2f danger=%s", zone_name, co_level, danger_level)
 
-    # Hysteresis, ON/OFF edges made dynamic by occupancy (app.ml_agent):
-    # a fuller zone reacts earlier, and the ON edge additionally fires ahead
-    # of the static threshold when the trend forecast predicts a breach in
-    # the next 10 simulated minutes. Two distinct edges (still) stop the fan
-    # flapping on/off on every reading that hovers around one shared value.
+    # The ML forecast (main, 4.22) still runs for the insights page and the
+    # early CO warning, but it does not switch the fans. Fans use the fixed
+    # hysteresis the team chose in 4.23: ON above CO_FAN_ON_THRESHOLD (50),
+    # then ventilate down to CO_FAN_OFF_THRESHOLD (15). See 4.36.
     zone_ratio = state.occupancy_ratio(zone_name)
     forecast = ml_agent.co_ventilation_analysis(co_level, zone_ratio, history)
     ml_agent.record_ventilation_insight(zone_name, forecast)
@@ -1732,14 +2168,14 @@ async def _handle_carbon_monoxide_event(payload: dict[str, Any]) -> None:
         fan = state.fans[fan_name]
         if fan.broken or fan.under_maintenance or fan_name in state.pending_repairs:
             continue
-        if not fan.is_on and forecast["trigger_fan"]:
+        if not fan.is_on and co_level > settings.co_fan_on_threshold:
             if await act(f"fan {fan_name} ON (zone {zone_name} CO={co_level:.1f})",
                          lambda n=fan_name: client.fan_on(n)):
                 cycles, runtime = state.set_fan_on(fan_name, True)
                 db.sync_component_wear(fan_name, "ExhaustFan", cycles, runtime)
                 db.record_component_event(fan_name, "ExhaustFan", "on", amount=co_level)
                 state.log_activity(f"Exhaust fan {fan_name} switched on for {zone_name}")
-        elif fan.is_on and co_level < ml_agent.co_off_threshold(zone_ratio):
+        elif fan.is_on and co_level < settings.co_fan_off_threshold:
             if await act(f"fan {fan_name} OFF (zone {zone_name} CO={co_level:.1f})",
                          lambda n=fan_name: client.fan_off(n)):
                 cycles, runtime = state.set_fan_on(fan_name, False)
@@ -1839,6 +2275,12 @@ async def _handle_payment_made(payload: dict[str, Any]) -> None:
         log.warning("unsolicited or duplicate payment_made for %s (amount %.2f) - ignored", plate, amount)
         return
 
+    if session.ghost_id:
+        state.log_activity(f"Ghost car {plate} paid ({amount:.2f}) - waiting for staff to release it",
+                           capability="logs:view_fin")
+        _persist(plate)
+        await _broadcast_ghost(session.ghost_id, plate, session.exit_gate)
+        return
     state.log_activity(f"Payment accepted for {plate} ({amount:.2f}) - releasing", capability="logs:view_fin")
     _persist(plate)
     await _release_paid(session)
@@ -1850,6 +2292,8 @@ _releases_in_progress: set[str] = set()
 async def _release_paid(session) -> None:
     if session.released or not session.paid or session.session_id in _releases_in_progress:
         return
+    if session.ghost_id and not session.release_authorized:
+        return   # a ghost car leaves only when staff release it (4.25)
     # Recovery may run recursively inside a simulator request after HTTP 401.
     # Do not wait for that same request, or start a competing release command.
     _releases_in_progress.add(session.session_id)

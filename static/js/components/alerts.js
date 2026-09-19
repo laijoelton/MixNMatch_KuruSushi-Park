@@ -17,9 +17,11 @@ export function deriveAlerts(snapshot, stats, { isAdmin } = {}) {
     if (gate.main_gate && gate.state !== "Open" && gate.state !== "Opening") {
       add(`main-gate-${gate.name}`, "bad", `Main gate (${gate.name}) is closed — no cars can enter`, "Open it from the gate panel to admit cars", { kind: "gate", name: gate.name });
     }
-    if (gate.broken) add(`gate-broken-${gate.name}`, "bad", `Gate ${gate.name} is broken`, "Repair it — it cannot open or close", { kind: "gate", name: gate.name });
+    if (gate.repair_stuck) add(`gate-stuck-${gate.name}`, "bad", `Gate ${gate.name} repair is not progressing`,
+      "The simulator accepted the repair but never finished it. Other repairs carry on; check the simulator", { kind: "gate", name: gate.name });
+    else if (gate.broken) add(`gate-broken-${gate.name}`, "bad", `Gate ${gate.name} is broken`, "Repair it — it cannot open or close", { kind: "gate", name: gate.name });
     else if (gate.under_maintenance) add(`gate-maint-${gate.name}`, "warn", `Gate ${gate.name} under repair`, "Do not operate until fixed", { kind: "gate", name: gate.name });
-    else if (gate.repair_pending) add(`gate-pending-${gate.name}`, "warn", `Gate ${gate.name} repair queued`, "Excluded from operation until the repair starts", { kind: "gate", name: gate.name });
+    else if (gate.repair_pending) add(`gate-pending-${gate.name}`, "warn", `Gate ${gate.name} repair queued`, "Starts when the rotation reaches it; staff commands cancel it", { kind: "gate", name: gate.name });
   }
   for (const spot of snapshot.spots || []) {
     if (spot.purpose !== "Park") continue;
@@ -44,11 +46,24 @@ export function deriveAlerts(snapshot, stats, { isAdmin } = {}) {
     else if (level === "Mid") add(`co-${zone.name}`, "warn", `CO rising in ${zone.name}`, `${Number(zone.co_level).toFixed(1)}`, { kind: "zone", name: zone.name });
   }
 
+  // Zone closed for gate maintenance (4.26): no new cars until both gates are fixed.
+  for (const [zone, info] of Object.entries(snapshot.zone_maintenance || {})) {
+    const waiting = (info.todo || []).join(" and ");
+    add(`zone-maint-${zone}`, "warn", info.reopened ? `${zone}: last gate being repaired` : `${zone} closed for gate maintenance`,
+      info.reopened ? `${waiting} under repair; the zone is taking cars again`
+                    : `${info.trigger}. New cars go to other zones until the second gate's repair starts`,
+      { kind: "zone", name: zone });
+  }
   for (const row of snapshot.neglected_vehicles || []) {
     add(`neglect-${row.plate}`, "warn", `Vehicle ${row.plate} never reached a bay`, row.reason, null);
   }
   for (const gate of snapshot.barriers || []) {
-    if (gate.hold_reason) add(`hold-${gate.name}`, "warn", `${gate.name}: ${gate.hold_reason}`, "Review the vehicle or gate hold", { kind: "gate", name: gate.name });
+    if (gate.held_plates?.length) {
+      add(`hold-${gate.name}`, "warn", `${gate.held_plates.join(", ")} waiting at ${gate.name}`,
+        "Open the gate to let the car out", { kind: "gate", name: gate.name });
+    } else if (gate.hold_reason) {
+      add(`hold-${gate.name}`, "warn", `${gate.name}: ${gate.hold_reason}`, "Press Automatic to hand it back", { kind: "gate", name: gate.name });
+    }
   }
   const park = (snapshot.spots || []).filter((sp) => sp.purpose === "Park");
   // The dispatcher syncs bays once at startup; if the simulator had no level
