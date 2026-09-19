@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ team_name }} — Route Dashboard</title>
+  <link rel="stylesheet" href="/static/css/split_dashboard.css?v={{ asset_version }}" />
+</head>
+<body>
+  <div class="split-root">
+    <section class="operator-pane operator-pane-full">
+      <div class="operator-header">
+        <h1><span class="status-dot" id="status-dot"></span>{{ team_name }} — Live Operator View</h1>
+        <div class="mini-cards">
+          <div class="mini-card accent"><div class="label">Available</div><div class="value" id="c-available">0</div></div>
+          <div class="mini-card"><div class="label">Occupied</div><div class="value" id="c-occupied">0</div></div>
+          <div class="mini-card warn"><div class="label">Reserved</div><div class="value" id="c-reserved">0</div></div>
+          <div class="mini-card"><div class="label">Sessions</div><div class="value" id="c-sessions">0</div></div>
+        </div>
+      </div>
+
+      <div class="track-bar">
+        <label for="track-plate">Track plate</label>
+        <input id="track-plate" type="text" placeholder="e.g. AKL 319" maxlength="16" autocomplete="off" />
+        <button id="track-clear" class="secondary">Clear</button>
+        <span class="track-hint" id="track-hint">Showing no route — enter a plate to track its path.</span>
+      </div>
+
+      <div id="canvas-wrap">
+        <canvas id="operator-canvas"></canvas>
+        <div class="legend">
+          <span><span class="swatch" style="background:#3ddc84"></span>Available</span>
+          <span><span class="swatch" style="background:#4fd1c5"></span>Occupied</span>
+          <span><span class="swatch" style="background:#f5b942"></span>Reserved</span>
+          <span><span class="swatch" style="background:#6b7280"></span>Broken</span>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script src="/static/js/operator_canvas.js?v={{ asset_version }}"></script>
+  <script>
+    const statusDot = document.getElementById("status-dot");
+    const operatorCanvas = new OperatorCanvas(document.getElementById("operator-canvas"));
+    operatorCanvas.loadLayout();
+
+    const trackInput = document.getElementById("track-plate");
+    const trackHint = document.getElementById("track-hint");
+
+    function setTracked(plate) {
+      const normalized = plate.trim();
+      operatorCanvas.setTrackedPlate(normalized || null);
+      trackHint.textContent = normalized
+        ? `Showing route for ${normalized} only.`
+        : "Showing no route — enter a plate to track its path.";
+    }
+
+    trackInput.addEventListener("input", () => setTracked(trackInput.value));
+    document.getElementById("track-clear").addEventListener("click", () => {
+      trackInput.value = "";
+      setTracked("");
+    });
+
+    function applySnapshot(snap) {
+      const occ = snap.occupancy || {};
+      document.getElementById("c-available").textContent = occ.AVAILABLE || 0;
+      document.getElementById("c-occupied").textContent = occ.OCCUPIED || 0;
+      document.getElementById("c-reserved").textContent = occ.RESERVED || 0;
+      document.getElementById("c-sessions").textContent = (snap.sessions || []).length;
+      operatorCanvas.update(snap);
+    }
+
+    let ws;
+    function connect() {
+      const proto = location.protocol === "https:" ? "wss" : "ws";
+      ws = new WebSocket(`${proto}://${location.host}/ws/telemetry`);
+      ws.onopen = () => statusDot.classList.add("live");
+      ws.onclose = () => { statusDot.classList.remove("live"); setTimeout(connect, 1500); };
+      ws.onerror = () => ws.close();
+      ws.onmessage = (evt) => applySnapshot(JSON.parse(evt.data));
+    }
+    connect();
+  </script>
+</body>
+</html>
