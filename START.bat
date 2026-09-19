@@ -17,9 +17,9 @@ echo.
 set "SIM_EXE=ParkingSimulator-win-x64\ParkingSimulator-win-x64\ParkingSimulator.exe"
 set "VENV_PY=.venv\Scripts\python.exe"
 set "SETTINGS=ParkingSimulator-win-x64\ParkingSimulator-win-x64\settings\settings.json"
-REM The split-screen operator dashboard. "/" is the older HUD, still served.
-set "DASH_URL=http://127.0.0.1:8080/dashboard"
-set "HUD_URL=http://127.0.0.1:8080/"
+REM The operator console (sign in: admin / admin123, operator / operator123).
+set "DASH_URL=http://127.0.0.1:8080/"
+set "HUD_URL=http://127.0.0.1:8080/login"
 
 if not exist "%SIM_EXE%" (
   echo  [X] Simulator not found:
@@ -71,7 +71,9 @@ tasklist /fi "imagename eq ParkingSimulator.exe" 2>nul | findstr /i /c:"ParkingS
 if not errorlevel 1 (
   echo        already running - leaving it alone.
 ) else (
-  start "Grand Park Auto Simulator" "%SIM_EXE%"
+  REM /D: the simulator reads settings\ relative to its working directory and
+  REM crashes on startup (0xE0434352) if launched from the project folder.
+  start "Grand Park Auto Simulator" /D "ParkingSimulator-win-x64\ParkingSimulator-win-x64" "%SIM_EXE%"
 )
 
 echo        waiting for the REST API on :9898 ...
@@ -133,8 +135,8 @@ echo.
 echo  ===============================================
 echo   Running.
 echo.
-echo   Dashboard    %DASH_URL%    ^<- split-screen operator view
-echo   Operator HUD %HUD_URL%
+echo   Dashboard    %DASH_URL%    ^<- operator console
+echo   Sign in      %HUD_URL%    admin/admin123 or operator/operator123
 echo   Gate portal  http://127.0.0.1:8080/gate
 echo   Health       http://127.0.0.1:8080/healthz
 echo.

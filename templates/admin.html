@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Admin{% endblock %}
+{% block heading %}Administration{% endblock %}
+{% block crumb %}Accounts, audit trail and maintenance tools{% endblock %}
+{% block content %}
+<div class="page-grid">
+  <section class="panel span-7" aria-labelledby="users-h">
+    <div class="panel-head"><h2 id="users-h">Accounts</h2><span class="count" id="users-count"></span></div>
+    <div class="table-wrap">
+      <table class="table">
+        <thead><tr><th>Username</th><th>Role</th><th>Created</th><th></th></tr></thead>
+        <tbody id="users"></tbody>
+      </table>
+    </div>
+    <form class="filters" id="new-user" style="border-top:1px solid var(--line);border-bottom:0">
+      <div class="field"><label for="nu-name">Username</label><input class="input" id="nu-name" name="username" required maxlength="64" autocomplete="off" /></div>
+      <div class="field"><label for="nu-pass">Password</label><input class="input" id="nu-pass" name="password" type="password" required minlength="6" autocomplete="new-password" /></div>
+      <div class="field"><label for="nu-role">Role</label>
+        <select class="select" id="nu-role" name="role"><option value="operator">Operator</option><option value="admin">Admin</option></select></div>
+      <button class="btn primary" type="submit" id="nu-btn">Add account</button>
+    </form>
+  </section>
+
+  <section class="panel span-5" aria-labelledby="tools-h">
+    <div class="panel-head"><h2 id="tools-h">Maintenance tools</h2></div>
+    <div class="panel-body" style="display:flex;flex-direction:column;gap:16px">
+      <div>
+        <div style="font-weight:600">Resync with simulator</div>
+        <p class="muted" style="margin:4px 0 10px;font-size:13px">Re-reads bays, gates, zones and fans. Use only after a crash or level change — each call has an operating cost.</p>
+        <button class="btn" type="button" id="sync-btn">Run manual sync</button>
+      </div>
+      <form id="sim-form" style="display:flex;flex-direction:column;gap:10px;border-top:1px solid var(--line);padding-top:16px">
+        <div style="font-weight:600">Simulate an arrival</div>
+        <p class="muted" style="margin:0;font-size:13px">Runs the real dispatch path for a plate. Dry-run previews the ranking without moving anything.</p>
+        <div class="form-row">
+          <div class="field"><label for="sim-plate">Plate</label><input class="input" id="sim-plate" name="plate" required maxlength="16" placeholder="TST 001" /></div>
+          <div class="field"><label for="sim-gate">Entry</label><select class="select" id="sim-gate" name="gate"></select></div>
+          <div class="field"><label for="sim-type">Type</label>
+            <select class="select" id="sim-type" name="car_type"><option>Normal</option><option>Electric</option><option>Accessible</option></select></div>
+        </div>
+        <label style="display:flex;gap:8px;align-items:center;font-size:13px"><input type="checkbox" name="dry_run" checked /> Dry-run (preview only)</label>
+        <div><button class="btn" type="submit" id="sim-btn">Run</button></div>
+        <pre id="sim-out" class="num" style="margin:0;white-space:pre-wrap;font-size:12px;color:var(--text-2)" hidden></pre>
+      </form>
+    </div>
+  </section>
+
+  <section class="panel span-12" aria-labelledby="audit-h">
+    <div class="panel-head"><h2 id="audit-h">Audit trail</h2><span class="muted" style="font-size:12px">Every change made through the dashboard</span></div>
+    <div class="table-wrap" style="max-height:420px">
+      <table class="table">
+        <thead><tr><th>Time</th><th>User</th><th>Action</th><th>Target</th><th class="num">Result</th></tr></thead>
+        <tbody id="audit"></tbody>
+      </table>
+    </div>
+  </section>
+</div>
+{% endblock %}
+{% block scripts %}
+<script type="module" src="/static/js/pages/admin.js?v={{ asset_version }}"></script>
+{% endblock %}

@@ -6,14 +6,12 @@ state happens strictly in reaction to an inbound webhook (see ``app/state.py``
 docstring). Two browser-facing surfaces are layered on top of that headless
 core without changing its behaviour:
 
-* ``/`` - an operator HUD (live telemetry, digital twin, manual controls).
-* ``/gate`` - a mobile-first cinema-style bay picker for walk-in check-in.
-* ``/dashboard`` - split-screen operator canvas (real simulator geometry,
-  animated dispatch paths) next to a phone-frame driver GPS mockup.
+* ``/`` - the signed-in operator console (see ``app/dashboard_api.py``,
+  ``app/auth.py``); ``/dashboard`` now redirects there.
+* ``/gate`` - the public driver check-in kiosk.
 
-All three are pure read/observe layers over the same ``ParkingState`` the
-webhook handlers mutate, pushed to connected browsers over ``/ws/live`` (and,
-for the split dashboard, the identical feed mirrored at ``/ws/telemetry``).
+Both are read/observe layers over the same ``ParkingState`` the webhook
+handlers mutate, pushed to connected browsers over ``/ws/live``.
 """
 from __future__ import annotations
 
@@ -29,20 +27,20 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
-from app import db
+from app import auth, dashboard_api, db
 from app.client import client
 from app.config import settings
-from app.layout import load_layout
+from app.layout import load_layout, running_level
 from app.queue_worker import maintenance_queue
 from app.routing import load_distance_table, rank_spots, ring
 from app.seed import load_level
 from app.signature import verify as verify_signature_recipes
-from app.state import BarrierPosition, state
+from app.state import BarrierPosition, SessionPhase, state
 from app.ws_manager import manager
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -155,6 +153,71 @@ def verify_signature(payload: dict[str, Any], provided: Optional[str]) -> bool:
     return True
 
 
+# The simulator's REST API answers as soon as the process starts, but
+# list-parking-spots returns [] until a level is started in its window. A
+# dispatcher launched in that gap (START.bat does exactly this) syncs zero
+# bays and then treats every arrival as "lot full". A car event proves a
+# level is running, so the first one we see without real bays triggers one
+# sync - event-driven, not a poll. Seeded layouts don't count as real.
+TRAFFIC_SYNC_COOLDOWN_S = 10.0
+_live_bays_synced = False
+_traffic_sync_lock = asyncio.Lock()
+_last_traffic_sync = 0.0
+
+
+async def _sync_if_no_live_bays() -> None:
+    global _last_traffic_sync
+    if _live_bays_synced:
+        return
+    async with _traffic_sync_lock:  # a burst of arrivals triggers one sync, not one each
+        if _live_bays_synced or time.monotonic() - _last_traffic_sync < TRAFFIC_SYNC_COOLDOWN_S:
+            return
+        _last_traffic_sync = time.monotonic()
+        try:
+            counts = await sync_from_simulator()
+            log.warning("traffic arrived with no live bays - synced: %d spots, %d barriers",
+                        counts["spots"], counts["barriers"])
+        except Exception:  # noqa: BLE001 - the arrival is still handled below
+            log.exception("traffic-triggered sync failed")
+
+
+# A goto sent while the entry barrier is still rising is dropped silently (the
+# call still returns 201) and the car sits at the entry until it gives up. We
+# wait for the barrier's own "Open" webhook, and if a dispatched car still has
+# not left the entry after ENTRY_RETRY_S (normally it leaves in ~1 s) we send
+# it once more. Both waits are simulated time, so they scale with game speed.
+GATE_OPEN_WAIT_S = 5.0
+ENTRY_RETRY_S = 8.0
+_left_entry: set[str] = set()   # plates seen driving off their entry spot
+_entry_watchers: set[asyncio.Task] = set()
+
+
+async def _wait_for_barrier_open(name: str) -> bool:
+    """True once ``name`` reports Open (or needn't be waited for); False on timeout."""
+    barrier = state.barriers.get(name)
+    if barrier is None or barrier.broken or barrier.under_maintenance or not settings.autopilot:
+        return True
+    deadline = time.monotonic() + GATE_OPEN_WAIT_S / max(0.1, settings.game_speed)
+    while state.barriers[name].state != BarrierPosition.OPEN:
+        if time.monotonic() >= deadline:
+            log.warning("barrier %s still %s after waiting - dispatching anyway",
+                        name, state.barriers[name].state.value)
+            return False
+        await asyncio.sleep(0.05)
+    return True
+
+
+async def _resend_if_still_at_entry(plate: str, spot: str) -> None:
+    await asyncio.sleep(ENTRY_RETRY_S / max(0.1, settings.game_speed))
+    session = state.get_session(plate)
+    if (plate in _left_entry or session is None or session.phase != SessionPhase.ASSIGNED
+            or session.assigned_spot != spot):
+        return
+    log.warning("%s never left %s - resending goto %s", plate, session.entry_gate, spot)
+    state.log_activity(f"{plate} did not leave {session.entry_gate} - sending it to {spot} again", level="warn")
+    await act(f"car {plate} -> {spot} (resend)", lambda: client.car_goto(plate, spot))
+
+
 async def sync_from_simulator() -> dict[str, int]:
     """One-shot list-* refresh. Called at startup and on manual operator request only -
     never on a timer, per the organizer's no-polling rule."""
@@ -171,6 +234,9 @@ async def sync_from_simulator() -> dict[str, int]:
     state.load_zones(zones)
     state.load_fans(fans)
     ring.rebuild(list(state.spots.keys()) + list(state.barriers.keys()))
+    global _live_bays_synced
+    if any(s.get("purpose") == "Park" for s in spots):
+        _live_bays_synced = True
     await _ensure_barriers_open()
     counts = {"spots": len(state.spots), "barriers": len(state.barriers),
               "zones": len(state.zones), "fans": len(state.fans)}
@@ -195,9 +261,13 @@ async def _ensure_barriers_open() -> None:
             continue
         if barrier.state != BarrierPosition.OPEN:
             try:
+                was = barrier.state.value
                 await client.barrier_open(barrier.name)
-                state.update_barrier_state(barrier.name, "Open")
-                state.log_activity(f"Auto-opened barrier {barrier.name} (was {barrier.state.value})")
+                # "Opening", not "Open": the arm takes time to rise, and a car
+                # sent through it meanwhile is silently dropped by the simulator.
+                # Its gate_action webhook reports when it is really open.
+                state.update_barrier_state(barrier.name, "Opening")
+                state.log_activity(f"Auto-opening barrier {barrier.name} (was {was})")
                 log.info("auto-opened barrier %s to clear the entry path", barrier.name)
             except Exception:  # noqa: BLE001 - one stuck barrier must not block the others
                 log.exception("failed to auto-open barrier %s", barrier.name)
@@ -270,6 +340,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Dashboard: sign-in/roles for every route, plus the console's own pages and APIs.
+auth.install(app)
+app.include_router(dashboard_api.router)
+
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR)) if TEMPLATES_DIR.exists() else None
@@ -299,8 +373,16 @@ async def dispatch_entry(plate: str, gate_name: str, car_type: str = "Normal",
                 "ranked_candidates": ranked[:10], "dispatched": False}
 
     if target is None:
-        state.log_activity(f"No available spot for {plate} at {gate_name} - lot full", level="error")
-        return {"plate": plate, "gate": gate_name, "target": None, "dispatched": False}
+        # Level 1: "new cars can leave if park has no free spots". Leaving the
+        # car at the entry only earns CarLeftFromEntryBecauseNeglected later.
+        # Not when we know no bays at all - that is a sync problem, not a full lot.
+        if not _live_bays_synced:
+            state.log_activity(f"No bays known yet - {plate} waits at {gate_name}", level="error")
+            return {"plate": plate, "gate": gate_name, "target": None, "dispatched": False}
+        state.log_activity(f"Lot full - turning {plate} away at {gate_name}", level="warn")
+        if await act(f"car {plate} -> leavepark (lot full)", lambda: client.car_goto(plate, "leavepark")):
+            state.complete_session(plate)
+        return {"plate": plate, "gate": gate_name, "target": None, "dispatched": False, "turned_away": True}
 
     if not state.reserve_spot(target, plate):
         candidates = [c for c in state.available_spots(car_type=candidate_type) if c != target]
@@ -319,12 +401,19 @@ async def dispatch_entry(plate: str, gate_name: str, car_type: str = "Normal",
     # gate open/close cycles, and gates need repair after a fixed number of
     # them.
     barrier = state.barriers.get(settings.entry_gate)
-    if barrier is not None and barrier.state != BarrierPosition.OPEN \
+    if barrier is not None and barrier.state not in (BarrierPosition.OPEN, BarrierPosition.OPENING) \
             and not barrier.broken and not barrier.under_maintenance:
-        await act(f"open {settings.entry_gate} barrier for {plate}",
-                  lambda: client.barrier_open(settings.entry_gate))
+        if await act(f"open {settings.entry_gate} barrier for {plate}",
+                     lambda: client.barrier_open(settings.entry_gate)):
+            state.update_barrier_state(settings.entry_gate, "Opening")
+    await _wait_for_barrier_open(settings.entry_gate)
 
+    _left_entry.discard(plate)  # plates recycle; this is a new visit
     sent = await act(f"car {plate} -> {target}", lambda: client.car_goto(plate, target))
+    if sent:
+        task = asyncio.create_task(_resend_if_still_at_entry(plate, target))
+        _entry_watchers.add(task)  # keep a reference so it isn't garbage-collected mid-wait
+        task.add_done_callback(_entry_watchers.discard)
 
     if not sent:
         # Command skipped (dry-run) or failed. Release the spot - the car will
@@ -387,16 +476,10 @@ async def gate_portal(request: Request, gate: Optional[str] = Query(None)):
     })
 
 
-@app.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
-async def split_dashboard(request: Request):
-    if templates is None:
-        raise HTTPException(500, "templates directory missing")
-    gates = state.entry_gates() or [settings.entry_gate]
-    return templates.TemplateResponse(request, "dashboard.html", {
-        "team_name": "KuruSushi-Park", "gates": gates,
-        "default_gate": gates[0] if gates else settings.entry_gate,
-        "asset_version": str(int(time.time())),
-    })
+@app.get("/dashboard", include_in_schema=False)
+async def split_dashboard() -> RedirectResponse:
+    """Superseded by the operator console at ``/``; kept so old links still work."""
+    return RedirectResponse("/", status_code=302)
 
 
 # --------------------------------------------------------------------------- #
@@ -480,7 +563,7 @@ async def get_layout() -> dict[str, Any]:
     status. The caller merges this once against the live /api/state or
     /ws/telemetry feed for occupancy/broken/etc.
     """
-    return load_layout(settings.seed_from_level or "lvl1")
+    return load_layout(running_level() or "lvl1")
 
 
 # --------------------------------------------------------------------------- #
@@ -689,6 +772,12 @@ async def _handle_car_spot_action(payload: dict[str, Any]) -> None:
     spot_name = payload["SpotName"]
     spot_type = payload.get("SpotType", "")
     direction = payload.get("Direction", "")
+
+    await _sync_if_no_live_bays()
+
+    if spot_type == "EntrySpot" and direction == "CarOut":
+        _left_entry.add(plate)  # it took the goto - no resend needed
+        return
 
     if spot_type == "EntrySpot" and direction == "CarIn":
         car_type = payload.get("CarType", "Normal")

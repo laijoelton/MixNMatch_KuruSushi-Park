@@ -60,6 +60,8 @@ the specification. The ones that bite in practice:
 | `app/seed.py` | Offline fallback: load the park from `lvl1.json` |
 | `app/queue_worker.py` | Background maintenance queue |
 | `app/ws_manager.py` | WebSocket fan-out to the dashboard |
+| `app/auth.py` | Dashboard accounts, sessions, role policy middleware (HTTP + WebSocket), audit log |
+| `app/dashboard_api.py` | Console pages and APIs: login, history search, stats, admin, twin geometry, public kiosk bays |
 | `templates/`, `static/` | Operator HUD and mobile gate portal |
 
 ### Two layers of state, on purpose
@@ -291,6 +293,79 @@ releasing` → `goto leavepark` → `201 Created`.
 data point available. It said "whole numbers get paid" long before any reasoning
 about tariffs did.
 
+### 4.9 The simulator crashed on launch from START.bat
+
+**Symptom:** `START.bat` waited 60 s for `:9898` and gave up; no simulator window.
+
+**Diagnosis:** launched from the project folder the process exits within 3 s
+with `0xE0434352` (unhandled .NET exception); launched from its own folder it
+listens within 1 s. It resolves `settings\` relative to the working directory.
+
+**Fix:** `start ... /D "ParkingSimulator-win-x64\ParkingSimulator-win-x64"`.
+
+**Verified:** the exact launcher command brings `:9898` up and
+`/api/v1/auth/login` returns a token.
+
+### 4.10 "Free bays 0/0" while cars queued at the entry
+
+**Symptom:** dashboard showed 0/0 bays; 13 cars waiting at `ENTRY1`; nothing
+dispatched; `gateA` closed.
+
+**Diagnosis:** the simulator's API answers as soon as the process starts, but
+`list-parking-spots` returns `[]` until a level is started in its window
+(measured: still 0 at +10 s). `START.bat` starts the dispatcher the moment the
+API answers, so the one startup sync always loaded zero bays. Every arrival was
+then "lot full", no `goto` was sent, and `_ensure_barriers_open` never ran.
+A second cause stacked on top: `.env` still had `AUTOPILOT=false`.
+
+**Fix:** a car event proves a level is running, so `_handle_car_spot_action`
+calls `_sync_if_no_live_bays()` first. It syncs once when no *live* bays are
+known (seeded layouts don't count), behind a lock so a burst of arrivals
+triggers one sync, with a 10 s cooldown so a still-empty level can't hammer the
+paid list endpoints. Event-driven, not polling — consistent with "sync once per
+level loading". The dashboard also shows a red *No bays loaded from the
+simulator* alert with a link to manual sync.
+
+**Verified:** `tests/test_traffic_sync.py` — first arrival loads bays and is
+dispatched, later arrivals do not re-sync, an empty level retries on the next
+arrival.
+
+### 4.11 Full lot left cars stranded at the entry
+
+**Symptom / diagnosis:** §5 claimed "lot full → `leavepark`", but
+`dispatch_entry` only logged and returned, so the car waited until
+`CarLeftFromEntryBecauseNeglected`.
+
+**Fix:** with live bays known and none free, send `goto leavepark` and close
+the session. With *no* bays known it does not turn cars away — that is a sync
+problem (4.10), not a full lot.
+
+**Verified:** `tests/test_traffic_sync.py::test_full_lot_turns_car_away`.
+
+### 4.12 The first car after a sync never left the entry
+
+**Symptom:** after the auto-sync (4.10) every car was dispatched and parked
+except the first one, `NQP 718`, which stayed `ASSIGNED` to S9 at `ENTRY1`.
+
+**Diagnosis (from the event log):** `ENTRY1 CarIn` at 59.600 triggered the
+sync, which found `gateA` Closed and sent `open`, then the goto was sent
+immediately. `gateA` only reported `Open` at 59.918. Every later car shows
+`ENTRY1 CarOut` ~0.9 s after its `CarIn`; `NQP 718` never did. The goto sent
+through a still-rising barrier was dropped silently (201, no movement) - the
+same failure mode as early exit charges (4.x exit timing). Two things made it
+possible: `_ensure_barriers_open` recorded the barrier as `Open` the instant
+the command was sent, and nothing watched for a car failing to leave the entry.
+
+**Fix:** a barrier we just commanded is recorded as `Opening`; only its own
+`gate_action: Open` webhook marks it `Open`. `dispatch_entry` waits for that
+(`GATE_OPEN_WAIT_S`, 5 s scaled by game speed, then dispatches anyway). Every
+dispatched car is watched: `EntrySpot/CarOut` marks it as having left; if it
+has not after `ENTRY_RETRY_S` (8 s scaled), the goto is sent once more.
+
+**Verified:** `tests/test_entry_dispatch.py` - waits for the Open webhook,
+gives up instead of hanging, never waits on open/unknown/broken barriers,
+resends only for a car that did not leave.
+
 ---
 
 ## 5. Edge cases and how they are handled
@@ -301,12 +376,14 @@ about tariffs did.
 | Out-of-order / missing events | `SequenceId` gaps recorded in `sequence_gaps`, never silently swallowed |
 | Car parks somewhere other than its reservation | Drift guard frees the stale reservation |
 | Car never arrives after dispatch | `RESERVATION_TTL_S` sweep |
+| Goto dropped (barrier still rising, or silently ignored) | Wait for the barrier's own `Open` webhook; resend once if no `EntrySpot/CarOut` within `ENTRY_RETRY_S` |
 | Car already parked at startup | Adopted at `Park/CarIn` |
 | Unknown car at the exit | Adopted and charged an estimate |
 | Fake payment | Compared against our own computed figure; car held at exit, never released |
-| Lot full | Car sent to `leavepark` immediately rather than left to trigger `CarLeftFromEntryBecauseNeglected` |
+| Lot full | Car sent to `leavepark` immediately rather than left to trigger `CarLeftFromEntryBecauseNeglected` (only when live bays are known — see 4.11) |
 | Broken spot with a car in it | Repair deferred until `Park/CarOut` |
 | Simulator not running at startup | Listener still comes up; seeds from `lvl1.json` and logs loudly |
+| Dispatcher started before a level was running | First car event triggers one sync (lock + 10 s cooldown); dashboard alert until bays are known |
 | Simulator returns an unexpected shape | `detectedCars` accepts list or int |
 | Handler throws | Caught, recorded on the event row, returns `200` — a bad event must never kill the receiver |
 | Dry-run must not mutate state | Reservation rolled back when no command was sent |

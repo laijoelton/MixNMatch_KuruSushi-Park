@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Payments{% endblock %}
+{% block heading %}Payments &amp; fraud check{% endblock %}
+{% block crumb %}Every payment is checked against what we invoiced{% endblock %}
+{% block content %}
+<section class="kpis" id="pay-kpis" aria-label="Money figures"></section>
+
+<div class="page-grid">
+  <section class="panel span-8" aria-labelledby="pay-h">
+    <div class="panel-head">
+      <h2 id="pay-h">Payments</h2><span class="count" id="pay-count"></span>
+      <div class="spacer"></div>
+      <div id="pay-filters" style="display:flex;gap:6px"></div>
+    </div>
+    <div class="table-wrap" style="max-height:620px">
+      <table class="table">
+        <thead><tr><th>Time</th><th>Plate</th><th class="num">Invoiced</th><th class="num">Paid</th><th>Verdict</th><th>Why</th></tr></thead>
+        <tbody id="pay-rows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel span-4" aria-labelledby="fines-h">
+    <div class="panel-head"><h2 id="fines-h">Fines by reason</h2></div>
+    <div class="list" id="fines" style="max-height:620px"></div>
+  </section>
+</div>
+{% endblock %}
+{% block scripts %}
+<script type="module" src="/static/js/pages/payments.js?v={{ asset_version }}"></script>
+{% endblock %}

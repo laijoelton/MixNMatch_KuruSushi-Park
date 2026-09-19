@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sign in · ParkGuardian</title>
+  <link rel="stylesheet" href="/static/css/app.css?v={{ asset_version }}" />
+</head>
+<body>
+  <div class="auth-page">
+    <section class="auth-art" aria-hidden="true">
+      <div class="headline">
+        <h2>Every bay, gate and ringgit — in one view.</h2>
+        <p>ParkGuardian watches the Grand Park Auto simulator in real time, dispatches every arriving car, and flags anything that needs a human.</p>
+      </div>
+    </section>
+    <section class="auth-form">
+      <form class="auth-card" id="login-form" novalidate>
+        <span class="brand">PG</span>
+        <div>
+          <h1>Sign in</h1>
+          <p class="muted" style="margin:6px 0 0">Operators and administrators only.</p>
+        </div>
+        <div class="field">
+          <label for="username">Username</label>
+          <input class="input" id="username" name="username" autocomplete="username" required autofocus />
+        </div>
+        <div class="field">
+          <label for="password">Password</label>
+          <input class="input" id="password" name="password" type="password" autocomplete="current-password" required />
+        </div>
+        <div class="form-error" id="login-error" role="alert"></div>
+        <button class="btn primary" id="login-btn" type="submit">Sign in</button>
+        <p class="muted" style="font-size:12px;margin:0">Default accounts are listed in the project README.</p>
+      </form>
+    </section>
+  </div>
+  <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+  <script type="module" src="/static/js/pages/login.js?v={{ asset_version }}"></script>
+</body>
+</html>

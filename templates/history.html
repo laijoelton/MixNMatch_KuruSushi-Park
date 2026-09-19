@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}History{% endblock %}
+{% block heading %}Parking history{% endblock %}
+{% block crumb %}Completed stays, newest first{% endblock %}
+{% block content %}
+<section class="panel" aria-label="Parking history">
+  <form class="filters" id="filters" role="search">
+    <div class="field">
+      <label for="f-plate">Plate</label>
+      <input class="input" id="f-plate" name="plate" placeholder="e.g. WCT759" autocomplete="off" />
+    </div>
+    <div class="field">
+      <label for="f-spot">Bay</label>
+      <input class="input" id="f-spot" name="spot" placeholder="e.g. S12" style="width:110px" autocomplete="off" />
+    </div>
+    <div class="field">
+      <label for="f-from">From</label>
+      <input class="input" id="f-from" name="from" type="date" />
+    </div>
+    <div class="field">
+      <label for="f-to">To</label>
+      <input class="input" id="f-to" name="to" type="date" />
+    </div>
+    <div class="field">
+      <span class="sr-only" id="status-label">Payment status</span>
+      <div style="display:flex;gap:6px;height:34px;align-items:center" role="group" aria-labelledby="status-label" id="f-status"></div>
+    </div>
+    <div class="spacer" style="flex:1"></div>
+    <button class="btn ghost" type="reset" id="f-reset">Reset</button>
+  </form>
+  <div class="table-wrap">
+    <table class="table" aria-describedby="result-summary">
+      <thead>
+        <tr>
+          <th>Plate</th><th>Type</th><th>Bay</th><th>Arrived</th><th>Left bay</th>
+          <th class="num">Stay</th><th class="num">Charged</th><th class="num">Paid</th><th>Status</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+  <div class="pager">
+    <span id="result-summary">—</span>
+    <div class="spacer"></div>
+    <button class="btn small" type="button" id="prev">Previous</button>
+    <button class="btn small" type="button" id="next">Next</button>
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script type="module" src="/static/js/pages/history.js?v={{ asset_version }}"></script>
+{% endblock %}

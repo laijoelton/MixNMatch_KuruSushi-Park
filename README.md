@@ -7,28 +7,45 @@ mobile gate portal on top of the `feature/simulator-core` dispatch engine**,
 without changing any of that engine's dispatch, penalty-mitigation or
 webhook logic. `main` is this branch merged in — the full, unified system.
 
-## Dual Dashboard Suite
+## ParkGuardian Operator Console
 
-| Route | Audience | What it shows |
+Sign in at `http://127.0.0.1:8080/login`. Default accounts are created on
+first start (change them with the env vars below, or from the Admin page):
+
+| Username | Password | Role |
 |---|---|---|
-| `GET /` | Operator | Dark-mode HUD: telemetry cards (available/occupied/reserved/broken, active sessions, penalty count & fines, maintenance queue depth), an HTML5 Canvas digital twin of the dispatch ring, live barrier list, broken-component list, activity log, penalty log, and manual controls (sync, simulate arrival/dry-run, open/close barriers). |
-| `GET /gate?gate=<name>` | Driver / walk-in | Mobile-first cinema-style grid of every `Park` spot, colored live (green = available, teal = occupied, amber = reserved, gray = broken/maintenance), gate selector, plate entry, and one-tap check-in to a specific chosen bay. |
+| `admin` | `admin123` (`DASHBOARD_ADMIN_PASSWORD`) | Admin |
+| `operator` | `operator123` (`DASHBOARD_OPERATOR_PASSWORD`) | Operator |
 
-Both pages are pure observers: they render whatever `app/state.py::snapshot()`
-already holds and push their own explicit actions through the same JSON API
-the headless core exposes (`/api/manual/*`, `/api/gate/checkin`) — they
-never bypass the dispatch/idempotency/penalty-mitigation logic described
-below.
+| Route | Who | What it is |
+|---|---|---|
+| `/` | Operator, Admin | **Live operations.** Digital twin drawn from the simulator's own level file (real coordinates, any level; zoom, pan, zone focus), KPIs, *Needs attention* inbox (faults, CO, fake payments, full lot, missed events), vehicles on site, humanised event feed, per-zone occupancy by car type with gate status. Click a bay, gate or fan for details and Open / Close / Repair — actions that would earn a penalty (operating a broken gate, repairing an occupied bay) are disabled with the reason shown. |
+| `/history` | Operator, Admin | Completed stays searchable by plate (with or without the space), bay, payment status and date; paginated in SQL; each row opens that car's raw event timeline. |
+| `/payments` | Admin | Revenue, net after fines, every payment with a Verified / Suspect verdict and why, fines by reason. |
+| `/admin` | Admin | Accounts (last admin and self-deletion are refused), audit trail of every change made through the dashboard, manual resync and simulated arrival behind confirmations. |
+| `/gate` | Public kiosk | Driver check-in: vehicle type, only bays that suit it are selectable. |
+| `/login` | Public | Sign-in. |
 
-**Live updates:** `app/ws_manager.py::ConnectionManager` fan-outs one state
-snapshot per tick (`BROADCAST_INTERVAL_S`, default 1s) to every connected
-browser over `/ws/live`. `static/js/canvas_twin.js` projects spots and
-barriers onto the same deterministic sorted-name ring `app/routing.py` uses
-for dispatch, so the twin's layout is numerically the same ring the router
-reasons about — not a cosmetic approximation. `static/js/lot_picker.js`
-renders the cinema grid from the same `spots` array and posts the driver's
-pick to `/api/gate/checkin`, which honours it only if the spot is still
-reservable (race-safe via `ParkingState.reserve_spot`'s lock).
+**Access control is server-side.** `app/auth.py` holds one policy table
+(`required_role`) enforced by an ASGI middleware for every HTTP request and
+the `/ws/live` WebSocket: anonymous API calls get 401, pages redirect to
+sign-in, operators get 403 on admin routes. Passwords are PBKDF2-SHA256 with a
+per-user salt; sessions are random tokens in an `HttpOnly` cookie backed by a
+server-side row, so sign-out really revokes. Every non-GET request by a
+signed-in user is written to `audit_log`.
+
+**Level-agnostic.** `app/layout.py::detect_level()` compares the live spot
+names with each `lvlN.json` (Jaccard ≥ 0.8) and the console draws whichever
+level is running — 30 bays / 1 zone up to 250 bays / 7 zones with EV and
+accessible bays, fans and indoor zones. Unknown layouts fall back to a
+schematic grid instead of a blank screen.
+
+**Degrades instead of breaking.** WebSocket drop → last data stays, dimmed,
+with its age and automatic reconnect; API errors surface as toasts; dry-run
+mode is flagged in a banner; all data is rendered as text (never HTML).
+
+Code: `app/auth.py`, `app/dashboard_api.py`, `templates/`, `static/css/app.css`,
+`static/js/{core,components,pages}/`. Tests: `python -m pytest tests`.
 
 ## System Architecture & Pitch Overview
 
