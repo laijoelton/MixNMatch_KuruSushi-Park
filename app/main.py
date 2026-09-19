@@ -1,24 +1,32 @@
-"""FastAPI dispatcher: headless simulator-core engine.
+"""FastAPI dispatcher + dual dashboard: inbound webhooks, outbound REST, live UI.
 
 This service is the sole external controller of the closed
-``ParkingSimulator-win-x64`` binary. It never polls; every mutation to
-local state happens strictly in reaction to an inbound webhook (see
-``app/state.py``'s module docstring). This module exposes only JSON APIs -
-the browser-facing operator HUD and mobile gate portal are layered on top
-of this exact engine on the ``feature/dashboard-ui`` branch / ``main``,
-without changing any of the logic below.
+``ParkingSimulator-win-x64`` binary. It never polls; every mutation to local
+state happens strictly in reaction to an inbound webhook (see ``app/state.py``
+docstring). Two browser-facing surfaces are layered on top of that headless
+core without changing its behaviour:
+
+* ``/`` - an operator HUD (live telemetry, digital twin, manual controls).
+* ``/gate`` - a mobile-first cinema-style bay picker for walk-in check-in.
+
+Both are pure read/observe layers over the same ``ParkingState`` the webhook
+handlers mutate, pushed to connected browsers over ``/ws/live``.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import logging
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from app.client import client
@@ -26,9 +34,14 @@ from app.config import settings
 from app.queue_worker import maintenance_queue
 from app.routing import rank_spots, ring
 from app.state import state
+from app.ws_manager import manager
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("dispatcher.main")
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+STATIC_DIR = ROOT_DIR / "static"
+TEMPLATES_DIR = ROOT_DIR / "templates"
 
 
 def compute_parking_cost(entered_monotonic: float) -> float:
@@ -82,6 +95,20 @@ async def sync_from_simulator() -> dict[str, int]:
     return counts
 
 
+async def _broadcast_loop() -> None:
+    while True:
+        try:
+            snapshot = state.snapshot()
+            snapshot["type"] = "frame"
+            snapshot["server_time"] = time.time()
+            snapshot["ws_clients"] = manager.count
+            snapshot["maintenance_queue"] = maintenance_queue.stats
+            await manager.broadcast(snapshot)
+        except Exception:  # noqa: BLE001 - the broadcaster must never die
+            log.exception("broadcast tick failed")
+        await asyncio.sleep(settings.broadcast_interval_s)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await client.login()
@@ -90,19 +117,29 @@ async def lifespan(app: FastAPI):
              counts["spots"], counts["barriers"], counts["zones"], counts["fans"])
 
     maintenance_queue.start()
+    broadcaster = asyncio.create_task(_broadcast_loop(), name="dispatcher-broadcaster")
     try:
         yield
     finally:
+        broadcaster.cancel()
+        try:
+            await broadcaster
+        except asyncio.CancelledError:
+            pass
         await maintenance_queue.stop()
         await client.aclose()
 
 
 app = FastAPI(
-    title="KuruSushi-Park Dispatcher (headless core)",
+    title="KuruSushi-Park Dispatcher",
     version="2.0.0",
-    description="Supervisory dispatch layer over the Grand Park Auto simulator.",
+    description="Supervisory dispatch layer over the Grand Park Auto simulator, with operator and gate dashboards.",
     lifespan=lifespan,
 )
+
+if STATIC_DIR.exists():
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+templates = Jinja2Templates(directory=str(TEMPLATES_DIR)) if TEMPLATES_DIR.exists() else None
 
 
 # --------------------------------------------------------------------------- #
@@ -141,16 +178,38 @@ async def dispatch_entry(plate: str, gate_name: str, car_type: str = "Normal",
 
 async def assign_specific_spot(plate: str, gate_name: str, spot_name: str,
                                car_type: str = "Normal") -> dict[str, Any]:
-    """Honour an explicit spot pick (used by the manual API and, on the UI
-    branch, the gate portal) rather than the auto-ranked target."""
+    """Used by the gate portal: honour the user's explicit pick if it's still valid."""
     state.start_session(plate, gate=gate_name)
     if not state.reserve_spot(spot_name, plate):
         return {"plate": plate, "gate": gate_name, "target": spot_name, "dispatched": False,
                 "reason": "spot no longer available"}
     state.assign_spot(plate, spot_name)
     await client.car_goto(plate, spot_name)
-    state.log_activity(f"Manual assign: {plate} to {spot_name} at {gate_name}")
+    state.log_activity(f"Check-in: {plate} chose {spot_name} at {gate_name}")
     return {"plate": plate, "gate": gate_name, "target": spot_name, "dispatched": True}
+
+
+# --------------------------------------------------------------------------- #
+# Pages
+# --------------------------------------------------------------------------- #
+@app.get("/", response_class=HTMLResponse, include_in_schema=False)
+async def operator_dashboard(request: Request):
+    if templates is None:
+        raise HTTPException(500, "templates directory missing")
+    return templates.TemplateResponse(request, "index.html", {
+        "team_name": "KuruSushi-Park", "asset_version": str(int(time.time())),
+    })
+
+
+@app.get("/gate", response_class=HTMLResponse, include_in_schema=False)
+async def gate_portal(request: Request, gate: Optional[str] = Query(None)):
+    if templates is None:
+        raise HTTPException(500, "templates directory missing")
+    gates = state.entry_gates()
+    selected = gate if gate in gates else (gates[0] if gates else None)
+    return templates.TemplateResponse(request, "gate.html", {
+        "gates": gates, "selected_gate": selected, "asset_version": str(int(time.time())),
+    })
 
 
 # --------------------------------------------------------------------------- #
@@ -167,6 +226,7 @@ async def healthz() -> dict[str, Any]:
         "active_sessions": len(state.sessions),
         "last_sequence_id": state.last_sequence_id,
         "maintenance_queue": maintenance_queue.stats,
+        "ws_clients": manager.count,
     }
 
 
@@ -213,23 +273,6 @@ async def manual_arrival(body: ManualArrivalIn) -> dict[str, Any]:
     return await dispatch_entry(body.plate, body.gate, body.car_type, body.dry_run)
 
 
-class ManualAssignIn(BaseModel):
-    plate: str = Field(..., min_length=1, max_length=16)
-    gate: str = Field(..., min_length=1, max_length=32)
-    spot: str = Field(..., min_length=1, max_length=32)
-    car_type: str = Field("Normal", max_length=16)
-
-
-@app.post("/api/manual/assign")
-async def manual_assign(body: ManualAssignIn) -> dict[str, Any]:
-    if body.gate not in state.spots or body.spot not in state.spots:
-        raise HTTPException(404, "unknown gate or spot")
-    result = await assign_specific_spot(body.plate, body.gate, body.spot, body.car_type)
-    if not result["dispatched"]:
-        raise HTTPException(409, result.get("reason", "spot unavailable"))
-    return result
-
-
 @app.post("/api/manual/barrier/{name}/open")
 async def manual_barrier_open(name: str) -> dict[str, Any]:
     await client.barrier_open(name)
@@ -258,6 +301,44 @@ async def manual_repair(name: str) -> dict[str, Any]:
         raise HTTPException(404, f"unknown component {name}")
     await _queue_repair(component_type, name)
     return {"ok": True, "name": name, "type": component_type, "queued": True}
+
+
+# --------------------------------------------------------------------------- #
+# Gate portal API
+# --------------------------------------------------------------------------- #
+class CheckinIn(BaseModel):
+    plate: str = Field(..., min_length=1, max_length=16)
+    gate: str = Field(..., min_length=1, max_length=32)
+    spot: str = Field(..., min_length=1, max_length=32)
+    car_type: str = Field("Normal", max_length=16)
+
+
+@app.post("/api/gate/checkin")
+async def gate_checkin(body: CheckinIn) -> dict[str, Any]:
+    if body.gate not in state.spots:
+        raise HTTPException(404, f"unknown gate {body.gate}")
+    if body.spot not in state.spots:
+        raise HTTPException(404, f"unknown spot {body.spot}")
+    result = await assign_specific_spot(body.plate, body.gate, body.spot, body.car_type)
+    if not result["dispatched"]:
+        raise HTTPException(409, result.get("reason", "spot unavailable"))
+    return result
+
+
+# --------------------------------------------------------------------------- #
+# Live WebSocket feed (operator HUD + gate picker)
+# --------------------------------------------------------------------------- #
+@app.websocket("/ws/live")
+async def ws_live(ws: WebSocket):
+    await manager.connect(ws)
+    try:
+        await ws.send_json({"type": "hello", "server_time": time.time(), **state.snapshot()})
+        while True:
+            await ws.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        await manager.disconnect(ws)
 
 
 # --------------------------------------------------------------------------- #

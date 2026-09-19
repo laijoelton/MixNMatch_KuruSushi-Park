@@ -2,12 +2,33 @@
 
 HackMY IoT 2026 · Track 2: Next-Gen Parking Solutions
 
-**This branch (`feature/simulator-core`) is the headless dispatch engine
-only** — inbound webhook receiver, outbound REST client, in-memory state,
-and a background maintenance queue, exposed purely as JSON APIs. The
-operator HUD and mobile gate portal are layered on top of this exact engine
-on `feature/dashboard-ui` and unified into `main`; nothing in this branch
-changes when that UI is added.
+**This branch (`feature/dashboard-ui`) layers a live operator HUD and a
+mobile gate portal on top of the `feature/simulator-core` dispatch engine**,
+without changing any of that engine's dispatch, penalty-mitigation or
+webhook logic. `main` is this branch merged in — the full, unified system.
+
+## Dual Dashboard Suite
+
+| Route | Audience | What it shows |
+|---|---|---|
+| `GET /` | Operator | Dark-mode HUD: telemetry cards (available/occupied/reserved/broken, active sessions, penalty count & fines, maintenance queue depth), an HTML5 Canvas digital twin of the dispatch ring, live barrier list, broken-component list, activity log, penalty log, and manual controls (sync, simulate arrival/dry-run, open/close barriers). |
+| `GET /gate?gate=<name>` | Driver / walk-in | Mobile-first cinema-style grid of every `Park` spot, colored live (green = available, teal = occupied, amber = reserved, gray = broken/maintenance), gate selector, plate entry, and one-tap check-in to a specific chosen bay. |
+
+Both pages are pure observers: they render whatever `app/state.py::snapshot()`
+already holds and push their own explicit actions through the same JSON API
+the headless core exposes (`/api/manual/*`, `/api/gate/checkin`) — they
+never bypass the dispatch/idempotency/penalty-mitigation logic described
+below.
+
+**Live updates:** `app/ws_manager.py::ConnectionManager` fan-outs one state
+snapshot per tick (`BROADCAST_INTERVAL_S`, default 1s) to every connected
+browser over `/ws/live`. `static/js/canvas_twin.js` projects spots and
+barriers onto the same deterministic sorted-name ring `app/routing.py` uses
+for dispatch, so the twin's layout is numerically the same ring the router
+reasons about — not a cosmetic approximation. `static/js/lot_picker.js`
+renders the cinema grid from the same `spots` array and posts the driver's
+pick to `/api/gate/checkin`, which honours it only if the spot is still
+reservable (race-safe via `ParkingState.reserve_spot`'s lock).
 
 ## System Architecture & Pitch Overview
 
@@ -95,20 +116,23 @@ organizer's docs. The digest algorithm is configurable (`WEBHOOK_HASH_ALGO`,
 default `sha256`) since the exact algorithm is not stated in the published
 Webhooks reference.
 
-## JSON API Surface (this branch)
+## JSON API Surface
 
 | Method & Path | Purpose |
 |---|---|
-| `GET /healthz` | Liveness + counts + maintenance queue stats |
+| `GET /` | Operator HUD page |
+| `GET /gate` | Mobile gate/check-in portal page |
+| `WS /ws/live` | Live state snapshot stream (both pages) |
+| `GET /healthz` | Liveness + counts + maintenance queue stats + connected dashboard clients |
 | `GET /api/state` | Full state snapshot (spots, barriers, zones, fans, sessions, penalties, activity log) |
 | `GET /api/spots` | Spot list + occupancy counts |
 | `GET /api/gates` | Known entry-spot names |
 | `GET /api/broken` | Currently broken/under-maintenance components + deferred repairs |
 | `POST /api/manual/sync` | One-shot, operator-triggered re-sync of spots/barriers/zones/fans |
 | `POST /api/manual/arrival` | Manually replay the entry-dispatch path for a plate (`dry_run: true` previews ranking only) |
-| `POST /api/manual/assign` | Force-assign a specific spot to a plate |
 | `POST /api/manual/barrier/{name}/open` \| `/close` | Manual barrier control |
 | `POST /api/manual/repair/{name}` | Queue a repair for any component |
+| `POST /api/gate/checkin` | Gate portal: assign the driver's chosen spot and dispatch |
 | `POST /webhooks/simulator` | Inbound event receiver from Grand Park Auto |
 
 ## Setup & Execution Guide
@@ -127,6 +151,7 @@ Webhooks reference.
 | `MAX_PROCESSED_EVENTS` | no | `5000` | Size of the `EventId` dedup cache |
 | `PARKING_RATE_PER_MINUTE` | no | `0.20` | Billing rate used to compute `parkingCost` |
 | `MINIMUM_CHARGE` | no | `1.00` | Floor applied to computed parking cost |
+| `BROADCAST_INTERVAL_S` | no | `1.0` | Dashboard snapshot push interval over `/ws/live` |
 
 ### 2. Install and run locally
 
@@ -162,11 +187,19 @@ docker run -p 8080:8080 \
 
 1. `curl http://localhost:8080/healthz` — confirms startup sync populated
    spots/barriers/zones from the simulator.
-2. A vehicle arriving at an entry spot in the simulator produces a real
-   `dispatched <plate> from <gate> to <spot>` log line, and the simulator
-   visibly routes the car.
-3. Once parked, `GET /api/state` shows the session's phase as `PARKED`.
-4. Sending it to `exit` charges exactly once at `ExitSpot/CarIn` and
+2. Open `http://localhost:8080/` — the status dot should turn green
+   ("live") and the digital twin should render one dot per synced spot.
+3. A vehicle arriving at an entry spot in the simulator produces a real
+   `dispatched <plate> from <gate> to <spot>` log line and activity-log
+   entry, and the simulator visibly routes the car; the twin's matching dot
+   pulses and turns teal (occupied).
+4. Once parked, `GET /api/state` shows the session's phase as `PARKED`.
+5. Sending it to `exit` charges exactly once at `ExitSpot/CarIn` and
    completes the session at `ExitSpot/CarOut`.
-5. Breaking a component triggers a queued, automatically-applied repair,
-   deferred correctly if the affected spot is occupied.
+6. Breaking a component triggers a queued, automatically-applied repair,
+   deferred correctly if the affected spot is occupied, and shows up in the
+   HUD's broken-components panel until fixed.
+7. Open `http://localhost:8080/gate` on a phone (or resize the browser) —
+   pick a green spot, enter a plate, and check in; the spot should turn
+   amber (reserved) on both the gate portal and the operator HUD within one
+   broadcast tick.

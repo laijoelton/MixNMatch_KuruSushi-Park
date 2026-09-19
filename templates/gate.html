@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Gate Check-In — KuruSushi-Park</title>
+  <link rel="stylesheet" href="/static/css/dashboard.css?v={{ asset_version }}" />
+</head>
+<body>
+  <div class="gate-page">
+    <div class="gate-header">
+      <span class="status-dot" id="status-dot"></span>
+      <h1>Pick your spot</h1>
+      <select id="in-gate">
+        {% for g in gates %}
+        <option value="{{ g }}" {% if g == selected_gate %}selected{% endif %}>{{ g }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div class="screen"></div>
+
+    <div class="legend">
+      <span><span class="swatch" style="background:#3ddc84"></span>Available</span>
+      <span><span class="swatch" style="background:#ef5b6d"></span>Occupied</span>
+      <span><span class="swatch" style="background:#f5b942"></span>Reserved</span>
+      <span><span class="swatch" style="background:#6b7280"></span>Broken</span>
+    </div>
+
+    <div class="lot-grid" id="lot-grid"></div>
+
+    <div class="checkin-bar">
+      <input type="text" id="in-plate" placeholder="Your plate number" required />
+      <select id="in-cartype">
+        <option value="Normal">Normal</option>
+        <option value="Electric">Electric</option>
+      </select>
+      <button id="btn-checkin" disabled>Select a spot first</button>
+      <div class="status-message" id="status-message"></div>
+    </div>
+  </div>
+
+  <script src="/static/js/lot_picker.js?v={{ asset_version }}"></script>
+  <script>
+    const statusDot = document.getElementById("status-dot");
+    const checkinBtn = document.getElementById("btn-checkin");
+    const statusMsg = document.getElementById("status-message");
+    const gateSelect = document.getElementById("in-gate");
+
+    const picker = new LotPicker(document.getElementById("lot-grid"), {
+      onSelect: (name) => {
+        checkinBtn.disabled = !name;
+        checkinBtn.textContent = name ? `Check in at ${name}` : "Select a spot first";
+      },
+    });
+
+    let ws;
+    function connect() {
+      const proto = location.protocol === "https:" ? "wss" : "ws";
+      ws = new WebSocket(`${proto}://${location.host}/ws/live`);
+      ws.onopen = () => statusDot.classList.add("live");
+      ws.onclose = () => { statusDot.classList.remove("live"); setTimeout(connect, 1500); };
+      ws.onerror = () => ws.close();
+      ws.onmessage = (evt) => {
+        const snap = JSON.parse(evt.data);
+        picker.render(snap.spots || []);
+      };
+    }
+    connect();
+
+    checkinBtn.addEventListener("click", async () => {
+      const plate = document.getElementById("in-plate").value.trim();
+      const gate = gateSelect.value;
+      const car_type = document.getElementById("in-cartype").value;
+      const spot = picker.selected;
+      if (!plate || !gate || !spot) return;
+
+      checkinBtn.disabled = true;
+      statusMsg.textContent = "Checking in…";
+      statusMsg.className = "status-message";
+      try {
+        const res = await fetch("/api/gate/checkin", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ plate, gate, spot, car_type }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "check-in failed");
+        statusMsg.textContent = `Dispatched to ${data.target}. Drive on!`;
+        statusMsg.className = "status-message ok";
+        picker.clearSelection();
+      } catch (err) {
+        statusMsg.textContent = err.message;
+        statusMsg.className = "status-message error";
+        checkinBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
