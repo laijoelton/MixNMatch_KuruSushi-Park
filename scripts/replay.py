@@ -88,10 +88,31 @@ def main() -> None:
     send(car("S3", "Park", "CarOut", PlannedParkingDurationInMinutes="2"))
     time.sleep(0.3)
     send(car("EXIT_EXIT", "ExitSpot", "CarIn"))
-    time.sleep(0.3)
 
-    # Default pays exactly what a ~0.05 minute stay costs at 1/minute.
-    amount = AMOUNT if AMOUNT is not None else "0.05"
+    # The dispatcher deliberately waits for the car to settle before charging
+    # (the CarIn sensor fires too early for the simulator to accept a charge),
+    # so poll until the invoice exists rather than guessing the delay.
+    print()
+    print("... waiting for the dispatcher to issue the invoice ...")
+    expected = None
+    for _ in range(20):
+        time.sleep(0.5)
+        try:
+            with urllib.request.urlopen(TARGET.replace("/webhooks/simulator", "/cars"), timeout=5) as r:
+                for c in json.loads(r.read().decode()):
+                    if c["plate"] == PLATE and c.get("expected_amount") is not None:
+                        expected = c["expected_amount"]
+                        break
+        except Exception:
+            pass
+        if expected is not None:
+            break
+    if expected is None:
+        print("  no invoice issued - the charge path did not run")
+    else:
+        print(f"  invoice issued: {expected}")
+
+    amount = AMOUNT if AMOUNT is not None else (str(expected) if expected is not None else "1.0")
     send({
         "EventClass": "payment_made",
         "CarPlateNumber": PLATE,

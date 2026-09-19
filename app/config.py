@@ -59,6 +59,9 @@ class Settings:
     seed_from_level: str
     unknown_car_minutes: float
     billing_rounding: str
+    exit_charge_delay_s: float
+    payment_wait_s: float
+    charge_max_attempts: int
     # Dashboard: how often the operator HUD is pushed over the WebSocket.
     broadcast_interval_s: float
     webhook_debug: bool
@@ -122,6 +125,18 @@ class Settings:
             # 1.02 should bill as 1, not 2 - an off-by-one here means the car
             # refuses to pay and escapes. Tune with live evidence.
             billing_rounding=os.environ.get("BILLING_ROUNDING", "round").strip().lower(),
+
+            # The ExitSpot CarIn sensor fires when the car ENTERS the exit
+            # area, not when it is settled and waiting for an invoice. Charging
+            # on the event itself is rejected by the simulator with "Car is not
+            # waiting at the exit" -- while still returning 201, so the failure
+            # is invisible to us. Wait for the car to settle first.
+            exit_charge_delay_s=_env_float("EXIT_CHARGE_DELAY_S", 2.0),
+
+            # How long to wait for payment_made before charging again. Drivers
+            # give up and escape after 5 minutes, so there is room for retries.
+            payment_wait_s=_env_float("PAYMENT_WAIT_S", 25.0),
+            charge_max_attempts=_env_int("CHARGE_MAX_ATTEMPTS", 3),
 
             broadcast_interval_s=_env_float("BROADCAST_INTERVAL_S", 1.0),
             webhook_debug=_env_bool("WEBHOOK_DEBUG", False),

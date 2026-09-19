@@ -292,10 +292,11 @@ async def dispatch_entry(plate: str, gate_name: str, car_type: str = "Normal",
     sent = await act(f"car {plate} -> {target}", lambda: client.car_goto(plate, target))
 
     if not sent:
-        # Command skipped (dry-run) or failed. Holding the reservation would
-        # leak the spot, since the car will never arrive to claim it.
+        # Command skipped (dry-run) or failed. Release the spot - the car will
+        # never arrive to claim it, and holding it leaks capacity. Keep the
+        # session though: the car really is at the entry, and discarding it
+        # would make every later event for this plate look like an unknown car.
         state.release_reservation(target, plate)
-        state.complete_session(plate)
         log.info("would dispatch %s from %s to %s (reservation released)", plate, gate_name, target)
         return {"plate": plate, "gate": gate_name, "target": target, "dispatched": False}
 
@@ -616,25 +617,19 @@ async def _handle_car_spot_action(payload: dict[str, Any]) -> None:
         session = state.get_session(plate)
         if session is None:
             # Unknown car at the exit. We cannot know how long it really
-            # stayed, but charging the minimum beats letting it leave unpaid:
-            # Penalty_CarEscapedWithoutPaying is charged either way, and an
-            # incorrect amount is the cheaper of the two mistakes.
+            # stayed, but charging an estimate beats letting it leave unpaid:
+            # billing zero reads to the simulator as not charging at all.
             session = state.start_session(plate, gate="(adopted)",
                                           car_type=payload.get("CarType", "Normal"))
-            log.warning("unknown car %s at exit %s - charging minimum", plate, spot_name)
-            state.log_activity(f"Unknown car {plate} at exit - charging minimum", level="warn")
+            log.warning("unknown car %s at exit %s - charging an estimate", plate, spot_name)
+            state.log_activity(f"Unknown car {plate} at exit - charging estimate", level="warn")
         if session.charged:
             return
         state.mark_at_exit(plate)
-        parking_cost, charging_cost, minutes = compute_charge(session)
-        session.expected_parking = parking_cost
-        session.expected_charging = charging_cost
-        session.expected_amount = round(parking_cost + charging_cost, 2)
         session.exit_gate = spot_name
-        await act(f"charge {plate} parking={parking_cost} charging={charging_cost}",
-                  lambda: client.car_charge(plate, parking_cost, charging_cost))
+        # Charging inline here is too early - see _charge_at_exit.
         state.mark_charged(plate)
-        state.log_activity(f"Charged {plate} {session.expected_amount:.2f} at {spot_name}")
+        asyncio.create_task(_charge_at_exit(plate, spot_name))
         log.info("billing %s: %.2f min -> parking=%.2f charging=%.2f (type=%s)",
                  plate, minutes, parking_cost, charging_cost, session.car_type)
         return
@@ -666,6 +661,60 @@ def _archive(plate: str) -> None:
         "paid_amount": session.expected_amount if session.paid else None,
         "payment_ok": int(session.paid),
     })
+
+
+async def _charge_at_exit(plate: str, spot_name: str) -> None:
+    """Charge a car once it is actually waiting at the exit, and keep trying.
+
+    The ExitSpot CarIn sensor fires when the car ENTERS the exit area, not when
+    it has settled and is waiting for an invoice. Charging on the event itself
+    is rejected by the simulator with "Car (X) is not waiting at the exit" --
+    but the REST call still returns 201, so the failure is invisible from our
+    side. The car then waits ~5 minutes for an invoice that never arrives and
+    escapes, costing both CarShouldBeChargedAtExit and CarEscapedWithoutPaying.
+
+    So: let the car settle, charge, then watch for payment_made and charge
+    again if nothing comes. The 5-minute driver patience gives us room for
+    several attempts.
+    """
+    await asyncio.sleep(settings.exit_charge_delay_s)
+
+    for attempt in range(1, max(1, settings.charge_max_attempts) + 1):
+        session = state.get_session(plate)
+        if session is None:
+            return  # archived - the car already left
+        if session.paid:
+            return
+
+        parking_cost, charging_cost, minutes = compute_charge(session)
+        session.expected_parking = parking_cost
+        session.expected_charging = charging_cost
+        session.expected_amount = round(parking_cost + charging_cost, 2)
+
+        suffix = "" if attempt == 1 else f" (attempt {attempt})"
+        log.info("billing %s: %.0f min -> parking=%.2f charging=%.2f (type=%s)%s",
+                 plate, minutes, parking_cost, charging_cost, session.car_type, suffix)
+        await act(f"charge {plate} parking={parking_cost} charging={charging_cost}{suffix}",
+                  lambda: client.car_charge(plate, parking_cost, charging_cost))
+        state.log_activity(f"Charged {plate} {session.expected_amount:.2f} at {spot_name}{suffix}")
+
+        # Poll for payment rather than sleeping the whole window, so a car that
+        # pays quickly is released quickly.
+        waited = 0.0
+        while waited < settings.payment_wait_s:
+            await asyncio.sleep(1.0)
+            waited += 1.0
+            current = state.get_session(plate)
+            if current is None or current.paid:
+                return
+
+        log.warning("%s has not paid %.2f after %.0fs - recharging",
+                    plate, session.expected_amount, settings.payment_wait_s)
+
+    log.error("%s never paid after %d attempts - it will likely escape",
+              plate, settings.charge_max_attempts)
+    state.log_activity(f"{plate} never paid after {settings.charge_max_attempts} attempts",
+                       level="error")
 
 
 async def _handle_component_broken(payload: dict[str, Any]) -> None:
