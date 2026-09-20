@@ -39,6 +39,42 @@ def pick_zone(candidates: Collection[str], ratios: dict[str, float]) -> Optional
     return min(candidates, key=lambda zone: (ratios.get(zone, 1.0), _natural(zone)))
 
 
+def pick_zone_staged(candidates: Collection[str], ratios: dict[str, float],
+                      balance_ceiling: float = 0.40) -> tuple[Optional[str], str]:
+    """Three-stage occupancy lifecycle over an already-filtered candidate set
+    (reachable, category-compatible, gate-usable, not under maintenance -
+    those cuts happen in ``dispatch_entry`` and are load-bearing: 4.39 found
+    that a car sent to an unreachable-but-empty zone just circles and leaves).
+
+    Stage 1, cascading: any candidate zone still under ``balance_ceiling`` -
+    route by priority (nearest/lowest zone number first), ignoring the exact
+    ratio. This also resolves the 30%-40% gap in the original two-threshold
+    reading of the spec (enter cascading below 30%, stay in it up to 40%): a
+    zone sitting only in that gap, with nothing below 30%, is still routed by
+    priority rather than left undefined - the threshold that actually decides
+    the outcome is the 40% ceiling, so a separate 30% "entry" check would be
+    dead code once that gap is handled at all.
+    Stage 2, load balancing: every candidate is at or above the ceiling -
+    route to whichever has the lowest ratio, breaking priority order to
+    spread load.
+    Stage 3, exhaustion: every candidate is completely full (ratio == 1.0), or
+    there are no candidates at all - no zone is returned, so the caller drops
+    the dispatch and raises a full-capacity warning instead of guessing.
+
+    Returns ``(zone, stage)`` with ``stage`` one of ``"stage1"``, ``"stage2"``,
+    ``"stage3"``.
+    """
+    if not candidates:
+        return None, "stage3"
+    live = {zone: ratios.get(zone, 1.0) for zone in candidates}
+    if all(ratio >= 1.0 for ratio in live.values()):
+        return None, "stage3"
+    under_ceiling = [zone for zone in candidates if live[zone] < balance_ceiling]
+    if under_ceiling:
+        return min(under_ceiling, key=_natural), "stage1"
+    return min(candidates, key=lambda zone: (live[zone], _natural(zone))), "stage2"
+
+
 def entry_gate_for_zone(zone: str, barriers: Iterable[Barrier],
                         positions: dict[str, tuple[float, float]],
                         entry_points: list[tuple[float, float]],
