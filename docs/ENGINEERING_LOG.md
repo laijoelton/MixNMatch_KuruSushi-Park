@@ -1488,11 +1488,23 @@ fallback rather than a requirement.
 an operator can work through one at a time when the site is congested. Broken
 gates and gates under repair are skipped (operating those is penalised).
 
-**Verification:** 278 tests, including the two halves of Level 3, dispatch
-refusing an unreachable bay, the re-dispatch after an occupied-bay penalty and
-the en-route grace. Live on a fresh Level 3 with the fixes: **18 cars parked in
-under two minutes, 0 penalties, no cars accumulating at the entrances** - the
-same first two minutes that previously ended with cars stuck and fines climbing.
+**A refused invoice is now corrected, not just logged.** The simulator names the
+right figure in the penalty ("Car type is (Electric) so charge should be:
+(2.00)"), and 4.13's rule was to record it and never re-charge. A clean Level 3
+run showed what that rule costs: the car keeps an invoice it will not pay and
+drives off - "Car escaped without paying", 6 of that run's 16 fines and its
+largest single reason. The correction is now re-invoiced once per session,
+guarded by `session.paid` so it can never become the RM50 "already paid" fine of
+4.38. The never-re-charge rule in 4.13 is superseded for this one case.
+
+**Verification:** 281 tests, including the two halves of Level 3, dispatch
+refusing an unreachable bay, the re-dispatch after an occupied-bay penalty, the
+en-route grace and the corrected invoice. Live on a fresh Level 3 with the
+fixes: **94 completed stays in six minutes, 0 neglected cars, 16 fines
+(RM240)** - against 62 fines (RM1,580) with only 22 cars parked and 14 stuck at
+the entrances before. What remained was 6 escapes (the correction above), 5
+wrong ghost-car invoices and 2 occupied-bay collisions, one fine each now
+instead of twelve.
 
 **Note for the map:** the number the simulator draws next to a zone name -
 `ZONE1 [07.69]` - is that zone's carbon-monoxide level in ppm. Only the three
