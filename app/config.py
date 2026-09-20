@@ -133,24 +133,15 @@ class Settings:
     # A bay is repaired preventively after this many parks since its last
     # repair (4.24). Bays were seen to break after 13-19 parks.
     spot_preventive_parks: int
-    # Gates (4.42): there is no cap on how many gates may be in repair at once.
-    # This is only the floor that stops a repair loop - a gate with fewer opens
-    # than this since its last repair is never queued again, whatever the
-    # predictor says (1 = skip only gates nothing has driven through).
+    # Gates (4.28, 4.32): one gate in repair at a time; zones are maintained in
+    # rotation, skipping a zone whose gates have fewer opens than this since
+    # their last repair (1 = skip only untouched zones).
     gate_repair_min_opens: int
-    # A gate is repaired preventively once app.ml_agent.gate_failure_prediction
-    # puts the chance of the next open breaking it at or above this (4.42).
-    gate_failure_probability: float
-    # Cold start and fallback for that predictor: the number of opens a gate is
-    # expected to survive after a repair. 12 of 12 clean samples on 20 September
-    # 2026 broke at 10 opens; samples spanning level reloads broke at 13-43.
-    gate_expected_break_opens: int
     # The ML repair sweep (4.22) stays off: its model predicted ~99% failure for
     # every component and queued every bay and fan at once (4.31).
     ml_predictive_repairs: bool
-    # A gate repair not finished after this many simulated seconds is treated as
-    # stuck: it is dropped from its zone's maintenance so the zone can reopen,
-    # and flagged for staff (4.35). Real repairs take 50-160 s.
+    # A gate repair not finished after this many simulated seconds is treated
+    # as stuck and gives up the one repair slot (4.35). Real repairs: 50-160 s.
     gate_repair_stuck_s: float
     # Night lights (4.29): a zone stays lit this many simulated seconds after
     # its last moving car. 0 = dark as soon as the last car parks (4.30).
@@ -304,8 +295,6 @@ class Settings:
             wear_cycle_threshold=_env_int("WEAR_CYCLE_THRESHOLD", 500),
             spot_preventive_parks=_env_int("SPOT_PREVENTIVE_PARKS", 9),
             gate_repair_min_opens=_env_int("GATE_REPAIR_MIN_OPENS", 1),
-            gate_failure_probability=_env_float("GATE_FAILURE_PROBABILITY", 0.6),
-            gate_expected_break_opens=_env_int("GATE_EXPECTED_BREAK_OPENS", 10),
             ml_predictive_repairs=_env_bool("ML_PREDICTIVE_REPAIRS", False),
             gate_repair_stuck_s=_env_float("GATE_REPAIR_STUCK_S", 400.0),
             light_hold_s=_env_float("LIGHT_HOLD_S", 0.0),

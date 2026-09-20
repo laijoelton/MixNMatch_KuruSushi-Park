@@ -881,14 +881,12 @@ until both gates are fixed.
   - the exit gate once the zone is empty: no occupied or reserved bay, and no
     session parked there or still leaving. Parked cars leave at the end of their
     booked stay, and are not forced out.
-- `component_fixed` ticks a gate off. The maintenance record survives until both
-  gates are done, but since 4.42 the zone accepts cars again as soon as its
-  entry gate is usable.
-- *Since 4.32 the exit gate no longer waits for the zone to empty.*
-- *Since 4.42 there is no cap at all: the entry and exit gate are repaired at
-  the same time, and every zone that is due is maintained at the same time.
-  4.28's one-repair slot and 4.32's rotation are both gone. The zone takes cars
-  again as soon as its entry gate is usable, whatever the exit gate is doing.*
+- `component_fixed` ticks a gate off. The zone reopens only when both gates are
+  done, so the entry gate stays shut in between.
+- *Since 4.28 the two gates are repaired one after the other, never together:
+  only one gate in the park may be in repair at a time.*
+- *Since 4.32 the exit gate no longer waits for the zone to empty. It is
+  repaired straight after the entry gate, and zones take turns in a rotation.*
 - The main gate never triggers zone maintenance.
 - Progress is re-checked on park, on exit, on repair completion and on every
   wear sweep. Level load clears it.
@@ -938,12 +936,6 @@ payments; fines are cleared from the Penalties page. That bin was verified to
 remove all 385 on a copy of the database.
 
 ### 4.28 Balanced gate repairs: one gate in repair at a time, most-worn first (20 September 2026)
-
-> **Superseded by 4.42 (20 September 2026).** The one-repair slot and the
-> most-worn-first ranking described here no longer exist: gate repairs now run
-> with no cap. What survives from this section is the `opens_since_repair`
-> counter, the exclusion of gates from the generic wear rule and the ML sweep,
-> and the `fixed_proactive` flag. Read it for those; ignore the slot.
 
 **Requirement:** the ML layer is weak, so prioritise balancing. Gates must never be
 repaired simultaneously; only one gate may be under repair at any time.
@@ -1095,11 +1087,6 @@ them (4.24).
 
 ### 4.32 Maintenance rotation; zone "stuck" after its gate repair; gates held open for a stream (20 September 2026)
 
-> **Partly superseded by 4.42 (20 September 2026).** The zone rotation described
-> here is gone - every due zone is now maintained at once. The two other fixes
-> in this section stand: the exit gate does not wait for the zone to empty, and
-> a stream of cars keeps its entry gate open.
-
 **Symptoms:**
 - Automatic opening and closing seemed to break after a gate repair.
 - Gate repairs did not alternate between zones.
@@ -1206,11 +1193,6 @@ gate is never repaired. Full suite: **254 passed**.
 
 ### 4.34 Zone shut for the first repair, automatic during the second (20 September 2026)
 
-> **Superseded by 4.42 (20 September 2026).** With both gates repaired at once
-> there is no "first" and "second" repair. The zone is now shut exactly while
-> its entry gate is unusable. The rest of this section stands: a repaired zone
-> gate is still closed outright rather than trusting our cached position.
-
 **Requirement:** during a zone's maintenance, keep the gate closed through the
 first repair, and return the zone to automatic when the second gate's repair
 starts.
@@ -1253,21 +1235,19 @@ and 19:54, gate6 at 19:44 and 19:49, and gate4 at 19:49.
    it either: no "has been repaired" followed in the next 6,000 lines.
 2. **Our slot.** 4.28's one-repair-slot counted gate1 as the holder for ever, so
    every other gate repair waited behind a repair that would never finish.
-   *(4.42 removed the slot, so this second layer can no longer happen. The
-   stuck-repair detection below is kept: a stuck gate would otherwise hold its
-   zone in maintenance, and nobody would be told the simulator had stalled.)*
 
 **Fix:**
 - `sim_levels/lvl1-3.json` hold the clean level files from `5f59f9a`. START.bat
   copies them into the simulator's `settings\` before each launch, so saved
   live state can never carry over. `settings/lvl2.json` is restored in the
   working tree. **Do not commit the simulator's `settings/lvl*.json` after a run.**
-- `_gate_repair_slot_holder` (renamed `_sweep_stuck_gate_repairs` in 4.42)
-  starts a clock when it first sees a gate under repair, whether we started the
-  repair or it loaded that way. After `GATE_REPAIR_STUCK_S` (400 simulated s;
-  real repairs take 50–160 s) `_mark_repair_stuck`:
+- `_gate_repair_slot_holder` starts a clock when it first sees a gate under
+  repair, whether we started the repair or it loaded that way. After
+  `GATE_REPAIR_STUCK_S` (400 simulated s; real repairs take 50–160 s)
+  `_mark_repair_stuck`:
+  - frees the slot;
   - drops the gate from its zone maintenance, ending it if nothing else is left,
-    so the zone can reopen;
+    so the rotation moves on;
   - logs an error, and the dashboard shows "Gate gate1 repair is not
     progressing".
 
@@ -1717,132 +1697,6 @@ mutation.
 
 ---
 
-### 4.42 Gate repairs ran one at a time, so gates broke waiting in the queue (20 September 2026)
-
-**Symptom:** gate repairs happened strictly one after another. While one gate
-was being repaired every other gate that needed work waited, and gates that were
-waiting broke — each breakdown carrying a fine — before their turn came.
-
-**Root cause: four separate caps, stacked.** Every one of them was deliberate,
-and together they made the repair rate the bottleneck:
-
-1. **One repair slot park-wide** (4.28, `_gate_repair_slot_holder`). Any gate
-   under repair or queued for one blocked every other gate repair, breakdowns
-   included.
-2. **One zone in maintenance at a time** (4.32). `_schedule_gate_repairs`
-   returned early whenever `state.zone_maintenance` was non-empty, and
-   `_queue_repair` refused to open a second zone.
-3. **Entry gate, then exit gate** (4.26/4.32). A zone's exit gate waited for the
-   entry gate's repair to finish.
-4. **A preventive trigger that could not see a failure coming.** The rule was
-   `opens_since_repair >= GATE_REPAIR_MIN_OPENS`, with the threshold at **1**.
-   That is not a prediction — it makes every used gate permanently "due", so the
-   *order* of the queue decided everything and the queue was one gate long.
-
-4.35 is the same bottleneck at its worst: one gate stuck half-repaired, and
-gate3, gate4 and gate6 breaking repeatedly behind it with no repair sent.
-
-**Decision (the user's, after the cost was put to them):** no cap of any kind,
-and no liveness guard. Every gate that is broken or predicted to break is
-repaired immediately, across every zone at once — accepting that all three entry
-gates or all three exit gates can be in repair at the same moment, that arriving
-cars then wait at the entrance ("Zone closed for maintenance"), and that a paid
-car can briefly have no exit to fail over to. A repair is 50–160 s; a breakdown
-costs a fine *plus* the same repair.
-
-**Fix:**
-
-- **The slot is gone.** `_gate_repair_slot_holder` becomes
-  `_sweep_stuck_gate_repairs`: it keeps 4.35's stuck-repair clock and its
-  dashboard alert, but returns nothing and blocks nothing.
-- **`_schedule_gate_repairs` no longer returns early.** It queues every broken
-  gate, advances every open zone maintenance, starts maintenance on every zone
-  with a gate predicted to fail, and queues every due gate outside a zone.
-- **Both of a zone's gates go at once.** `_advance_zone_maintenance` no longer
-  makes the exit wait for the entry.
-- **Any number of zones at once.** `_queue_repair` always opens the zone of the
-  gate it is repairing; nothing checks whether another zone is already closed.
-- **`reopened` now means "the entry gate is usable".** 4.34's "shut for the
-  first repair, automatic during the second" had no meaning once both gates are
-  repaired together. A zone takes cars while its exit gate is still in repair —
-  a paid car behind it is re-routed by `_reroute_to_other_exit` (4.38).
-- **A breakdown re-runs the scheduler.** `_handle_component_broken` calls
-  `_schedule_gate_repairs` after queueing the gate, so the zone's other gate and
-  anything else now due go in the same pass.
-
-**The predictor (`ml_agent.gate_failure_prediction`).** Replacing the fixed
-opens threshold, because gate failures are not on a fixed schedule: 12 of 12
-clean samples on 20 September broke at exactly 10 opens after the previous
-repair, but samples spanning level reloads broke anywhere from 13 to 43.
-
-- Each gate gets **its own** logistic model over one feature,
-  `opens_since_repair`, answering "will the next open break this gate?". Gates
-  are not pooled: a busy zone gate must not drag a quiet one into repair.
-- Two new `component_events` rows are the training data, written by
-  `app/main.py`:
-  - `gate_opens_at_break` — it broke after `amount` opens (label 1), written in
-    `_handle_component_broken` before anything resets the counter;
-  - `gate_opens_at_repair` — it reached `amount` opens *without* breaking and
-    was repaired (label 0), written in `_queue_repair` beside the existing
-    `repair_triggered_proactive`.
-- **The model must earn its use.** It is discarded, and the deterministic
-  heuristic used instead, unless there are ≥ 8 samples for that gate with ≥ 3 in
-  each class, *and* it predicts below the trigger for a gate with zero opens.
-  That second check is 4.31's lesson made into code: trained on breakdowns
-  alone a model answers ~0.99 everywhere, and with the cap now gone that would
-  put every gate in the park into repair simultaneously.
-- **Cold start / fallback:** `(opens + 1) / GATE_EXPECTED_BREAK_OPENS`, clipped
-  to 1.0. With the defaults (expected 10 opens, trigger 0.6) a gate with no
-  history is repaired at **5 opens** — half its expected life, comfortably
-  before the observed break point.
-- The model is retrained whenever a gate breaks, is fixed, or is queued
-  preventively, and on every ML sweep.
-- The frame carries each gate's prediction (`_annotate_gate_predictions`), and
-  the gate drawer shows it: "Breaks on next open: 66% (learned from 15 of its
-  own repairs)" or "(opens heuristic — not enough history yet)". A repair nobody
-  asked for has to be explainable on screen.
-
-**What is deliberately *not* a cap, and stayed:**
-
-- `GATE_REPAIR_MIN_OPENS` (1) is a floor, not a queue: a gate nothing has driven
-  through since its last repair is never re-queued, whatever the predictor says.
-  Without it a degenerate predictor would repair the same gate forever.
-- A gate a car is driving through right now waits for that car
-  (`_zone_inbound_clear`, `_gates_in_use`). That delays one gate by seconds; it
-  never makes another gate wait.
-- A gate staff hold open or closed is theirs (4.33).
-- The main gate is still never repaired preventively.
-
-**Verification** — full suite **306 passed**. New and rewritten tests cover:
-
-- two broken gates repaired simultaneously, and a breakdown repaired while
-  another gate is already under repair;
-- both of a zone's gates in repair at the same time, with a car still parked;
-- all three zones in maintenance at once, all six gates in repair, and the next
-  car correctly told "Zone closed for maintenance";
-- the zone reopening when its *entry* gate is fixed while the exit is still in
-  repair, and staying shut when only the exit is fixed first;
-- a zone whose gates are not predicted to fail left alone; a gate repaired
-  moments ago never re-queued; a staff-held zone skipped;
-- the predictor: cold-start monotonicity, a gate that breaks early repaired
-  earlier than the heuristic, a degenerate model rejected, no cross-gate
-  contamination, and no exception without scikit-learn.
-
-Closed-loop check outside the suite: a gate with no history is repaired at 5
-opens; after 15 rows showing it actually breaks at 6, its own model moves the
-repair to 4 opens, while an untrained neighbour stays on the heuristic at 5.
-
-Three tests encoded the replaced rules (one gate at a time, the zone rotation,
-the 4.34 staging) and were rewritten; `test_level2_maintenance.py`'s worn-gate
-test moved from the opens threshold to the predictor.
-
-**Cost, accepted:** repairs are now frequent and bursty. When several zones come
-due together the park stops taking cars for the length of a repair (50–160 s),
-and `GATE_FAILURE_PROBABILITY` is the dial for that trade-off — lower repairs
-earlier and more often, higher repairs later and risks more breakdown fines.
-
----
-
 ## 5. Edge cases and how they are handled
 
 | Edge case | Handling |
@@ -1865,10 +1719,9 @@ earlier and more often, higher repairs later and risks more breakdown fines.
 | A zone's entry gate is held, broken or under repair | That zone is skipped and the car goes to the next-lowest-ratio zone. If every suitable zone is blocked, the car waits (`Held closed by operator` / `Barrier unavailable`) and is not turned away (4.18) |
 | A plate returns (plates are recycled from `settings/plates.txt`) | EntrySpot `CarIn` for a session that already parked/exited/was billed archives it and starts a fresh visit; a car still driving to its bay keeps its session (4.19) |
 | A level is (re)loaded in the simulator | Console `Load Game` line → previous level's live sessions, holds and model dropped, one sync, all gates closed (4.19) |
-| A zone gate needs repair (broken or preventive) | No cap: both of that zone's gates are repaired at once, and every zone that is due is maintained at the same time — including all of them, which stops the park taking cars for the length of a repair. The zone is closed to new cars only while its entry gate is unusable, and the repaired gate is closed outright rather than trusting our cached position (4.26, 4.42) |
-| A gate is about to break | `ml_agent.gate_failure_prediction` learns each gate's own break point from its `gate_opens_at_break` / `gate_opens_at_repair` history and repairs it before the next open. Too little history, no scikit-learn, or a model that cannot discriminate → the opens heuristic, which repairs at 5 of an expected 10 opens (4.42) |
+| A zone gate needs repair (broken or preventive) | One zone in maintenance at a time, in rotation: closed to new cars for the first repair (the repaired gate is closed outright), back on automatic as soon as the second gate's repair starts. A gate breaking in another zone is repaired first but does not close its zone (4.26, 4.32, 4.34) |
 | A car reaches an exit without an entry scan (unknown, or appeared in a bay) | Ghost car: exit held, billed automatically with the ML fee; the gate is ringed orange and staff press Open on it to let the car out (4.25, 4.33) |
-| Staff open or close a gate from the dashboard | Staff win: the gate is held open or held closed until staff press Automatic. The automation (idle close, repair scheduler, exit holds) never moves it, and a queued repair is cancelled. Only a broken gate or one under repair refuses (4.33) |
+| Staff open or close a gate from the dashboard | Staff win: the gate is held open or held closed until staff press Automatic. The automation (idle close, rotation, exit holds) never moves it, and a queued repair is cancelled. Only a broken gate or one under repair refuses (4.33) |
 | Admin clears a page's records (red dustbin on History / Payments / Penalties) | `DELETE /api/admin/data/{history,payments,penalties}`, gated by the admin-only `admin:reset` capability (other roles get `403`; the icon is hidden via `data-cap`). History deletes `sessions` + `neglected_vehicles`; Payments deletes `payments`; Penalties deletes `penalties` and zeroes the in-memory fine counters. `active_sessions`/live sessions are never touched — clearing them mid-run would lose billing state and cause `CarEscapedWithoutPaying`. `events` is never touched — it is the `EventId` de-duplication record. Every clear is written to the audit log with the row count |
 | `numpy`/`scikit-learn` missing or import fails | Every `app/ml_agent.py` function falls back to its documented deterministic rule instead of raising (4.22) |
 | Ghost car fee imputation | Estimates the invoice shown to staff only; the exit barrier still requires operator override, never auto-released (4.22) |
@@ -1894,11 +1747,9 @@ Everything lives in `.env` (see `.env.example`). The ones that matter:
 | `SEED_FROM_LEVEL` | `lvl1` in code, empty in `.env`/`.env.example` | **Keep empty.** When set, the dashboard shows that level's map while no level is running, which is how a Level 1 map appeared before Level 2 was clicked (4.19) |
 | `ENTRY_GATE_CLOSE_DELAY_S` | `1.5` | Simulated seconds after a car leaves its zone sensor before the zone gate closes behind it (4.21) |
 | `CO_FAN_OFF_THRESHOLD` | `15` | Fans run from above `CO_FAN_ON_THRESHOLD` (50) until below this (4.23) |
-| `GATE_REPAIR_STUCK_S` | `400` | A gate repair not finished after this many simulated seconds is flagged stuck, so its zone can reopen and staff are told the simulator stalled (4.35, 4.42) |
+| `GATE_REPAIR_STUCK_S` | `400` | A gate repair not finished after this many simulated seconds is flagged stuck and frees the repair slot (4.35) |
 | `ML_PREDICTIVE_REPAIRS` | `false` | **Keep false.** The ML repair sweep predicted ~99% failure for everything and queued every bay and fan (4.31) |
-| `GATE_REPAIR_MIN_OPENS` | `1` | **Not a cap.** Gate repairs run with no limit on how many happen at once; this is only the floor that stops a repair loop — a gate with fewer opens than this since its last repair is never re-queued (4.42) |
-| `GATE_FAILURE_PROBABILITY` | `0.6` | A gate is repaired preventively once the predicted chance of its next open breaking it reaches this. Lower = repair earlier and more often (fewer fines, more gates shut at once); higher = repair later (4.42) |
-| `GATE_EXPECTED_BREAK_OPENS` | `10` | Cold start and fallback for that prediction — the opens a gate is expected to survive after a repair. With the default probability, a gate with no history is repaired at 5 opens (4.42) |
+| `GATE_REPAIR_MIN_OPENS` | `1` | Zones are maintained in rotation, one at a time; a zone whose gates have fewer opens than this since repair is skipped (4.28, 4.32) |
 | `LIGHT_HOLD_S` | `0` | At night a zone stays lit this many simulated seconds after its last moving car; 0 = dark as soon as it parks (4.29, 4.30) |
 | `SPOT_PREVENTIVE_PARKS` | `9` | Preventive bay repair after this many parks since the last repair; bays broke after 13-19 (4.24) |
 | `ZONE_GATE_AT_SENSOR` | `false` | **Keep false.** When true, ZONE2/3 cars are sent to their zone sensor first, which the simulator treats as parking there (4.20, 4.27) |
@@ -1988,10 +1839,6 @@ rarely clears the 90% bar before the existing reactive 85% trigger fires
 anyway. To make the "earlier than 85%" case actually materialize,
 `component_wear` (or a new table) would need to persist a wear-ratio sample
 periodically so the model has more than two x-values to separate on.
-*Update (4.42): solved for gates only. `gate_opens_at_break` and
-`gate_opens_at_repair` persist a real labelled sample per outcome, so the
-per-gate model has genuine x-values to separate on. Bays and fans still have
-only the two anchor ratios, and `ML_PREDICTIVE_REPAIRS` stays off for them.*
 
 **Pre-existing test failure, unrelated to any change in this file:**
 `tests/test_auth.py::test_create_and_delete_user_rules` raises

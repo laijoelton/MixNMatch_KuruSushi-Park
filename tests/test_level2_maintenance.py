@@ -87,9 +87,8 @@ def test_repair_stops_running_fan_before_repair(maintenance):
 
 
 def test_dropped_proactive_repair_can_be_scheduled_again(maintenance):
-    # 4.42: gates are queued when the predictor says the next open breaks them,
-    # not by the 85%-of-cycles rule.
-    state.barriers["WORN"] = Barrier("WORN", opens_since_repair=main.settings.gate_expected_break_opens)
+    # 4.28: gates are ranked by opens since repair, not the 85%-of-cycles rule.
+    state.barriers["WORN"] = Barrier("WORN", opens_since_repair=main.settings.gate_repair_min_opens)
     async def scenario():
         await main.check_wear()
         callback = maintenance[0][1].get("on_drop")

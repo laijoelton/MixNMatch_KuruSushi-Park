@@ -47,8 +47,6 @@ except ImportError:  # pragma: no cover - exercised when the optional dep is abs
     _SKLEARN_AVAILABLE = False
 
 MIN_REPAIR_TRAINING_SAMPLES = 6
-MIN_GATE_TRAINING_SAMPLES = 8       # per gate, over its own repair history
-MIN_GATE_SAMPLES_PER_CLASS = 3      # breaks and survivals, so the fit can separate
 MIN_GHOST_CAR_SAMPLES_FOR_ISOLATION_FOREST = 8
 REPAIR_FAILURE_PROBABILITY_THRESHOLD = 0.90
 CO_BREACH_PPM = 50.0
@@ -60,7 +58,6 @@ DAYS_TO_FAILURE_FALLBACK_WINDOW = 14  # heuristic span when no repair-history ti
 CONFIDENCE_FULL_SAMPLE_SIZE = 20
 
 _repair_model: Optional["LogisticRegression"] = None
-_gate_models: dict[str, Optional["LogisticRegression"]] = {}
 _latest_ventilation: dict[str, dict[str, Any]] = {}
 _latest_components: list[dict[str, Any]] = []
 _warned_components: set[str] = set()
@@ -268,116 +265,6 @@ def repair_period_prediction(component_id: str, cycle_count: int, runtime_second
     }
 
 
-# --------------------------------------------------------------------- #
-# 1.3 Per-gate failure prediction (4.42)
-#
-# Gates break unpredictably: the observed opens-to-failure ranged from 10 to
-# 43 across runs, so no fixed "repair on the Nth open" rule fits. Each gate's
-# own history is two kinds of labelled sample, written by app.main:
-#
-#   gate_opens_at_break   the gate broke after `amount` opens        -> 1
-#   gate_opens_at_repair  the gate was repaired after `amount` opens
-#                         without having broken - it survived them   -> 0
-#
-# A per-gate logistic model over that one feature answers "will the next open
-# break this gate?". Gates are NOT pooled: they wear at different rates and a
-# busy zone gate must not drag a quiet one into repair.
-#
-# The model is only trusted when it discriminates. 4.31 is the standing
-# warning: trained on breakdowns alone, a model answered ~0.99 at every wear
-# level and queued every component in the park. Since 4.42 removed the cap on
-# concurrent repairs, that failure mode would now put every gate into repair
-# at once, so a model that calls a freshly repaired gate due is discarded and
-# the deterministic opens heuristic takes over.
-# --------------------------------------------------------------------- #
-
-def reset_gate_models() -> None:
-    """Drop the cached per-gate models so the next prediction retrains.
-
-    Called when a gate breaks or is fixed (new training rows) and on every
-    predictive sweep."""
-    _gate_models.clear()
-
-
-def _gate_training_rows(gate: str) -> list[tuple[float, int]]:
-    rows = db.query(
-        "SELECT event, amount FROM component_events "
-        "WHERE name = ? AND event IN ('gate_opens_at_break', 'gate_opens_at_repair') "
-        "AND amount IS NOT NULL ORDER BY occurred_at",
-        (gate,),
-    )
-    return [(float(row["amount"]), 1 if row["event"] == "gate_opens_at_break" else 0)
-            for row in rows]
-
-
-def _gate_heuristic_probability(opens_since_repair: int) -> float:
-    """Chance the next open breaks a gate we have no usable model for.
-
-    Linear in opens against the expected survival span, so a gate repaired a
-    moment ago reads near zero and one at the expected break point reads 1.0.
-    """
-    expected = max(settings.gate_expected_break_opens, 1)
-    return round(min(1.0, max(0.0, (opens_since_repair + 1) / expected)), 4)
-
-
-def _train_gate_model(gate: str) -> Optional["LogisticRegression"]:
-    if not (_SKLEARN_AVAILABLE and _NUMPY_AVAILABLE):
-        return None
-    samples = _gate_training_rows(gate)
-    if len(samples) < MIN_GATE_TRAINING_SAMPLES:
-        return None
-    breaks = sum(label for _, label in samples)
-    if breaks < MIN_GATE_SAMPLES_PER_CLASS or len(samples) - breaks < MIN_GATE_SAMPLES_PER_CLASS:
-        return None   # one-sided history cannot separate; 4.31's trap
-    x = np.array([[opens] for opens, _ in samples])
-    y = np.array([label for _, label in samples])
-    model = LogisticRegression()
-    try:
-        model.fit(x, y)
-    except Exception:  # noqa: BLE001 - a bad fit falls back, it never blocks maintenance
-        log.exception("gate model training failed for %s", gate)
-        return None
-    if _gate_model_probability(model, 0) >= settings.gate_failure_probability:
-        # It calls a gate that was just repaired due. Not a predictor (4.31).
-        log.warning("gate model for %s discarded: it fires at zero opens", gate)
-        return None
-    return model
-
-
-def _gate_model_probability(model: "LogisticRegression", opens_since_repair: int) -> float:
-    """P(the next open breaks the gate), i.e. the model read at ``opens + 1``."""
-    return float(model.predict_proba([[opens_since_repair + 1]])[0][1])
-
-
-def gate_failure_prediction(gate: str, opens_since_repair: int) -> dict[str, Any]:
-    """Will the next open break ``gate``?
-
-    Returns ``{"needs_repair", "failure_probability", "opens_since_repair",
-    "source", "samples"}``. ``source`` is ``"model"`` when the gate's own
-    learned model answered and ``"heuristic"`` when the deterministic opens
-    rule did - either because there is not enough history yet, because
-    scikit-learn/numpy are missing, or because the model did not discriminate.
-    """
-    if gate not in _gate_models:
-        _gate_models[gate] = _train_gate_model(gate)
-    model = _gate_models[gate]
-    source = "heuristic"
-    probability = _gate_heuristic_probability(opens_since_repair)
-    if model is not None:
-        try:
-            probability = round(_gate_model_probability(model, opens_since_repair), 4)
-            source = "model"
-        except Exception:  # noqa: BLE001 - a stale model must not block maintenance
-            log.exception("gate_failure_prediction: inference failed for %s", gate)
-    return {
-        "needs_repair": probability >= settings.gate_failure_probability,
-        "failure_probability": probability,
-        "opens_since_repair": opens_since_repair,
-        "source": source,
-        "samples": len(_gate_training_rows(gate)) if source == "model" else 0,
-    }
-
-
 def record_component_insights(rows: list[dict[str, Any]]) -> None:
     """Cache the latest component-health sweep for `latest_insights()`."""
     _latest_components[:] = rows
@@ -493,11 +380,9 @@ async def predictive_sweep_once(
     but only queues repairs when ML_PREDICTIVE_REPAIRS is on. Trained on 107
     breakdowns against 1 preventive repair, the model gave ~99% failure for
     every component at any wear and queued them all (4.31). Gates are never
-    queued here: app.main._schedule_gate_repairs owns them, through
-    gate_failure_prediction (4.42)."""
+    queued here: app.main._schedule_gate_repairs owns them (4.28)."""
     global _repair_model
     _repair_model = _train_repair_model()
-    reset_gate_models()   # retrain each gate from whatever history has arrived
     component_rows: list[dict[str, Any]] = []
     for row in wear_snapshot():
         if row["broken"] or row["under_maintenance"] or row["type"] == "Light":

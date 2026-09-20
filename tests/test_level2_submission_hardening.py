@@ -216,7 +216,7 @@ def test_preventive_gate_repair_waits_until_gate_is_idle(monkeypatch):
         await action()
 
     monkeypatch.setattr(main.maintenance_queue, "submit", run_now)
-    # 4.33: a staff-held gate is not even queued; the scheduler returns later.
+    # 4.33: a staff-held gate is not even queued; the rotation returns later.
     asyncio.run(main._queue_repair("BarrierGate", gate.name))
     main.client.barrier_repair.assert_not_awaited()
     assert gate.name not in state.pending_repairs

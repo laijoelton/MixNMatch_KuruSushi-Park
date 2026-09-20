@@ -286,13 +286,12 @@ async def _close_idle_gates(*, include_main: bool = False) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Zone maintenance (4.26, reshaped by 4.42). When a zone's entry or exit gate
-# needs repair the zone closes to new cars (dispatch skips it, so the ratio
-# routes cars to the other zones) and BOTH its gates go into repair at the same
-# time - the entry gate once no car is still driving in, the exit gate unless a
-# car is being let out through it right now. The zone takes cars again as soon
-# as its entry gate is usable, whether or not the exit gate is still in repair.
-# Any number of zones may be in maintenance at once, including all of them.
+# Zone maintenance (4.26). When a zone's entry or exit gate needs repair the
+# zone closes to new cars (dispatch skips it, so the ratio routes cars to the
+# other zones). Its entry gate is repaired once no car is still driving in;
+# its exit gate once the zone has emptied - parked cars leave at the end of
+# their booked stay. A broken gate is repaired at once. The zone reopens only
+# when both gates are fixed, so the entry stays shut until then.
 # --------------------------------------------------------------------------- #
 _maintenance_rotation: list[str] = []   # zones in the order maintenance started them
 
@@ -306,7 +305,7 @@ def _start_zone_maintenance(zone: str, trigger: str) -> None:
     state.zone_maintenance[zone] = {"entry": entry, "exit": exit_gate, "trigger": trigger,
                                     "todo": {g for g in (entry, exit_gate) if g}}
     state.log_activity(f"{zone} closed for maintenance ({trigger}). New cars go to the other zones; "
-                       f"{entry or 'the entry gate'} and {exit_gate or 'the exit gate'} are repaired together",
+                       f"{entry or 'the entry gate'} then {exit_gate or 'the exit gate'} are repaired, one at a time",
                        level="warn", capability="logs:view_maint")
 
 
@@ -324,11 +323,11 @@ def _zone_inbound_clear(zone: str, entry: Optional[str]) -> bool:
 async def _advance_zone_maintenance() -> None:
     for zone, info in list(state.zone_maintenance.items()):
         entry, exit_gate = info["entry"], info["exit"]
-        # Staff control beats the scheduler (4.33), which means a gate they hold
+        # Staff control beats the rotation (4.33), which means a gate they hold
         # will never be repaired - and a zone waiting for that repair would stay
         # shut to new cars for the rest of the run. Observed on Level 3: ZONE1
         # closed while an operator held gate2 open. Abandon the maintenance
-        # instead; the scheduler picks the zone up again once staff let go.
+        # instead; the rotation picks the zone up again once staff let go.
         held = [g for g in (entry, exit_gate)
                 if g and (state.barriers.get(g) and (state.barriers[g].operator_open
                                                      or state.barriers[g].operator_override))]
@@ -339,55 +338,43 @@ async def _advance_zone_maintenance() -> None:
             continue
         if entry in info["todo"] and _zone_inbound_clear(zone, entry):
             await _queue_repair("BarrierGate", entry, via_zone=True)
-        # 4.42: the exit gate no longer waits for the entry gate's repair to
-        # finish. Both go at once; only a car being let out right now holds the
-        # exit gate back.
-        if exit_gate in info["todo"] and exit_gate not in _gates_in_use():
+        # 4.32: the exit gate follows the entry gate straight away rather than
+        # waiting for the zone to empty; only a car being let out holds it back.
+        if (exit_gate in info["todo"] and (entry not in info["todo"] or not entry)
+                and exit_gate not in _gates_in_use()):
             await _queue_repair("BarrierGate", exit_gate, via_zone=True)
-        # 4.42 (replacing 4.34's "automatic during the second repair"): the zone
-        # is shut for exactly as long as its entry gate cannot take a car. Once
-        # that gate is usable again the zone accepts cars, even while its exit
-        # gate is still being repaired - a paid car behind a gate in repair is
-        # re-routed to another way out (_reroute_to_other_exit).
-        if not info.get("reopened") and (not entry or _gate_usable(entry)):
-            info["reopened"] = True
-            still = sorted(g for g in info["todo"] if g)
-            state.log_activity(f"{zone} taking cars again"
-                               + (f" while {', '.join(still)} is repaired" if still else ""),
-                               capability="logs:view_maint")
+        # 4.34: shut for the first repair; back on automatic as soon as the
+        # second (last) gate's repair has started.
+        if len(info["todo"]) == 1:
+            last = next(iter(info["todo"]))
+            barrier = state.barriers.get(last)
+            if last in state.pending_repairs or (barrier and barrier.under_maintenance):
+                if not info.get("reopened"):
+                    info["reopened"] = True
+                    state.log_activity(f"{zone} back on automatic while {last} is repaired",
+                                       capability="logs:view_maint")
 
 
 
 # --------------------------------------------------------------------------- #
-# Uncapped gate repairs (4.42, replacing 4.28's one-repair slot and 4.32's
-# one-zone rotation). There is no limit on how many gates may be in repair at
-# the same time: every broken gate and every gate the predictor says is about
-# to break is sent for repair immediately, across all zones at once. A repair
-# takes 50-160 s, so a gate fixed before it fails costs nothing but that
-# window, while a breakdown costs a fine plus the same repair.
-#
-# What is left of the ordering is not a cap:
-#   - GATE_REPAIR_MIN_OPENS is a floor that stops a just-repaired gate being
-#     queued again in a loop;
-#   - a gate a car is driving through right now waits for that car;
-#   - a gate staff hold open or closed is theirs, not the scheduler's (4.33).
-#
-# The main gate is never repaired preventively (operator-only).
+# Balanced gate repairs (4.28). Exactly one gate may be in repair at a time,
+# breakdowns included. When the slot is free: a broken gate first, then the
+# next step of an open zone maintenance, then - preventively - the most-worn
+# idle gate once it has GATE_REPAIR_MIN_OPENS opens since its last repair.
+# Ranking by wear staggers the repairs instead of letting gates come due
+# together. The main gate is never repaired preventively (operator-only).
 # --------------------------------------------------------------------------- #
 _repair_seen_at: dict[str, float] = {}   # gate -> when we first saw it under repair
 
 
-def _sweep_stuck_gate_repairs() -> None:
-    """Flag gate repairs the simulator accepted but never finished (4.35).
-
-    A stuck repair no longer blocks other repairs - since 4.42 nothing queues
-    behind anything - but its zone would stay shut for the rest of the run if
-    nothing gave up on it. The clock starts when we first see the gate under
-    repair: a level can load with a gate already half-repaired and never finish
-    it."""
+def _gate_repair_slot_holder() -> Optional[str]:
+    """The gate holding the one repair slot. A repair still unfinished after
+    GATE_REPAIR_STUCK_S is declared stuck and no longer holds it (4.35). The
+    clock starts when we first see the gate under repair: a level can load with
+    a gate already half-repaired, and never finish it."""
     now = time.monotonic()
     limit = settings.gate_repair_stuck_s / max(settings.game_speed, 0.1)
-    for name, barrier in list(state.barriers.items()):
+    for name, barrier in state.barriers.items():
         if not (barrier.under_maintenance or name in state.pending_repairs):
             _repair_seen_at.pop(name, None)
             continue
@@ -395,14 +382,16 @@ def _sweep_stuck_gate_repairs() -> None:
             continue
         if barrier.under_maintenance and now - _repair_seen_at.setdefault(name, now) > limit:
             _mark_repair_stuck(name)
+            continue
+        return name
+    return None
 
 
 def _mark_repair_stuck(name: str) -> None:
     state.stuck_repairs.add(name)
     state.pending_repairs.pop(name, None)
     state.log_activity(f"{name}: the simulator accepted its repair but has not finished it in "
-                       f"{settings.gate_repair_stuck_s:.0f} s - giving up on it so its zone can "
-                       f"reopen; check the simulator",
+                       f"{settings.gate_repair_stuck_s:.0f} s - releasing the repair slot; check the simulator",
                        level="error", capability="logs:view_maint")
     log.error("gate repair stuck: %s", name)
     for zone, info in list(state.zone_maintenance.items()):
@@ -413,64 +402,43 @@ def _mark_repair_stuck(name: str) -> None:
                                level="warn", capability="logs:view_maint")
 
 
-def _gate_due_for_repair(barrier) -> bool:
-    """Is this gate predicted to break on its next open (4.42)?
-
-    `ml_agent.gate_failure_prediction` learns each gate's own break point from
-    its history and falls back to the opens heuristic while that history is too
-    thin to separate. GATE_REPAIR_MIN_OPENS is applied first as a floor, so a
-    gate nothing has driven through since its repair is never re-queued however
-    the predictor answers."""
-    if barrier.name == settings.main_gate:
-        return False   # operator-only; never repaired preventively
-    if barrier.broken or barrier.under_maintenance or barrier.name in state.pending_repairs:
-        return False
-    if barrier.operator_open or barrier.operator_override:
-        return False   # staff are holding it (4.33)
-    if barrier.opens_since_repair < settings.gate_repair_min_opens:
-        return False
-    try:
-        return bool(ml_agent.gate_failure_prediction(
-            barrier.name, barrier.opens_since_repair)["needs_repair"])
-    except Exception:  # noqa: BLE001 - a predictor fault must not stop maintenance
-        log.exception("gate failure prediction failed for %s", barrier.name)
-        return barrier.opens_since_repair >= settings.gate_expected_break_opens
-
-
 async def _schedule_gate_repairs() -> None:
-    _sweep_stuck_gate_repairs()
-    # 1. Every broken gate, at once. The ordering only decides the log order.
+    if _gate_repair_slot_holder():
+        return
     for barrier in sorted((b for b in state.barriers.values() if b.broken),
                           key=lambda b: (-b.opens_since_repair, b.name)):
         await _queue_repair("BarrierGate", barrier.name)
-    # 2. Every zone already in maintenance advances as far as it can.
+        if _gate_repair_slot_holder():
+            return
     await _advance_zone_maintenance()
-    # 3. Preventively: every zone with a gate predicted to break. No rotation,
-    #    no cap - if all three are due, all three are maintained together.
-    for zone in _all_zones():
-        if zone in state.zone_maintenance:
-            continue
-        gates = [g for g in _zone_gates(zone) if g in state.barriers]
-        if any(state.barriers[g].operator_open or state.barriers[g].operator_override for g in gates):
-            continue   # staff are holding one of its gates (4.33)
-        due = [g for g in gates if _gate_due_for_repair(state.barriers[g])]
-        if due:
-            prediction = ml_agent.gate_failure_prediction(
-                due[0], state.barriers[due[0]].opens_since_repair)
-            _start_zone_maintenance(
-                zone, f"{due[0]} predicted to fail "
-                      f"({prediction['failure_probability']:.0%}, {prediction['source']})")
-    await _advance_zone_maintenance()
-    # 4. Gates outside any zone (never the main gate).
-    for barrier in sorted((b for b in state.barriers.values()
-                           if _zone_of_gate(b.name) is None and _gate_due_for_repair(b)),
-                          key=lambda b: (-b.opens_since_repair, b.name)):
-        prediction = ml_agent.gate_failure_prediction(barrier.name, barrier.opens_since_repair)
-        state.log_activity(f"Preventive maintenance queued for {barrier.name}: "
-                           f"{prediction['failure_probability']:.0%} chance its next open breaks it "
-                           f"after {barrier.opens_since_repair} opens ({prediction['source']}; "
-                           f"planned, not a fault)", capability="logs:view_maint")
-        await _queue_repair("BarrierGate", barrier.name)
+    if _gate_repair_slot_holder() or state.zone_maintenance:
+        return   # one zone at a time; its next gate goes when it is ready
+    # 4.32: zones take turns (ZONE1 -> ZONE2 -> ZONE3 -> ...), so one zone is
+    # always being maintained while the other two take the cars. A zone whose
+    # gates are untouched since their last repair is skipped.
+    zones_in_order = _all_zones()
+    if zones_in_order:
+        last = _maintenance_rotation[-1] if _maintenance_rotation else None
+        start = zones_in_order.index(last) + 1 if last in zones_in_order else 0
+        for zone in zones_in_order[start:] + zones_in_order[:start]:
+            gates = [g for g in _zone_gates(zone) if g in state.barriers]
+            if any(state.barriers[g].operator_open or state.barriers[g].operator_override for g in gates):
+                continue   # staff are holding one of its gates (4.33)
+            if any(state.barriers[g].opens_since_repair >= settings.gate_repair_min_opens for g in gates):
+                _start_zone_maintenance(zone, "scheduled rotation")
+                await _advance_zone_maintenance()
+                return
+    # Gates outside any zone (not the main gate): most worn first.
+    worn = sorted((b for b in state.barriers.values()
+                   if b.name != settings.main_gate and not b.broken and not b.under_maintenance
+                   and _zone_of_gate(b.name) is None
+                   and b.opens_since_repair >= settings.gate_repair_min_opens),
+                  key=lambda b: (-b.opens_since_repair, b.name))
+    if worn:
+        state.log_activity(f"Preventive maintenance queued for {worn[0].name}: "
+                           f"{worn[0].opens_since_repair} opens since its last repair (planned, "
+                           f"not a fault)", capability="logs:view_maint")
+        await _queue_repair("BarrierGate", worn[0].name)
 
 
 async def _close_idle_gates_later(delay_s: Optional[float] = None) -> None:
@@ -855,7 +823,7 @@ async def check_wear() -> None:
     for row in state.wear_snapshot():
         db.sync_component_wear(row["name"], row["type"], row["cycle_count"], row["runtime_seconds"])
         if row["under_maintenance"] or row["type"] in ("Light", "BarrierGate"):
-            continue   # gates: _schedule_gate_repairs (4.42)
+            continue   # gates: _schedule_gate_repairs (4.28)
         if row["broken"]:
             await _queue_repair(row["type"], row["name"])
             continue
@@ -942,22 +910,6 @@ async def _environment_loop() -> None:
         await asyncio.sleep(settings.environment_loop_interval_s / max(settings.game_speed, 0.1))
 
 
-def _annotate_gate_predictions(snapshot: dict[str, Any]) -> None:
-    """Attach each gate's failure prediction to the frame (4.42).
-
-    The dashboard has to be able to explain a repair nobody asked for, so the
-    gate drawer shows the same number the scheduler acted on and whether it
-    came from that gate's learned model or the opens heuristic."""
-    for row in snapshot.get("barriers", []):
-        if row["name"] == settings.main_gate:
-            continue
-        try:
-            row["failure_prediction"] = ml_agent.gate_failure_prediction(
-                row["name"], row.get("opens_since_repair", 0))
-        except Exception:  # noqa: BLE001 - a predictor fault must not lose the frame
-            log.exception("gate prediction failed for %s", row["name"])
-
-
 async def _broadcast_loop() -> None:
     while True:
         try:
@@ -968,7 +920,6 @@ async def _broadcast_loop() -> None:
             snapshot["maintenance_queue"] = maintenance_queue.stats
             snapshot["webhook_queue"] = webhook_queue.stats
             snapshot["ml_insights"] = ml_agent.latest_insights()
-            _annotate_gate_predictions(snapshot)
             await manager.broadcast(snapshot)
         except Exception:  # noqa: BLE001 - the broadcaster must never die
             log.exception("broadcast tick failed")
@@ -1355,7 +1306,7 @@ async def manual_arrival(body: ManualArrivalIn) -> dict[str, Any]:
 def _staff_takes_gate(name: str) -> Barrier:
     """Staff commands beat the automation (4.33). Only a gate that is broken
     or actually being repaired refuses: operating it is penalised. A repair
-    that is merely queued is cancelled - the scheduler comes back to it later."""
+    that is merely queued is cancelled - the rotation comes back to it later."""
     barrier = state.barriers.get(name)
     if barrier is None:
         raise HTTPException(404, "unknown barrier")
@@ -1964,26 +1915,25 @@ async def _queue_repair(component_type: str, name: str, *, via_zone: bool = Fals
     if component_type == "BarrierGate" and not via_zone:
         zone = _zone_of_gate(name)
         if zone:
-            # 4.26: a zone gate is repaired as part of closing the whole zone,
-            # and since 4.42 both of its gates go at once. Any number of zones
-            # may be in maintenance at the same time.
-            _start_zone_maintenance(zone, name)
+            # 4.26: a zone gate is repaired as part of closing the whole zone.
+            # A broken gate goes now; a healthy one waits for its turn.
+            # Only one zone in maintenance at a time (4.32). A gate breaking in
+            # another zone is repaired on its own, first in the queue.
+            if not any(z != zone for z in state.zone_maintenance):
+                _start_zone_maintenance(zone, name)
             if not (component and component.broken):
                 await _schedule_gate_repairs()
                 return
     if component_type == "BarrierGate" and component and not component.broken and (
             component.operator_open or component.operator_override):
-        return   # staff are holding this gate; the scheduler returns to it later (4.33)
+        return   # staff are holding this gate; the rotation returns to it later (4.33)
     if component_type == "BarrierGate":
+        holder = _gate_repair_slot_holder()
+        if holder and holder != name:
+            return   # one gate in repair at a time (4.28); _schedule_gate_repairs retries
         if component and not component.broken and settings.autopilot:
             db.set_meta(f"pending_proactive_repair:{name}", "1")   # logged as fixed_proactive
             db.record_component_event(name, component_type, "repair_triggered_proactive")
-            # 4.42 training sample: this gate reached N opens WITHOUT breaking.
-            # Paired with gate_opens_at_break, it is what the per-gate model
-            # learns each gate's own break point from.
-            db.record_component_event(name, component_type, "gate_opens_at_repair",
-                                      amount=float(getattr(component, "opens_since_repair", 0)))
-            ml_agent.reset_gate_models()
     if component_type == "ParkingSpot":
         action: Callable[[], Awaitable[None]] = lambda: client.spot_repair(name)
     elif component_type == "BarrierGate":
@@ -2541,12 +2491,6 @@ async def _handle_component_broken(payload: dict[str, Any]) -> None:
     except (TypeError, ValueError):
         fine_amount = None
     db.record_component_event(name, component_type, "broken", amount=fine_amount)
-    if component_type == "BarrierGate" and name in state.barriers:
-        # 4.42 training sample: it broke after this many opens. set_component_broken
-        # leaves the counter alone, so this is still the live value.
-        db.record_component_event(name, component_type, "gate_opens_at_break",
-                                  amount=float(state.barriers[name].opens_since_repair))
-        ml_agent.reset_gate_models()
     state.log_activity(f"{component_type} {name} broken", level="warn", capability="logs:view_maint")
     log.warning("component broken: %s %s (fine %s)", component_type, name, payload.get("FineAmount"))
 
@@ -2557,10 +2501,6 @@ async def _handle_component_broken(payload: dict[str, Any]) -> None:
             log.info("repair for occupied spot %s deferred until vacated", name)
             return
     await _queue_repair(component_type, name)
-    if component_type == "BarrierGate":
-        # 4.42: pick up this gate's zone partner, and anything else now due.
-        # Nothing waits for this repair to finish.
-        await _schedule_gate_repairs()
 
 
 async def _handle_component_fixed(payload: dict[str, Any]) -> None:
@@ -2588,7 +2528,6 @@ async def _handle_component_fixed(payload: dict[str, Any]) -> None:
     elif component_type == "BarrierGate":
         state.stuck_repairs.discard(name)
         _repair_seen_at.pop(name, None)
-        ml_agent.reset_gate_models()   # its history just grew (4.42)
         barrier = state.barriers.get(name)
         if (barrier is not None and _zone_of_gate(name) and not barrier.operator_open
                 and name not in _gates_in_use()):
