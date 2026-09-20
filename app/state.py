@@ -170,6 +170,10 @@ class VehicleSession:
     exit_confirmed: bool = False
     released: bool = False
     payment_suspect: bool = False
+    # The simulator explicitly announced that this vehicle will skip its bay
+    # and head to an exit. This is distinct from merely crossing an exit sensor
+    # on the way to a bay, so it is safe to release only this reservation.
+    declined_parking: bool = False
     # When the invoice went out, so an invoice the simulator refused (the car
     # was driving past an exit sensor, not waiting at it) can be re-sent at the
     # exit the car actually stops at.

@@ -24,12 +24,19 @@ from typing import Awaitable, Callable, Optional
 log = logging.getLogger("dispatcher.simlog")
 
 _LEVEL_LOAD = re.compile(r"Load Game\.?/settings/(lvl\d+)\.json", re.IGNORECASE)
+_NO_PARK = re.compile(r"Car \((?P<plate>[^)]+)\) Wont park, going to any exit", re.IGNORECASE)
 POLL_INTERVAL_S = 0.5   # local file I/O cadence, not simulated time
 
 
 def level_loaded(line: str) -> Optional[str]:
     match = _LEVEL_LOAD.search(line)
     return match.group(1).lower() if match else None
+
+
+def no_park_plate(line: str) -> Optional[str]:
+    """Return the plate from the simulator's explicit no-parking decision."""
+    match = _NO_PARK.search(line)
+    return match.group("plate").strip() if match else None
 
 
 class LogFollower:
@@ -80,7 +87,8 @@ class LogFollower:
         return [line.rstrip("\r") for line in lines]
 
 
-async def follow(path: Path | str, on_level: Callable[[str], Awaitable[None]]) -> None:
+async def follow(path: Path | str, on_level: Callable[[str], Awaitable[None]],
+                 on_no_park: Optional[Callable[[str], Awaitable[None]]] = None) -> None:
     follower = LogFollower(path)
     log.info("watching %s for simulator level loads", follower.path)
     while True:
@@ -92,4 +100,10 @@ async def follow(path: Path | str, on_level: Callable[[str], Awaitable[None]]) -
                     await on_level(level)
                 except Exception:  # noqa: BLE001 - a failed reset must not stop the watcher
                     log.exception("level-load handling failed for %s", level)
+            plate = no_park_plate(line)
+            if plate and on_no_park:
+                try:
+                    await on_no_park(plate)
+                except Exception:  # noqa: BLE001 - one bad line must not stop the watcher
+                    log.exception("no-park handling failed for %s", plate)
         await asyncio.sleep(POLL_INTERVAL_S)

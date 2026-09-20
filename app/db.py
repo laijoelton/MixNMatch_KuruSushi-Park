@@ -509,7 +509,7 @@ def open_incident_id(kind: str, plate: str) -> Optional[int]:
 
 def record_security_event(kind: str, *, event_id: Optional[str] = None,
                           event_class: Optional[str] = None, detail: str = "",
-                          payload: Optional[dict[str, Any]] = None) -> None:
+                          payload: Optional[dict[str, Any]] = None) -> int:
     """Log a rejected, duplicated or unhandled request.
 
     Repeats of the same (kind, EventId) bump ``occurrences`` instead of adding
@@ -526,6 +526,11 @@ def record_security_event(kind: str, *, event_id: Optional[str] = None,
                    detail      = excluded.detail""",
             (kind, event_id, event_class, detail,
              json.dumps(payload, separators=(",", ":"))[:4000] if payload else None, now, now))
+        row = _conn.execute(
+            "SELECT occurrences FROM security_events WHERE kind = ? AND IFNULL(event_id, '') = IFNULL(?, '')",
+            (kind, event_id),
+        ).fetchone()
+        return int(row["occurrences"] if row else 1)
 
 
 def security_totals() -> list[dict[str, Any]]:

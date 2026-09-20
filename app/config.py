@@ -105,6 +105,7 @@ class Settings:
     # leaves the exit sensor, since no sensor reports it clearing the gate.
     main_gate: str
     payment_retry_max: int
+    tampered_payment_retry_max: int
     payment_retry_delay_s: float
     gate_close_delay_s: float
     # Send a car to its zone's entry sensor first and open that zone's gate
@@ -266,6 +267,10 @@ class Settings:
             # (POST /api/sessions/{plate}/request-payment). Set >0 only if a
             # build is confirmed not to fine it.
             payment_retry_max=int(_env_float("PAYMENT_RETRY_MAX", 0)),
+            # A fake Level 3 receipt has an invalid signature and therefore did
+            # not settle the simulator's invoice. It is safe (and required) to
+            # ask again, unlike a correctly signed receipt with a wrong amount.
+            tampered_payment_retry_max=int(_env_float("TAMPERED_PAYMENT_RETRY_MAX", 2)),
             payment_retry_delay_s=_env_float("PAYMENT_RETRY_DELAY_S", 2.0),
             simulator_log=os.environ.get("SIMULATOR_LOG", "data/simulator.log").strip(),
 

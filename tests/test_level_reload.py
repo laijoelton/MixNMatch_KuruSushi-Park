@@ -111,6 +111,11 @@ def test_follower_starts_over_when_the_simulator_is_relaunched(tmp_path):
     assert [simlog.level_loaded(l) for l in follower.read_new_lines()] == ["lvl2"]
 
 
+def test_no_park_warning_extracts_the_vehicle_plate():
+    assert simlog.no_park_plate("[WARN] Car (KAL 999) Wont park, going to any exit") == "KAL 999"
+    assert simlog.no_park_plate("Car reached its destination at point: 216") is None
+
+
 def test_level_load_clears_the_previous_levels_cars_holds_and_closes_gates(live, monkeypatch):
     state.barriers["gate2"] = Barrier("gate2", operator_override=True, held_vehicles={"GHO 001"})
     db.set_meta("gate_override:gate2", "1")

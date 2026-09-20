@@ -163,6 +163,7 @@ _holding_gate: dict[str, str] = {}  # plate -> zone entry gate opened for it, un
 _entry_watchers: set[asyncio.Task] = set()
 _dispatch_tasks: dict[str, asyncio.Task] = {}
 _webhook_events_in_progress: set[str] = set()
+_payment_retries_in_progress: set[str] = set()
 _co_warned_zones: set[str] = set()  # zones with an unresolved PREDICTIVE_CO_WARNING broadcast
 
 
@@ -498,6 +499,28 @@ async def _on_level_loaded(level: str) -> None:
         if _live_bays_synced:
             return
     state.log_activity(f"{level} loaded but no bays were returned yet; the first car will sync it", level="warn")
+
+
+async def _on_no_park(plate: str) -> None:
+    """Release only a reservation the simulator says will never be used."""
+    session = state.get_session(plate)
+    if session is None or session.parked_at is not None or session.declined_parking:
+        return
+    session.declined_parking = True
+    assigned = session.assigned_spot
+    if assigned:
+        state.release_reservation(assigned, plate)
+    state.active_dispatches.pop(plate, None)
+    task = _dispatch_tasks.pop(plate, None)
+    if task and not task.done():
+        task.cancel()
+    session.assigned_spot = None
+    _persist(plate)
+    db.record_incident("parking_declined", plate,
+                       f"{plate} chose not to park; released reservation {assigned or '(none)'}",
+                       {"released_spot": assigned}, resolved=True)
+    state.log_activity(f"{plate} chose not to park - {assigned or 'its reservation'} released",
+                       level="warn")
 
 
 def _spawn(coro) -> asyncio.Task:
@@ -949,7 +972,8 @@ async def lifespan(app: FastAPI):
     )
     background_tasks = (broadcaster, wear_checker, environment, predictive)
     if settings.simulator_log:
-        background_tasks += (asyncio.create_task(simlog.follow(settings.simulator_log, _on_level_loaded),
+        background_tasks += (asyncio.create_task(simlog.follow(settings.simulator_log, _on_level_loaded,
+                                                               _on_no_park),
                                                  name="dispatcher-level-watch"),)
     try:
         yield
@@ -1781,9 +1805,16 @@ async def simulator_webhook(request: Request) -> JSONResponse:
     if not verify_signature(payload, signature):
         reason = "no recipe matched the provided signature" if signature else "signature missing"
         db.record_unsigned_webhook(payload.get("EventId"), reason, payload)
-        db.record_security_event("invalid_signature", event_id=payload.get("EventId"),
-                                 event_class=payload.get("EventClass"), detail=reason, payload=payload)
+        occurrences = db.record_security_event(
+            "invalid_signature", event_id=payload.get("EventId"),
+            event_class=payload.get("EventClass"), detail=reason, payload=payload)
         log.warning("webhook rejected (enforce mode): %s (EventId=%s)", reason, payload.get("EventId"))
+        # Rejecting a forged receipt is only half of the Level 3 rule. A known
+        # invoiced car is still waiting at its exit, so request a fresh payment
+        # after this 401 has returned. Unknown/unsolicited payloads stay inert.
+        if (payload.get("EventClass") == "payment_made" and payload.get("EventId")
+                and occurrences == 1):
+            _spawn(_recover_tampered_payment(payload))
         raise HTTPException(status_code=401, detail="invalid webhook signature")
 
     # Persist first: EventId is the table's primary key, so a redelivery is
@@ -2041,6 +2072,13 @@ async def _handle_car_spot_action(payload: dict[str, Any]) -> None:
 
     if spot_type == "ExitSpot" and direction == "CarIn":
         session = state.get_session(plate)
+        if session is not None and session.declined_parking:
+            session.exit_confirmed = True
+            session.exit_gate = spot_name
+            state.mark_at_exit(plate)
+            _persist(plate)
+            state.log_activity(f"{plate} reached {spot_name} without parking; no payment due")
+            return
         if session is None or ((session.entry_gate == "(adopted)" or session.ghost_id) and _valid_exit(session)):
             # Never seen at an entrance: either unknown here, or it appeared
             # straight into a bay ("adopted"). Both are ghost cars (4.25).
@@ -2084,6 +2122,13 @@ async def _handle_car_spot_action(payload: dict[str, Any]) -> None:
 
     if spot_type == "ExitSpot" and direction == "CarOut":
         session = state.get_session(plate)
+        if (session is not None and session.declined_parking and session.exit_confirmed
+                and session.exit_gate == spot_name):
+            _record_neglect_and_discard(plate, "Vehicle chose not to park and left the facility")
+            state.log_activity(f"{plate} left via {spot_name} without parking")
+            _spawn(_close_idle_gates_later())
+            await _schedule_gate_repairs()
+            return
         if session is None or not session.exit_confirmed or not _valid_exit(session):
             return
         _archive(plate, left_site=True)
@@ -2243,6 +2288,67 @@ async def _ask_to_pay_again(session, paid_amount: float) -> None:
         f"Payment re-requested from {session.plate} ({session.expected_amount:.2f}, attempt {attempt})"
         if sent else f"Could not re-request payment from {session.plate}; held for staff",
         level="warn", capability="logs:view_fin")
+
+
+async def _recover_tampered_payment(payload: dict[str, Any]) -> None:
+    """Ask again after a forged payment webhook, without accepting it.
+
+    This path is deliberately separate from a correctly signed underpayment.
+    The latter may already count as paid inside the simulator and is therefore
+    still staff-controlled; a forged receipt was rejected and remains payable.
+    One session-scoped guard prevents duplicate fake webhooks from launching
+    overlapping invoices.
+    """
+    plate = str(payload.get("CarPlateNumber") or "").strip()
+    session = state.get_session(plate) if plate else None
+    if (session is None or session.paid or not session.charge_attempted
+            or not session.exit_confirmed or session.expected_amount is None):
+        return
+    identity = session.session_id
+    if identity in _payment_retries_in_progress:
+        return
+    if session.payment_retries >= settings.tampered_payment_retry_max:
+        if db.open_incident_id("payment_unresolved", plate) is None:
+            db.record_incident(
+                "payment_unresolved", plate,
+                f"{plate} sent tampered payment data after {session.payment_retries} re-request(s); held for staff",
+                {"expected": session.expected_amount, "attempts": session.payment_retries,
+                 "event_id": payload.get("EventId")},
+            )
+        return
+
+    _payment_retries_in_progress.add(identity)
+    try:
+        session.payment_suspect = True
+        session.payment_retries += 1
+        attempt = session.payment_retries
+        _persist(plate)
+        if session.exit_gate:
+            await _hold_exit(plate, session.exit_gate)
+        db.record_incident(
+            "payment_retry", plate,
+            f"Asked {plate} to pay again after a tampered payment webhook (attempt {attempt})",
+            {"expected": session.expected_amount, "attempt": attempt,
+             "event_id": payload.get("EventId"), "reason": "invalid_signature"},
+        )
+        state.log_activity(
+            f"TAMPERED PAYMENT {plate}: rejected; requesting {session.expected_amount:.2f} again "
+            f"(attempt {attempt})", level="warn", capability="logs:view_fin")
+        await asyncio.sleep(settings.payment_retry_delay_s / max(settings.game_speed, 0.1))
+        fresh = state.get_session(plate)
+        if fresh is None or fresh.session_id != identity or fresh.paid:
+            return
+        sent = await act(
+            f"re-request payment from {plate} after tampered receipt (attempt {attempt})",
+            lambda: client.car_charge(plate, fresh.expected_parking or 0.0,
+                                      fresh.expected_charging or 0.0),
+        )
+        state.log_activity(
+            f"Payment re-requested from {plate} after tampered receipt"
+            if sent else f"Could not re-request payment from {plate}; held for staff",
+            level="warn", capability="logs:view_fin")
+    finally:
+        _payment_retries_in_progress.discard(identity)
 
 
 async def _hold_exit(plate: str, sensor: str) -> None:

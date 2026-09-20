@@ -115,6 +115,100 @@ def test_staff_can_ask_for_payment_again(site):
         "Staff asked PAY 003")
 
 
+def test_tampered_payment_is_rejected_but_automatically_requested_again(site, monkeypatch):
+    """Level 3 requires both halves: reject the fake receipt and ask again."""
+    monkeypatch.setattr(main, "settings", dataclasses.replace(
+        main.settings, tampered_payment_retry_max=2, payment_retry_delay_s=0))
+    session = state.start_session("PAY 004", gate="ENTRY1", car_type="Normal")
+    session.expected_amount, session.expected_parking, session.expected_charging = 7.0, 7.0, 0.0
+    session.charge_attempted = True
+    session.exit_confirmed = True
+    session.exit_gate = "EXIT"
+
+    asyncio.run(main._recover_tampered_payment({
+        "EventClass": "payment_made", "EventId": "fake-payment-1",
+        "CarPlateNumber": "PAY 004", "Amount": "7.00",
+    }))
+
+    main.client.car_charge.assert_awaited_once_with("PAY 004", 7.0, 0.0)
+    assert session.payment_suspect is True
+    assert session.payment_retries == 1
+    assert session.paid is False
+    incident = db.query(
+        "SELECT detail FROM incidents WHERE kind = 'payment_retry' AND plate = ? ORDER BY id DESC LIMIT 1",
+        ("PAY 004",),
+    )[0]
+    assert "tampered" in incident["detail"].lower()
+
+
+def test_duplicate_tampered_payment_only_starts_one_retry(site, monkeypatch):
+    monkeypatch.setattr(main, "settings", dataclasses.replace(
+        main.settings, tampered_payment_retry_max=2, payment_retry_delay_s=0))
+    session = state.start_session("PAY 005", gate="ENTRY1", car_type="Normal")
+    session.expected_amount, session.expected_parking, session.expected_charging = 4.0, 4.0, 0.0
+    session.charge_attempted = True
+    session.exit_confirmed = True
+    session.exit_gate = "EXIT"
+    payload = {"EventClass": "payment_made", "EventId": "fake-payment-2",
+               "CarPlateNumber": "PAY 005", "Amount": "4.00"}
+
+    async def scenario():
+        await asyncio.gather(main._recover_tampered_payment(payload),
+                             main._recover_tampered_payment(payload))
+
+    asyncio.run(scenario())
+
+    main.client.car_charge.assert_awaited_once_with("PAY 005", 4.0, 0.0)
+    assert session.payment_retries == 1
+
+
+def test_redelivered_tampered_webhook_is_rejected_twice_but_retried_once(site, monkeypatch):
+    monkeypatch.setattr(main, "settings", dataclasses.replace(
+        main.settings, tampered_payment_retry_max=2, payment_retry_delay_s=0))
+    session = state.start_session("PAY 006", gate="ENTRY1", car_type="Normal")
+    session.expected_amount, session.expected_parking, session.expected_charging = 3.0, 3.0, 0.0
+    session.charge_attempted = True
+    session.exit_confirmed = True
+    session.exit_gate = "EXIT"
+    spawned = []
+    monkeypatch.setattr(main, "_spawn", lambda coro: spawned.append(coro))
+    payload = {"EventClass": "payment_made", "EventId": "fake-payment-redelivery",
+               "CarPlateNumber": "PAY 006", "Amount": "3.00", "Signature": "forged"}
+
+    client = TestClient(main.app)
+    assert client.post("/webhooks/simulator", json=payload).status_code == 401
+    assert client.post("/webhooks/simulator", json=payload).status_code == 401
+
+    assert len(spawned) == 1
+    asyncio.run(spawned.pop())
+    main.client.car_charge.assert_awaited_once_with("PAY 006", 3.0, 0.0)
+
+
+def test_vehicle_that_declines_parking_releases_its_bay_and_leaves_cleanly(site):
+    state.spots["S9"] = Spot("S9", zone_parent="ZONE1")
+    state.start_session("SKIP 001", gate="ENTRY1", car_type="Normal")
+    state.reserve_spot("S9", "SKIP 001")
+    state.assign_spot("SKIP 001", "S9")
+
+    async def scenario():
+        await main._on_no_park("SKIP 001")
+        await main._handle_car_spot_action({
+            "CarPlateNumber": "SKIP 001", "SpotName": "EXIT",
+            "SpotType": "ExitSpot", "Direction": "CarIn",
+        })
+        await main._handle_car_spot_action({
+            "CarPlateNumber": "SKIP 001", "SpotName": "EXIT",
+            "SpotType": "ExitSpot", "Direction": "CarOut",
+        })
+
+    asyncio.run(scenario())
+
+    assert state.spots["S9"].status == SpotStatus.AVAILABLE
+    assert state.get_session("SKIP 001") is None
+    assert db.query("SELECT reason FROM neglected_vehicles WHERE plate = ?", ("SKIP 001",))
+    main.client.car_charge.assert_not_awaited()
+
+
 # ------------------------------------------------------------- exit failover
 def test_a_paid_car_is_re_routed_around_a_broken_exit(site):
     state.barriers["gateBroken"] = Barrier("gateBroken", broken=True)

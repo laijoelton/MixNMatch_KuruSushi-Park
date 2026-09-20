@@ -53,11 +53,13 @@ second bay keeps the first one — freeing it hands a bay with a car still in it
 to the next arrival, which the simulator fines. Both bays stay blocked, the
 alert names both, and it clears when the car leaves one of them.
 
-**A wrong payment is held, not re-invoiced automatically.** The simulator fines
-`Car has already paid for parking.` (RM50) for invoicing a car it considers
-paid, and a wrong amount still counts as paid — so staff press "Ask <plate> to
-pay again" on that gate, and every attempt is audited. Set `PAYMENT_RETRY_MAX`
-above 0 to let the dispatcher do it by itself.
+**Suspicious payments are rejected and requested again.** A tampered-signature
+receipt is logged, rejected with 401, and automatically requested again (up to
+`TAMPERED_PAYMENT_RETRY_MAX`, default 2), as required by Level 3. A correctly
+signed but wrong-amount receipt remains staff-controlled: the simulator may
+already consider that car paid and can fine an automatic second invoice RM50.
+Set `PAYMENT_RETRY_MAX` above 0 only for a simulator build where that behavior
+has been verified safe.
 
 `/tariffs` edits effective billing settings without changing `.env`. `/logs` offers
 capability-filtered, paginated operations, maintenance, financial and audit tabs.
