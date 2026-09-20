@@ -21,7 +21,7 @@ export function deriveAlerts(snapshot, stats, { isAdmin } = {}) {
       "The simulator accepted the repair but never finished it. Other repairs carry on; check the simulator", { kind: "gate", name: gate.name });
     else if (gate.broken) add(`gate-broken-${gate.name}`, "bad", `Gate ${gate.name} is broken`, "Repair it — it cannot open or close", { kind: "gate", name: gate.name });
     else if (gate.under_maintenance) add(`gate-maint-${gate.name}`, "warn", `Gate ${gate.name} under repair`, "Do not operate until fixed", { kind: "gate", name: gate.name });
-    else if (gate.repair_pending) add(`gate-pending-${gate.name}`, "warn", `Gate ${gate.name} repair queued`, "Starts when the rotation reaches it; staff commands cancel it", { kind: "gate", name: gate.name });
+    else if (gate.repair_pending) add(`gate-pending-${gate.name}`, "warn", `Gate ${gate.name} repair queued`, "Sent as soon as no car is driving through it; staff commands cancel it", { kind: "gate", name: gate.name });
   }
   for (const spot of snapshot.spots || []) {
     if (spot.purpose !== "Park") continue;
@@ -46,12 +46,13 @@ export function deriveAlerts(snapshot, stats, { isAdmin } = {}) {
     else if (level === "Mid") add(`co-${zone.name}`, "warn", `CO rising in ${zone.name}`, `${Number(zone.co_level).toFixed(1)}`, { kind: "zone", name: zone.name });
   }
 
-  // Zone closed for gate maintenance (4.26): no new cars until both gates are fixed.
+  // Zone closed for gate maintenance (4.26, 4.42): both gates are repaired at
+  // once, and the zone takes cars again as soon as its entry gate is usable.
   for (const [zone, info] of Object.entries(snapshot.zone_maintenance || {})) {
     const waiting = (info.todo || []).join(" and ");
-    add(`zone-maint-${zone}`, "warn", info.reopened ? `${zone}: last gate being repaired` : `${zone} closed for gate maintenance`,
+    add(`zone-maint-${zone}`, "warn", info.reopened ? `${zone}: gate repair still running` : `${zone} closed for gate maintenance`,
       info.reopened ? `${waiting} under repair; the zone is taking cars again`
-                    : `${info.trigger}. New cars go to other zones until the second gate's repair starts`,
+                    : `${info.trigger}. Both its gates are being repaired; new cars go to other zones`,
       { kind: "zone", name: zone });
   }
   // A gate name the simulator uses twice: one of them is unreachable by the API.

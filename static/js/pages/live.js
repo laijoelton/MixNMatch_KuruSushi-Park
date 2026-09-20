@@ -287,6 +287,10 @@ function gateView(snap, name) {
       ["Position", h("span", { class: `tag ${state === "open" ? "free" : state === "fault" ? "fault" : state === "moving" ? "reserved" : ""}`, text: gate.state })],
       ["Condition", gate.broken ? "Broken" : gate.under_maintenance ? "Under repair" : gate.repair_pending ? "Repair queued" : "Good"],
       ["Opens since repair", String(gate.opens_since_repair ?? 0)],
+      ...(gate.failure_prediction ? [["Breaks on next open",
+        `${Math.round(gate.failure_prediction.failure_probability * 100)}% (${gate.failure_prediction.source === "model"
+          ? `learned from ${gate.failure_prediction.samples} of its own repairs`
+          : "opens heuristic — not enough history yet"})`]] : []),
       ["Zone", gate.zone || "Perimeter"],
       ["Service state", gate.hold_reason || GATE_STATE_LABEL[state]],
     ]),
