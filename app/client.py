@@ -15,8 +15,13 @@ log = logging.getLogger("dispatcher.client")
 
 class SimulatorClient:
     def __init__(self) -> None:
-        self._http = httpx.AsyncClient(base_url=settings.simulator_base_url,
-                                      timeout=settings.request_timeout_s / max(settings.game_speed, 0.1))
+        self._http = httpx.AsyncClient(
+            base_url=settings.simulator_base_url,
+            timeout=settings.request_timeout_s / max(settings.game_speed, 0.1),
+            limits=httpx.Limits(max_keepalive_connections=50, max_connections=200,
+                                keepalive_expiry=30.0),
+        )
+        self._mutation_slots = asyncio.Semaphore(30)
         self._token: Optional[str] = None
         self._token_obtained_at: float = 0.0
         self._login_lock = asyncio.Lock()
@@ -121,20 +126,23 @@ class SimulatorClient:
     # Vehicle commands
     # ------------------------------------------------------------------ #
     async def car_goto(self, plate: str, destination: str) -> None:
-        await self._request("POST", f"/api/v1/car/{plate}/goto/{destination}")
+        async with self._mutation_slots:
+            await self._request("POST", f"/api/v1/car/{plate}/goto/{destination}")
 
     async def car_charge(self, plate: str, parking_cost: float, charging_cost: float = 0.0) -> None:
-        await self._request(
-            "POST", f"/api/v1/car/{plate}/charge",
-            params={"parkingCost": parking_cost, "chargingCost": charging_cost},
-            transient_attempts=1,
-        )
+        async with self._mutation_slots:
+            await self._request(
+                "POST", f"/api/v1/car/{plate}/charge",
+                params={"parkingCost": parking_cost, "chargingCost": charging_cost},
+                transient_attempts=1,
+            )
 
     # ------------------------------------------------------------------ #
     # Barrier gates
     # ------------------------------------------------------------------ #
     async def barrier_open(self, name: str) -> None:
-        await self._request("POST", f"/api/v1/barrier-gates/{name}/open")
+        async with self._mutation_slots:
+            await self._request("POST", f"/api/v1/barrier-gates/{name}/open")
 
     async def barrier_close(self, name: str) -> None:
         await self._request("POST", f"/api/v1/barrier-gates/{name}/close")
