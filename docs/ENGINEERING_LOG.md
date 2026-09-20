@@ -1600,13 +1600,17 @@ undocumented behaviour §1 exists to prevent.
   Electric and Accessible car - 95 turn-aways in three minutes - whenever the
   reachable half of the site had no bay of that exact type. Building it
   unconditionally would silently reintroduce a fix that is in this file with
-  a measured before/after. Instead it is `STRICT_CATEGORY_FILTERING`
-  (default **false**, same pattern as `ML_PREDICTIVE_REPAIRS` and
-  `ZONE_GATE_AT_SENSOR`): the strict code path is real, tested, and available
-  for a layout where every zone has full category coverage, without being the
-  default that regresses Level 3. Standard cars were never subject to the
-  fallback either way - `state.available_spots("Any")` only ever returns
-  `Any`-tagged bays, so there was nothing to forbid for them.
+  a measured before/after. Instead it is `STRICT_CATEGORY_FILTERING`, off by
+  default at first (same pattern as `ML_PREDICTIVE_REPAIRS` and
+  `ZONE_GATE_AT_SENSOR`): the strict code path is real, tested and available
+  without forcing the Level 3 regression on by default while the trade-off
+  was only implicit. *Superseded by 4.42: once "completely forbidden" was
+  restated unconditionally, the setting was flipped to default **true** - the
+  trade-off is the same one measured here, now a conscious choice instead of
+  an avoided one, with the setting itself kept as the escape hatch.* Standard
+  cars were never subject to the fallback either way -
+  `state.available_spots("Any")` only ever returns `Any`-tagged bays, so
+  there was nothing to forbid for them.
 - **Moving ratio/stage logic into `app/routing.py`.** Rejected for the same
   reason as 4.22: `routing.py` is purely the ring/real-distance module for
   final-spot selection within an already-chosen zone (`rank_spots`,
@@ -1640,6 +1644,56 @@ superseded always-lowest-ratio rule and was adjusted so only one zone sits in
 the stage-1 pool, isolating the case it actually covers. No live simulator
 mutation. `START.bat`/`STOP.bat` unchanged - both new settings are optional
 with defaults, adding no dependency, port, service or required `.env` key.
+
+### 4.42 Strict category filtering turned on by default; the stage-1 gap closed by the spec itself (20 September 2026)
+
+A follow-up refinement re-stated 4.41's two open questions in unconditional
+language: cross-allocation "completely forbidden" for OKU/Electric cars, and
+a single-ceiling reading of stage 1 (target the highest-priority zone until
+it hits exactly 40%, then spill to the next) with no 30% threshold at all.
+
+**Stage 1/2.** The new wording removes the 30%-40% gap 4.41 had to resolve by
+judgment call - there is now only the one ceiling. `zones.pick_zone_staged`
+needed no logic change (it already collapsed to a single-ceiling read), only
+a docstring rewrite: it now cites the spec's own "target the highest-priority
+zone until it reaches 40%, then spill over" language directly instead of
+explaining away an ambiguity that no longer exists. `priority_rank` continues
+to mean zone number order (ZONE1 before ZONE2) - the level data has no
+separate priority field to draw one from, and inventing a configurable one
+with nothing to configure it from would be exactly the kind of speculative
+abstraction §"House rules" warns against.
+
+**Strict category filtering: `STRICT_CATEGORY_FILTERING` now defaults to
+`true`.** This is a conscious flip, not a quiet one. The trade-off is the
+same one measured in 4.39: on a live Level 3 run, treating the category
+preference as a hard requirement turned away every Electric/Accessible car -
+95 turn-aways in three minutes - whenever the reachable half of the site had
+no bay of that exact type. That is exactly what "completely forbidden" now
+asks for by construction: if the rule cannot be satisfied, the car must wait
+rather than take the wrong category of bay. Two things make this safer to
+default on now than it would have been at 4.39:
+- **4.41's Stage 3** turns "nothing compatible" into a clean, logged
+  full-capacity warning and a deliberate `goto leavepark`, not a silent
+  cross-allocation or a retry storm.
+- The setting is still there as `STRICT_CATEGORY_FILTERING=false`, an
+  explicit escape hatch if a run shows the Level 3 turn-away rate again.
+
+Reachability is still filtered first (4.39's ordering is unchanged) - strict
+filtering only removes what the category step falls back to once reachability
+has already narrowed the field, it does not change the order of the two cuts.
+Standard cars are unaffected either way: `available_spots("Any")` never
+included an Electric/Accessible bay to forbid.
+
+**Found by the test suite:** `test_a_special_car_is_not_turned_away_when_its_preferred_bay_is_unreachable`
+encoded the pre-4.42 behaviour exactly - an EV car takes a reachable ordinary
+bay over an unreachable charging bay. That is now the wrong answer by design;
+it was replaced by `test_strict_filtering_waits_rather_than_cross_allocate_even_when_unreachable`
+(asserts the car now waits) and `test_disabling_strict_filtering_restores_the_reachable_fallback`
+(the same scenario with the escape hatch on, proving the old behaviour is
+still reachable, just no longer the default).
+
+**Verification:** `compileall`, full suite **293 passed**. No live simulator
+mutation.
 
 ---
 
@@ -1703,7 +1757,7 @@ Everything lives in `.env` (see `.env.example`). The ones that matter:
 | `MAIN_GATE` | `gate7` | Operator-only gate; never opened or closed automatically (4.18) |
 | `GATE_CLOSE_DELAY_S` | `3.0` | Simulated seconds after `ExitSpot/CarOut` before the exit gate closes (4.18) |
 | `ZONE_BALANCE_CEILING` | `0.40` | Below this ratio a zone is picked by priority (nearest first); at/above it every candidate zone, dispatch spreads to the lowest ratio instead (4.41) |
-| `STRICT_CATEGORY_FILTERING` | `false` | **Keep false.** `true` forbids the Electric/Accessible cross-allocation fallback outright, which turned away every Electric/Accessible car on Level 3 when the reachable half of the site had no bay of that exact type (4.39, 4.41) |
+| `STRICT_CATEGORY_FILTERING` | `true` | Forbids the Electric/Accessible cross-allocation fallback outright - a car waits rather than take the wrong category of bay. Known trade-off: turned away every Electric/Accessible car on Level 3 when the reachable half of the site had no bay of that exact type (4.39). Set to `false` as an escape hatch if that recurs live (4.42) |
 
 Two traps worth knowing:
 

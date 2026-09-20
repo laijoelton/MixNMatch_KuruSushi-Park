@@ -266,10 +266,12 @@ def test_a_car_still_driving_keeps_its_bay_longer(site, monkeypatch):
     assert main._arrival_grace_s(driving) == 300
 
 
-def test_a_special_car_is_not_turned_away_when_its_preferred_bay_is_unreachable(site, monkeypatch):
-    """Reachability must be applied before the car-type preference. Narrowing to
-    charging bays on the far side of the site leaves nothing to dispatch, and
-    the car is refused from a half-empty car park."""
+def test_strict_filtering_waits_rather_than_cross_allocate_even_when_unreachable(site, monkeypatch):
+    """Reachability is still applied before the car-type preference (4.39) -
+    it just has nothing left to fall back to once STRICT_CATEGORY_FILTERING
+    (default since 4.42) forbids the cross-allocation fallback outright. The
+    only reachable bay is the wrong category, so the car waits instead of
+    taking it."""
     monkeypatch.setattr(main, "running_level", lambda: "lvl3")
     monkeypatch.setattr(main, "_live_bays_synced", True)
     table = reachability.table_for("lvl3")
@@ -280,7 +282,26 @@ def test_a_special_car_is_not_turned_away_when_its_preferred_bay_is_unreachable(
 
     result = asyncio.run(main.dispatch_entry("EVR 001", "ENTRY1", "Electric"))
 
-    assert result["target"] == here, "an ordinary bay it can reach beats a charging bay it cannot"
+    assert result["target"] is None
+
+
+def test_disabling_strict_filtering_restores_the_reachable_fallback(site, monkeypatch):
+    """The STRICT_CATEGORY_FILTERING escape hatch (4.42): with it off, the
+    pre-4.42 behaviour is unchanged - an ordinary bay it can reach beats a
+    charging bay it cannot."""
+    monkeypatch.setattr(main, "settings",
+                        dataclasses.replace(main.settings, strict_category_filtering=False))
+    monkeypatch.setattr(main, "running_level", lambda: "lvl3")
+    monkeypatch.setattr(main, "_live_bays_synced", True)
+    table = reachability.table_for("lvl3")
+    here = sorted(table["ENTRY1"])[0]          # reachable, ordinary bay
+    far = sorted(table["OENTRY1"])[0]          # unreachable from ENTRY1
+    state.spots[here] = Spot(here, zone_parent="ZONE1", parking_for_car_type="Any")
+    state.spots[far] = Spot(far, zone_parent="ZONE5", parking_for_car_type="Electric")
+
+    result = asyncio.run(main.dispatch_entry("EVR 002", "ENTRY1", "Electric"))
+
+    assert result["target"] == here
 
 
 def test_a_refused_invoice_is_re_sent_with_the_simulator_s_figure(site):

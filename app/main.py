@@ -1037,9 +1037,10 @@ async def dispatch_entry(plate: str, gate_name: str, car_type: str = "Normal",
         candidates = connected
     if kind == "accessible":
         accessible = [n for n in candidates if state.spots[n].is_accessible]
-        # STRICT_CATEGORY_FILTERING forbids the cross-allocation fallback -
-        # an OKU car waits rather than take a standard bay. Off by default;
-        # see the setting's docstring for why (4.39, 4.41).
+        # STRICT_CATEGORY_FILTERING (on by default) forbids the
+        # cross-allocation fallback - an OKU car waits rather than take a
+        # standard bay. See the setting's docstring for the known trade-off
+        # (4.39, 4.41, 4.42).
         candidates = accessible if settings.strict_category_filtering else (accessible or candidates)
     if kind == "ev":
         # An EV in an ordinary bay cannot charge, and charging is billed at the
