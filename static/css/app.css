@@ -706,3 +706,19 @@ dialog.confirm .d-actions { display: flex; justify-content: flex-end; gap: var(-
   .panel-head { flex-wrap: wrap; gap: 10px; }
   .panel-head > [role="status"] { flex: 1 1 120px; }
 }
+
+/* ------------------------------------------------ component summary cards */
+.summary-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: var(--s2); padding: 0 16px var(--s3);
+}
+.summary-card {
+  padding: var(--s3); border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--surface-2);
+}
+.summary-card.has-faults { border-color: var(--reserved); }
+.summary-title { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.summary-figure { font-size: 22px; margin: 4px 0 2px; }
+.summary-figure .muted { font-size: 12px; font-weight: 400; }
+.summary-detail { font-size: 12px; }
+.filters .btn.is-active { background: var(--surface-3); color: var(--text); border-color: var(--line-strong); }

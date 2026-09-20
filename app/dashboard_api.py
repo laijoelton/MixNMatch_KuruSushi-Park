@@ -309,6 +309,58 @@ async def write_tariffs(request: Request, changes: dict):
     return {"settings": after}
 
 
+# --------------------------------------------------------------------------- #
+# Security and incidents (Level 3). The webhook path already refuses invalid,
+# duplicated and tampered requests; this is where the refusals become evidence
+# an operator can read, count and follow up.
+# --------------------------------------------------------------------------- #
+@router.get("/security", include_in_schema=False)
+async def security_page(request: Request):
+    return _page(request, "security.html", "security")
+
+
+@router.get("/api/security")
+async def security(request: Request, kind: str = "", page: int = 1, size: int = 50):
+    if not has(_user(request), "logs:view_audit"):
+        raise HTTPException(403, "Audit capability required")
+    size, page = max(1, min(size, 100)), max(1, page)
+    run = db.run_started_at()
+    where, params = "WHERE last_seen >= ?", [run]
+    if kind:
+        where, params = where + " AND kind = ?", params + [kind]
+    rows = db.query(f"SELECT * FROM security_events {where} ORDER BY last_seen DESC LIMIT ? OFFSET ?",
+                    tuple(params + [size, (page - 1) * size]))
+    for row in rows:
+        row["payload"] = json.loads(row["payload"]) if row.get("payload") else None
+    total = db.query(f"SELECT COUNT(*) AS n FROM security_events {where}", tuple(params))[0]["n"]
+    gaps = db.query("SELECT COUNT(*) AS rows, COALESCE(SUM(missing), 0) AS missing "
+                    "FROM sequence_gaps WHERE detected_at >= ?", (run,))[0]
+    return {"items": redact(rows, True), "page": page, "size": size, "total": total,
+            "totals": db.security_totals(), "sequence_gaps": gaps, "run_started_at": run}
+
+
+@router.get("/api/incidents")
+async def incidents(request: Request, kind: str = "", open_only: bool = False,
+                    page: int = 1, size: int = 50):
+    size, page = max(1, min(size, 100)), max(1, page)
+    where, params = ["occurred_at >= ?"], [db.run_started_at()]
+    if kind:
+        where, params = where + ["kind = ?"], params + [kind]
+    if open_only:
+        where = where + ["resolved_at IS NULL"]
+    clause = "WHERE " + " AND ".join(where)
+    rows = db.query(f"SELECT * FROM incidents {clause} ORDER BY id DESC LIMIT ? OFFSET ?",
+                    tuple(params + [size, (page - 1) * size]))
+    for row in rows:
+        row["payload"] = json.loads(row["payload"]) if row.get("payload") else None
+    total = db.query(f"SELECT COUNT(*) AS n FROM incidents {clause}", tuple(params))[0]["n"]
+    by_kind = db.query(f"SELECT kind, COUNT(*) AS rows, "
+                       f"SUM(CASE WHEN resolved_at IS NULL THEN 1 ELSE 0 END) AS open "
+                       f"FROM incidents WHERE occurred_at >= ? GROUP BY kind ORDER BY rows DESC",
+                       (db.run_started_at(),))
+    return {"items": rows, "page": page, "size": size, "total": total, "by_kind": by_kind}
+
+
 @router.get("/logs", include_in_schema=False)
 async def logs_page(request: Request):
     return _page(request, "logs.html", "logs")

@@ -54,6 +54,15 @@ export function deriveAlerts(snapshot, stats, { isAdmin } = {}) {
                     : `${info.trigger}. New cars go to other zones until the second gate's repair starts`,
       { kind: "zone", name: zone });
   }
+  // Double parking: both bays are physically blocked, so both are named and
+  // the row stays until the car moves out of one of them.
+  for (const row of snapshot.double_parked || []) {
+    const where = (row.spots || []).join(" and ");
+    add(`double-${row.plate}`, "bad", `${row.plate} is double parked`,
+      `Occupies ${where}${row.assigned && !row.spots.includes(row.assigned) ? ` (assigned ${row.assigned})` : ""} — both bays stay blocked`,
+      row.spots?.length ? { kind: "spot", name: row.spots[0] } : null);
+  }
+
   // One row per car buries everything else the moment a queue builds up, so
   // past a handful they collapse into a single row that links to the full list.
   const neglected = snapshot.neglected_vehicles || [];

@@ -168,6 +168,42 @@ CREATE TABLE IF NOT EXISTS ghost_car_events (
     resolved_at     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_ghost_car_resolved ON ghost_car_events(resolved);
+
+-- Level 3 --------------------------------------------------------------- --
+
+-- One row per operational incident an auditor should be able to follow end to
+-- end: double parking, a payment we asked for again, an exit re-routed around
+-- a broken gate. `detail` is the sentence shown in the dashboard; `payload`
+-- carries the machine-readable specifics (the two spots, the two gates...).
+CREATE TABLE IF NOT EXISTS incidents (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind        TEXT NOT NULL,
+    plate       TEXT,
+    detail      TEXT NOT NULL,
+    payload     TEXT,
+    occurred_at TEXT NOT NULL,
+    resolved_at TEXT,
+    resolved_by TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_incidents_kind ON incidents(kind);
+CREATE INDEX IF NOT EXISTS idx_incidents_open ON incidents(resolved_at);
+
+-- Rejected, duplicated and unhandled requests from the parking network. The
+-- same EventId arriving ten times is one row with occurrences = 10, not ten
+-- rows: a redelivery storm must not be able to push the rest out of view.
+CREATE TABLE IF NOT EXISTS security_events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind        TEXT NOT NULL,
+    event_id    TEXT,
+    event_class TEXT,
+    detail      TEXT,
+    payload     TEXT,
+    occurrences INTEGER NOT NULL DEFAULT 1,
+    first_seen  TEXT NOT NULL,
+    last_seen   TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_security_identity ON security_events(kind, IFNULL(event_id, ''));
+CREATE INDEX IF NOT EXISTS idx_security_seen ON security_events(last_seen);
 """
 
 with _lock:
@@ -186,6 +222,10 @@ with _lock:
         CREATE TABLE IF NOT EXISTS neglected_vehicles (
             session_id TEXT PRIMARY KEY, plate TEXT, gate TEXT, reason TEXT, occurred_at TEXT);
     """)
+    # Stamp the run window before anything can be written, so rows recorded by
+    # this process are never older than the window that has to show them.
+    _conn.execute("INSERT OR IGNORE INTO meta (key, value) VALUES ('run_started_at', ?)",
+                  (datetime.now(timezone.utc).isoformat(),))
     _conn.commit()
 
 
@@ -401,6 +441,7 @@ RUN_START_KEY = "run_started_at"
 RUN_SCOPED_TABLES = (
     "events", "sessions", "active_sessions", "payments", "penalties",
     "neglected_vehicles", "sequence_gaps", "ghost_car_events", "unsigned_webhook_logs",
+    "incidents", "security_events",
 )
 
 
@@ -424,6 +465,75 @@ def start_new_run(started_at: Optional[str] = None) -> dict[str, int]:
             removed[table] = _conn.execute(f"DELETE FROM {table}").rowcount
     set_meta(RUN_START_KEY, started_at or _utcnow())
     return removed
+
+
+# --------------------------------------------------------------------------- #
+# Incidents and security events (Level 3)
+# --------------------------------------------------------------------------- #
+def record_incident(kind: str, plate: Optional[str], detail: str,
+                    payload: Optional[dict[str, Any]] = None, resolved: bool = False) -> int:
+    """Record an incident. ``resolved`` marks one that needed no follow-up -
+    an automatic re-route is a thing the auditor reads, not a thing to fix."""
+    now = _utcnow()
+    with _lock, _conn:
+        cursor = _conn.execute(
+            """INSERT INTO incidents (kind, plate, detail, payload, occurred_at, resolved_at, resolved_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (kind, plate, detail, json.dumps(payload, separators=(",", ":")) if payload else None,
+             now, now if resolved else None, "system" if resolved else None))
+    return int(cursor.lastrowid or 0)
+
+
+def resolve_incident(incident_id: int, resolved_by: str = "system") -> bool:
+    with _lock, _conn:
+        changed = _conn.execute(
+            "UPDATE incidents SET resolved_at = ?, resolved_by = ? WHERE id = ? AND resolved_at IS NULL",
+            (_utcnow(), resolved_by, incident_id)).rowcount
+    return bool(changed)
+
+
+def resolve_incidents(kind: str, plate: str, resolved_by: str = "system") -> int:
+    """Close every open incident of ``kind`` for ``plate`` - the situation is over."""
+    with _lock, _conn:
+        return _conn.execute(
+            "UPDATE incidents SET resolved_at = ?, resolved_by = ? "
+            "WHERE kind = ? AND plate = ? AND resolved_at IS NULL",
+            (_utcnow(), resolved_by, kind, plate)).rowcount
+
+
+def open_incident_id(kind: str, plate: str) -> Optional[int]:
+    rows = query("SELECT id FROM incidents WHERE kind = ? AND plate = ? AND resolved_at IS NULL "
+                 "ORDER BY id DESC LIMIT 1", (kind, plate))
+    return int(rows[0]["id"]) if rows else None
+
+
+def record_security_event(kind: str, *, event_id: Optional[str] = None,
+                          event_class: Optional[str] = None, detail: str = "",
+                          payload: Optional[dict[str, Any]] = None) -> None:
+    """Log a rejected, duplicated or unhandled request.
+
+    Repeats of the same (kind, EventId) bump ``occurrences`` instead of adding
+    a row, so the count itself becomes the evidence of a redelivery storm."""
+    now = _utcnow()
+    with _lock, _conn:
+        _conn.execute(
+            """INSERT INTO security_events (kind, event_id, event_class, detail, payload,
+                                            occurrences, first_seen, last_seen)
+               VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+               ON CONFLICT(kind, IFNULL(event_id, '')) DO UPDATE SET
+                   occurrences = occurrences + 1,
+                   last_seen   = excluded.last_seen,
+                   detail      = excluded.detail""",
+            (kind, event_id, event_class, detail,
+             json.dumps(payload, separators=(",", ":"))[:4000] if payload else None, now, now))
+
+
+def security_totals() -> list[dict[str, Any]]:
+    run = run_started_at()
+    return query("""SELECT kind, COUNT(*) AS rows, SUM(occurrences) AS occurrences,
+                           MAX(last_seen) AS last_seen
+                    FROM security_events WHERE last_seen >= ?
+                    GROUP BY kind ORDER BY occurrences DESC""", (run,))
 
 
 def query(sql: str, params: tuple = ()) -> list[dict[str, Any]]:

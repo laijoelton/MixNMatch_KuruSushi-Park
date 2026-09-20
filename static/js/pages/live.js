@@ -14,6 +14,8 @@ import { createVehicles } from "../components/vehicles.js";
 import { createZones } from "../components/zones.js";
 
 const STATS_INTERVAL_MS = 5000;
+// Wear is no longer in the live frame (it was half of it and it barely moves).
+const WEAR_INTERVAL_MS = 30000;
 
 const me = await initShell({ usesLiveSocket: true });
 const isAdmin = me.capabilities.includes("admin:users");
@@ -80,6 +82,17 @@ async function loadStats() {
   }
 }
 
+async function loadWear() {
+  if (!me.capabilities.includes("maint:view")) return;
+  try {
+    const data = await api("/api/wear", { quiet: true });
+    renderWear(data.items || []);
+    renderComponentSummary(data.summary || []);
+  } catch {
+    /* keep the last table */
+  }
+}
+
 subscribe(async (snap) => {
   if (snap.role && snap.role !== me.role) { location.reload(); return; }
   await loadGeometry(snap);
@@ -89,7 +102,7 @@ subscribe(async (snap) => {
   alerts.update(deriveAlerts(snap, stats, { isAdmin }));
   vehicles.update(snap.sessions || []);
   feed.update(snap.activity || []);
-  renderWear(snap.wear || []);
+
   updateFullBanner(snap);
   if (drawerTarget && isDrawerOpen()) showDetails(drawerTarget.kind, drawerTarget.name, { refresh: true });
 });
@@ -113,6 +126,8 @@ function updateFullBanner(snap) {
 
 await loadStats();
 setInterval(loadStats, STATS_INTERVAL_MS);
+await loadWear();
+setInterval(loadWear, WEAR_INTERVAL_MS);
 connect();
 
 // ------------------------------------------------------------------ details drawer
@@ -175,6 +190,23 @@ function spotView(snap, name) {
   };
 }
 
+// "How much of the site is working" - the question the per-item table below
+// stops answering once there are 250 bays and 19 gates.
+function renderComponentSummary(rows) {
+  const host = document.getElementById("component-summary");
+  if (!host) return;
+  host.replaceChildren(...rows.map((row) => {
+    const faults = row.broken + row.under_maintenance + row.repair_pending;
+    return h("div", { class: `summary-card${faults ? " has-faults" : ""}` },
+      h("div", { class: "summary-title", text: row.family }),
+      h("div", { class: "summary-figure num" }, h("b", { text: String(row.available) }),
+        h("span", { class: "muted", text: ` / ${row.total} available` })),
+      h("div", { class: "summary-detail muted", text: faults
+        ? `${row.broken} broken · ${row.under_maintenance} under repair · ${row.repair_pending} queued`
+        : "All available" }));
+  }));
+}
+
 function renderWear(rows) {
   const host = document.getElementById("wear-rows");
   const sorted = [...rows].sort((a, b) => Number(b.broken) - Number(a.broken) || b.wear_percent - a.wear_percent || a.name.localeCompare(b.name));
@@ -209,10 +241,23 @@ function gateView(snap, name) {
     disabled: gate.under_maintenance || gate.repair_pending,
     onclick: () => runAction(repairBtn, () => api(`/api/manual/repair/${encodeURIComponent(name)}`, { method: "POST" }), `Repair queued for ${name}`) });
 
+  // Cars held here for paying the wrong amount. Re-invoicing is a staff call,
+  // not an automatic one: the simulator fines "Car has already paid" at RM50.
+  const unpaid = waiting.filter((p) => {
+    const session = (snap.sessions || []).find((x) => x.plate === p);
+    return session && session.charged && !session.paid;
+  });
+  const payBtns = unpaid.map((p) => {
+    const btn = h("button", { class: "btn ghost", type: "button", text: `Ask ${p} to pay again`,
+      title: "Re-invoices the car. Fined RM50 if the simulator considers it already paid.",
+      onclick: () => runAction(btn, () => api(`/api/sessions/${encodeURIComponent(p)}/request-payment`, { method: "POST" }), `Payment re-requested from ${p}`) });
+    return btn;
+  });
+
   return {
     kicker: "Barrier gate",
     title: name,
-    signature: JSON.stringify([gate.state, gate.broken, gate.under_maintenance, gate.repair_pending, gate.hold_reason]),
+    signature: JSON.stringify([gate.state, gate.broken, gate.under_maintenance, gate.repair_pending, gate.hold_reason, unpaid]),
     body: detailList([
       ["Position", h("span", { class: `tag ${state === "open" ? "free" : state === "fault" ? "fault" : state === "moving" ? "reserved" : ""}`, text: gate.state })],
       ["Condition", gate.broken ? "Broken" : gate.under_maintenance ? "Under repair" : gate.repair_pending ? "Repair queued" : "Good"],
@@ -220,7 +265,10 @@ function gateView(snap, name) {
       ["Zone", gate.zone || "Perimeter"],
       ["Service state", gate.hold_reason || GATE_STATE_LABEL[state]],
     ]),
-    actions: [...(canGate ? [openBtn, closeBtn, autoBtn] : []), ...(canRepair ? [repairBtn] : []), reasonLine(reason)],
+    actions: [...(canGate ? [openBtn, closeBtn, autoBtn, ...payBtns] : []), ...(canRepair ? [repairBtn] : []),
+              reasonLine(reason), reasonLine(payBtns.length
+                ? "Re-invoicing is fined RM50 if the car already paid — check the amount first."
+                : null)],
   };
 }
 

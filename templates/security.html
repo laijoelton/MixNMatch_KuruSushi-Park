@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Security{% endblock %}
+{% block heading %}Security &amp; incidents{% endblock %}
+{% block crumb %}Requests refused at the door, and incidents raised on site, for the current run{% endblock %}
+{% block content %}
+<section class="panel" aria-labelledby="sec-h">
+  <div class="panel-head"><h2 id="sec-h">Rejected and repeated requests</h2><span class="count" id="sec-count"></span></div>
+  <div class="summary-grid" id="sec-summary"></div>
+  <div class="filters" id="sec-kinds" aria-label="Request category"></div>
+  <div class="table-wrap">
+    <table class="table">
+      <thead><tr><th>Kind</th><th>Event</th><th>Detail</th><th class="num">Times</th><th>First seen</th><th>Last seen</th></tr></thead>
+      <tbody id="sec-rows"></tbody>
+    </table>
+  </div>
+  <div class="pager"><span id="sec-page"></span><button class="btn" id="sec-prev">Previous</button><button class="btn" id="sec-next">Next</button></div>
+</section>
+
+<section class="panel" aria-labelledby="inc-h">
+  <div class="panel-head"><h2 id="inc-h">Incidents</h2><span class="count" id="inc-count"></span></div>
+  <div class="filters" id="inc-kinds" aria-label="Incident category"></div>
+  <div class="table-wrap">
+    <table class="table">
+      <thead><tr><th>Time</th><th>Kind</th><th>Vehicle</th><th>What happened</th><th>Status</th></tr></thead>
+      <tbody id="inc-rows"></tbody>
+    </table>
+  </div>
+  <div class="pager"><span id="inc-page"></span><button class="btn" id="inc-prev">Previous</button><button class="btn" id="inc-next">Next</button></div>
+</section>
+{% endblock %}
+{% block scripts %}<script type="module" src="/static/js/pages/security.js?v={{ asset_version }}"></script>{% endblock %}

@@ -1339,6 +1339,81 @@ neglected cars seeded inside the window and one from the day before it showed
 
 ---
 
+### 4.38 Level 3: double parking, re-invoicing, exit failover, security log (20 September 2026)
+
+The Level 3 brief asks for airport scale: 250 bays, 7 zones, 8 entrances, 10
+exits, 19 addressable gates. Five gaps were closed against it in one pass.
+
+**1. Double parking was not just missing - it was being hidden.**
+`mark_parked` freed the car's previous bay whenever it parked somewhere else.
+That is right for a bay the car only had *reserved* and never used, and wrong
+for one it is physically sitting in: the bay went back into the free pool with
+a car still in it, and the next arrival was dispatched into it. In the archived
+run before this change, **205 of 700 penalties (RM10,250 of RM15,350, 67% of
+all fines) were "attempted to park in an occupied spot"** - the shape this bug
+produces.
+`mark_parked` now separates the two cases by the bay's status and returns the
+other bay; `_report_double_park` opens a `double_park` incident, the bay stays
+OCCUPIED (so dispatch cannot hand it out), and `Park/CarOut` closes the
+incident. A bay reporting more than one car at a sync is the same fault seen
+from the other side and opens a `crowded_bay` incident - the only half a
+`list-*` sync can see, because the live `detectedCars` count carries no plates.
+`state.double_parked()` derives the dashboard view from live occupancy rather
+than keeping a second set of books.
+
+**2. "Ask for payment again" is a staff action, because the simulator fines the
+automatic version.** Measured on the live binary: re-invoicing a car it
+considers paid is `Car has already paid for parking.` at **RM50 a time**, and a
+car that paid the *wrong* amount still counts as paid. So `PAYMENT_RETRY_MAX`
+defaults to **0**: a wrong amount holds the car, opens a `payment_unresolved`
+incident and shows an "Ask <plate> to pay again" button on that gate's drawer
+(`POST /api/sessions/{plate}/request-payment`, `ops:control_gates`, audited).
+The automatic path is implemented and tested behind that setting for a build
+that is confirmed not to fine it.
+
+**3. Exit failover.** `_send_paid_release` used to return when the exit barrier
+was broken or under repair, leaving a paid car waiting for the repair. With ten
+exits and seven LeaveParking targets that is a choice, not a constraint:
+`_alternative_exit` picks a way out whose barrier is usable and the car is sent
+there, with an `exit_failover` incident naming both gates and the reason. **A
+live Level 2 run re-routed 23 paid cars around gate6 and gate2 while they were
+broken.** When no exit is usable the car still waits - that is the honest answer.
+
+**4. Security page.** The webhook path already refused invalid, unsigned and
+duplicated requests; now each refusal is evidence. `security_events` holds one
+row per (kind, EventId) with an `occurrences` count, so a redelivery storm is
+one counted row instead of thousands: `invalid_json`, `invalid_signature`,
+`duplicate_event`, `unknown_event_class`, `handler_failure`. `/security` shows
+the counts, the rows and the run's sequence gaps next to the incident list.
+**A live Level 2 run captured all 3 of the level's fake payments as
+`invalid_signature`.**
+
+**5. The live frame was half wear data.** The one-second snapshot was 118 KB on
+Level 3, of which `wear` was 61 KB (52%) - a table that barely changes, pushed
+to every dashboard every second. It moved to `GET /api/wear` (pulled on load
+and every 30 s) which also carries the new `component_summary()`: available /
+broken / under repair per family, the summary view Level 3 asks for.
+
+**Incidents and audit.** Everything above writes to one `incidents` table
+(kind, plate, detail, payload, opened/resolved), so double parking, a payment
+asked for again and a re-routed exit read as one trail on `/security` rather
+than three log formats. Both new tables are run-scoped (4.37).
+
+**Verification:** `tests/test_level3.py` (12 tests) plus a live Level 2 and
+Level 3 run. Live: a forced double park held both bays and opened the incident,
+which closed on `CarOut`; 23 exit failovers; 3 tampered payments logged; the
+Level 3 frame measured at 118 KB before and the wear payload at 61 KB of it.
+Full suite: **272 passed**.
+
+**Still open:** EV cars are not preferred into Electric bays (21 charging bays
+can sit idle while an EV takes an `Any` bay), `/healthz` `free_spots` counts
+only `Any` bays (218 of 250 on Level 3), `ZoneType` (`Closed` = indoor,
+`Open` = outdoor) is drawn but not used by the CO and fan logic, and `lvl3.json`
+declares **20 gates but only 19 distinct names** - `gate7` appears twice, so one
+physical barrier may not be individually addressable.
+
+---
+
 ## 5. Edge cases and how they are handled
 
 | Edge case | Handling |

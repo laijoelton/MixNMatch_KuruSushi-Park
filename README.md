@@ -23,6 +23,7 @@ first start (change them with the env vars below, or from the Admin page):
 | `/history` | All staff | Completed stays searchable by plate (with or without the space), bay, payment status and date; paginated in SQL; each row opens that car's raw event timeline. |
 | `/payments` | Auditor, Admin | Revenue, net after fines and repair costs, every payment with a Verified / Suspect verdict and why, fines by reason. |
 | `/admin` | Admin | Accounts (last admin and self-deletion are refused), audit trail of every change made through the dashboard, manual resync and simulated arrival behind confirmations. |
+| `/security` | Admin, Auditor | **Security & incidents (Level 3).** Every request refused at the door — tampered or unsigned, duplicated (counted per EventId, not one row per delivery), malformed, unknown type, handler failure — beside the run's sequence gaps; and the incident trail: double parking, payments asked for again, exits re-routed around a broken gate. |
 | `/gate` | Public kiosk | Driver check-in: vehicle type, only bays that suit it are selectable. |
 | `/login` | Public | Sign-in. |
 
@@ -33,6 +34,17 @@ control gates; technicians read operations and component health; admins control
 all features. Cookie sessions use PBKDF2-SHA256 passwords and SQLite-backed
 `SessionStore` lookups, so role changes apply on the next HTTP request or WebSocket
 frame. Financial fields are omitted from operator/technician payloads.
+
+**Double parking** (Level 3) is detected rather than hidden: a car reported in a
+second bay keeps the first one — freeing it hands a bay with a car still in it
+to the next arrival, which the simulator fines. Both bays stay blocked, the
+alert names both, and it clears when the car leaves one of them.
+
+**A wrong payment is held, not re-invoiced automatically.** The simulator fines
+`Car has already paid for parking.` (RM50) for invoicing a car it considers
+paid, and a wrong amount still counts as paid — so staff press "Ask <plate> to
+pay again" on that gate, and every attempt is audited. Set `PAYMENT_RETRY_MAX`
+above 0 to let the dispatcher do it by itself.
 
 `/tariffs` edits effective billing settings without changing `.env`. `/logs` offers
 capability-filtered, paginated operations, maintenance, financial and audit tabs.

@@ -103,6 +103,8 @@ class Settings:
     # gate is left to the operator. Exit gates close this long after the car
     # leaves the exit sensor, since no sensor reports it clearing the gate.
     main_gate: str
+    payment_retry_max: int
+    payment_retry_delay_s: float
     gate_close_delay_s: float
     # Send a car to its zone's entry sensor first and open that zone's gate
     # only when it is waiting there, instead of opening it at ENTRY1.
@@ -253,6 +255,14 @@ class Settings:
             gate_close_delay_s=_env_float("GATE_CLOSE_DELAY_S", 3.0),
             zone_gate_at_sensor=_env_bool("ZONE_GATE_AT_SENSOR", False),
             entry_gate_close_delay_s=_env_float("ENTRY_GATE_CLOSE_DELAY_S", 1.5),
+            # 0 = never re-invoice automatically. Measured on the live binary:
+            # charging a car that the simulator considers paid is
+            # "Car has already paid for parking." at RM50 a time, and a wrong
+            # amount still counts as paid. Staff re-request it per car instead
+            # (POST /api/sessions/{plate}/request-payment). Set >0 only if a
+            # build is confirmed not to fine it.
+            payment_retry_max=int(_env_float("PAYMENT_RETRY_MAX", 0)),
+            payment_retry_delay_s=_env_float("PAYMENT_RETRY_DELAY_S", 2.0),
             simulator_log=os.environ.get("SIMULATOR_LOG", "data/simulator.log").strip(),
 
             broadcast_interval_s=_env_float("BROADCAST_INTERVAL_S", 1.0),

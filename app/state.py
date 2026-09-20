@@ -170,6 +170,9 @@ class VehicleSession:
     exit_confirmed: bool = False
     released: bool = False
     payment_suspect: bool = False
+    # How many times we have asked this car to pay again after a wrong amount
+    # (Level 3: "be careful about suspicious payments and ask for payment again")
+    payment_retries: int = 0
 
     # What the driver booked. The simulator bills this, not the wall-clock
     # time we observe -- see compute_charge().
@@ -252,6 +255,7 @@ class ParkingState:
         self.stuck_repairs: set[str] = set()
         self.penalty_count: int = 0
         self.total_fines: float = 0.0
+        self.crowded_spots: set[str] = set()   # bays holding more than one car at the last sync
         self.penalty_log: deque = deque(maxlen=200)
         self.activity_log: deque = deque(maxlen=200)
         self.started_at: float = time.time()
@@ -272,6 +276,7 @@ class ParkingState:
         a spot the dispatcher did not reserve itself.
         """
         with self._lock:
+            self.crowded_spots = set()
             for item in raw:
                 # The live simulator reports this as either a plate-name list
                 # or a bare occupancy count depending on build - handle both.
@@ -279,12 +284,20 @@ class ParkingState:
                 if isinstance(detected, list):
                     occupied = bool(detected)
                     plate = _extract_plate(detected[0]) if detected else None
+                    count = len(detected)
                 elif isinstance(detected, (int, float)):
                     occupied = detected > 0
                     plate = None
+                    count = int(detected)
                 else:
                     occupied = False
                     plate = None
+                    count = 0
+                # Two cars in one bay is the other half of double parking, and
+                # the only half a list-* sync can see (the int shape carries no
+                # plates). The caller raises the incident.
+                if count > 1 and item.get("purpose", "Park") == "Park":
+                    self.crowded_spots.add(item["name"])
 
                 broken = bool(item.get("broken", False))
                 under_maintenance = bool(item.get("isUnderMaintenance", False))
@@ -629,6 +642,34 @@ class ParkingState:
                 light.turned_on_at = None
             return light.cycle_count, light.runtime_seconds
 
+    def component_summary(self) -> list[dict[str, Any]]:
+        """Available / broken / under repair per component family (Level 3).
+
+        With 250 bays and 19 gates the per-item table stops being readable, and
+        "how much of the site is actually working" is the question an operator
+        asks first."""
+        with self._lock:
+            families = [
+                ("Bays", [s for s in self.spots.values() if s.purpose == "Park"]),
+                ("Gates", list(self.barriers.values())),
+                ("Fans", list(self.fans.values())),
+                ("Lights", list(self.lights.values())),
+            ]
+            out = []
+            for label, items in families:
+                broken = [i for i in items if i.broken]
+                maintenance = [i for i in items if not i.broken and i.under_maintenance]
+                pending = [i for i in items
+                           if not i.broken and not i.under_maintenance and i.name in self.pending_repairs]
+                out.append({
+                    "family": label, "total": len(items),
+                    "broken": len(broken), "under_maintenance": len(maintenance),
+                    "repair_pending": len(pending),
+                    "available": len(items) - len(broken) - len(maintenance) - len(pending),
+                    "broken_names": sorted(i.name for i in broken)[:10],
+                })
+            return out
+
     def wear_snapshot(self) -> list[dict[str, Any]]:
         """Live wear counters for every tracked component, for the wear-threshold sweep."""
         with self._lock:
@@ -711,17 +752,32 @@ class ParkingState:
                 self.active_dispatches[plate] = spot_name
                 session.zone = self.spots[spot_name].zone_parent
 
-    def mark_parked(self, plate: str, spot_name: str) -> None:
+    def mark_parked(self, plate: str, spot_name: str) -> Optional[str]:
+        """Record the car as parked. Returns the other bay it still occupies.
+
+        The car ending up somewhere other than the bay we reserved has two very
+        different causes, and telling them apart is the whole of double-park
+        detection:
+
+        * the old bay was only RESERVED - the car never went there, so the
+          reservation has to be freed or the bay leaks and the lot slowly
+          appears full;
+        * the old bay was OCCUPIED - the car physically parked there and is now
+          also detected here. Freeing it would hand a bay that still has a car
+          in it to the next arrival, which is what the simulator fines as
+          "attempted to park in an occupied spot". The bay stays occupied and
+          the caller raises a double-parking incident."""
         with self._lock:
             session = self.sessions.get(plate)
+            double_parked_at = None
 
-            # If the car ended up somewhere other than the spot we reserved,
-            # free the reservation -- otherwise that spot leaks and the lot
-            # slowly appears full.
             if session is not None and session.assigned_spot and session.assigned_spot != spot_name:
                 stale = self.spots.get(session.assigned_spot)
                 if stale is not None and stale.occupant_plate == plate:
-                    self.mark_spot_vacant(session.assigned_spot)
+                    if stale.status == SpotStatus.OCCUPIED:
+                        double_parked_at = stale.name
+                    else:
+                        self.mark_spot_vacant(session.assigned_spot)
 
             self.mark_spot_occupied(spot_name, plate)
             if session is not None:
@@ -734,6 +790,22 @@ class ParkingState:
                     self.spots[spot_name].cycle_count += 1
                     session.parked_at = time.monotonic()
                     session.parked_wall = _utcnow()
+            return double_parked_at
+
+    def double_parked(self) -> list[dict[str, Any]]:
+        """Plates detected in more than one bay at once, derived not bookkept.
+
+        Recomputed from live occupancy on every snapshot: a car that leaves one
+        of the two bays disappears from here by itself, with no state to get
+        out of step."""
+        with self._lock:
+            bays: dict[str, list[str]] = {}
+            for spot in self.spots.values():
+                if spot.purpose == "Park" and spot.status == SpotStatus.OCCUPIED and spot.occupant_plate:
+                    bays.setdefault(spot.occupant_plate, []).append(spot.name)
+        return [{"plate": plate, "spots": sorted(names),
+                 "assigned": (self.sessions[plate].assigned_spot if plate in self.sessions else None)}
+                for plate, names in sorted(bays.items()) if len(names) > 1]
 
     def mark_left_spot(self, plate: str) -> None:
         """Stop the billing clock when the car vacates its spot."""
@@ -899,7 +971,6 @@ class ParkingState:
                      "repair_pending": l.name in self.pending_repairs}
                     for l in self.lights.values()
                 ],
-                "wear": self.wear_snapshot(),
                 "zones": [
                     {"name": z.name, "co_level": z.gas_co_level, "risk": z.risk,
                      "danger_level": z.danger_level}
@@ -918,6 +989,7 @@ class ParkingState:
                              "recent": list(self.penalty_log)[:20]},
                 "activity": list(self.activity_log)[:30],
                 "neglected_vehicles": list(self.neglected_vehicles),
+                "double_parked": self.double_parked(),
                 "zone_maintenance": {zone: {"entry": info["entry"], "exit": info["exit"],
                                             "trigger": info["trigger"], "todo": sorted(info["todo"]),
                                             "reopened": bool(info.get("reopened"))}

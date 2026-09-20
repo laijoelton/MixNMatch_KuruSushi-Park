@@ -715,6 +715,19 @@ async def sync_from_simulator() -> dict[str, int]:
     global _live_bays_synced
     if any(s.get("purpose") == "Park" for s in spots):
         _live_bays_synced = True
+    # A bay reporting two cars is double parking the other way round, and the
+    # only kind a list-* sync can see: the live `detectedCars` count carries no
+    # plates, so the webhook path above cannot notice it.
+    open_crowded = {json.loads(row["payload"] or "{}").get("spot"): row["id"]
+                    for row in db.query("SELECT id, payload FROM incidents "
+                                        "WHERE kind = 'crowded_bay' AND resolved_at IS NULL")}
+    for name in sorted(state.crowded_spots - set(open_crowded)):
+        db.record_incident("crowded_bay", None, f"Bay {name} has more than one car in it",
+                           {"spot": name})
+        state.log_activity(f"DOUBLE PARKING: bay {name} holds more than one car", level="warn")
+    for name, incident_id in open_crowded.items():
+        if name not in state.crowded_spots:
+            db.resolve_incident(incident_id)
     counts = {"spots": len(state.spots), "barriers": len(state.barriers),
               "zones": len(state.zones), "fans": len(state.fans)}
     state.log_activity(f"Manual sync: {counts['spots']} spots, {counts['barriers']} barriers, "
@@ -1129,6 +1142,16 @@ async def get_gates() -> dict[str, Any]:
     return {"gates": state.entry_gates()}
 
 
+@app.get("/api/wear")
+async def wear(user: dict = Depends(auth.require_capability("maint:view"))) -> dict[str, Any]:
+    """Component wear, pulled on demand.
+
+    It used to ride in the one-second frame, where it was 61 KB of a 118 KB
+    snapshot that barely changes - more than half the bandwidth of every
+    dashboard for a table nobody watches tick by tick (Level 3 optimization)."""
+    return {"items": state.wear_snapshot(), "summary": state.component_summary()}
+
+
 @app.get("/api/broken")
 async def get_broken() -> dict[str, Any]:
     return {"components": state.broken_components(), "deferred_repairs": dict(state.deferred_repairs)}
@@ -1259,6 +1282,41 @@ async def manual_barrier_auto(name: str, user: dict = Depends(auth.require_capab
     await _ensure_barriers_open()
     await _schedule_gate_repairs()
     return {"ok": True, "name": name, "automatic": True}
+
+
+@app.post("/api/sessions/{plate}/request-payment")
+async def request_payment_again(plate: str,
+                                user: dict = Depends(auth.require_capability("ops:control_gates"))) -> dict[str, Any]:
+    """Ask a held car to pay again - a staff decision, deliberately.
+
+    The simulator fines "Car has already paid for parking." (RM50) for invoicing
+    a car it considers paid, and a car that underpaid still counts as paid. So
+    the system offers the re-request, shows what is owed, and lets a human take
+    that risk knowingly rather than burning 50 an attempt on its own."""
+    session = state.get_session(plate)
+    if session is None:
+        raise HTTPException(404, "unknown vehicle")
+    if session.paid:
+        raise HTTPException(409, "this vehicle has already paid in full")
+    if session.expected_amount is None:
+        raise HTTPException(409, "this vehicle has not been invoiced yet")
+    before = session.payment_retries
+    session.payment_retries += 1
+    _persist(plate)
+    db.record_incident("payment_retry", plate,
+                       f"Staff asked {plate} to pay again: {session.expected_amount:.2f} outstanding "
+                       f"(attempt {session.payment_retries})",
+                       {"expected": session.expected_amount, "attempt": session.payment_retries,
+                        "by": user["username"]})
+    sent = await act(f"staff re-request payment from {plate}",
+                     lambda: client.car_charge(plate, session.expected_parking or 0.0,
+                                               session.expected_charging or 0.0))
+    auth.record_audit(user["username"], "POST", f"/api/sessions/{plate}/request-payment", 200, plate,
+                      {"before": {"attempts": before}, "after": {"attempts": session.payment_retries}})
+    state.log_activity(f"{user['username']} asked {plate} to pay {session.expected_amount:.2f} again",
+                       level="warn", capability="logs:view_fin")
+    return {"ok": bool(sent), "plate": plate, "expected": session.expected_amount,
+            "attempt": session.payment_retries}
 
 
 @app.post("/api/manual/repair/{name}")
@@ -1603,13 +1661,17 @@ async def simulator_webhook(request: Request) -> JSONResponse:
     try:
         payload = await request.json()
     except (json.JSONDecodeError, UnicodeDecodeError):
+        db.record_security_event("invalid_json", detail="body was not valid JSON")
         raise HTTPException(400, "Webhook must contain valid JSON") from None
     if not isinstance(payload, dict):
+        db.record_security_event("invalid_json", detail="body was valid JSON but not an object")
         raise HTTPException(400, "Webhook must be an object")
     signature = payload.get("Signature")
     if not verify_signature(payload, signature):
         reason = "no recipe matched the provided signature" if signature else "signature missing"
         db.record_unsigned_webhook(payload.get("EventId"), reason, payload)
+        db.record_security_event("invalid_signature", event_id=payload.get("EventId"),
+                                 event_class=payload.get("EventClass"), detail=reason, payload=payload)
         log.warning("webhook rejected (enforce mode): %s (EventId=%s)", reason, payload.get("EventId"))
         raise HTTPException(status_code=401, detail="invalid webhook signature")
 
@@ -1622,6 +1684,11 @@ async def simulator_webhook(request: Request) -> JSONResponse:
     if not is_new:
         status = db.event_status(event_id) if event_id else None
         if not status or status["processed"] or event_id in _webhook_events_in_progress:
+            # Counted, not just refused: a redelivery storm is a network fault
+            # the operator has to be able to see (Level 3).
+            db.record_security_event("duplicate_event", event_id=event_id,
+                                     event_class=payload.get("EventClass"),
+                                     detail="EventId already accepted")
             return JSONResponse({"status": "duplicate", "event_id": event_id})
 
     if event_id:
@@ -1650,6 +1717,8 @@ async def simulator_webhook(request: Request) -> JSONResponse:
     try:
         if handler is None:
             log.info("unhandled EventClass=%s (EventId=%s)", event_class, event_id)
+            db.record_security_event("unknown_event_class", event_id=event_id,
+                                     event_class=event_class, detail="no handler for this EventClass")
             db.mark_processed(event_id, "unhandled event class")
             return JSONResponse({"status": "ignored", "event_class": event_class})
         try:
@@ -1661,6 +1730,8 @@ async def simulator_webhook(request: Request) -> JSONResponse:
                 except Exception:  # noqa: BLE001 - lighting must never fail a webhook
                     log.exception("light refresh failed")
         except Exception as exc:  # noqa: BLE001 - retain failed events for redelivery
+            db.record_security_event("handler_failure", event_id=event_id, event_class=event_class,
+                                     detail=f"{type(exc).__name__}: {exc}"[:300])
             log.exception("handler failed for EventClass=%s EventId=%s", event_class, event_id)
             db.mark_failed(event_id, str(exc))
             return JSONResponse({"status": "error", "event_class": event_class}, status_code=500)
@@ -1835,9 +1906,11 @@ async def _handle_car_spot_action(payload: dict[str, Any]) -> None:
                                 planned_minutes=_planned_of(payload))
             log.info("adopted untracked car %s parking at %s", plate, spot_name)
         state.set_planned_minutes(plate, _planned_of(payload))
-        state.mark_parked(plate, spot_name)
+        also_at = state.mark_parked(plate, spot_name)
         _persist(plate)
         state.log_activity(f"{plate} parked at {spot_name}")
+        if also_at:
+            _report_double_park(plate, also_at, spot_name)
         _holding_gate.pop(plate, None)   # backstop if the sensor exit was missed
         await _close_idle_gates()
         await _schedule_gate_repairs()   # a car inbound to a closed zone has arrived
@@ -1848,6 +1921,7 @@ async def _handle_car_spot_action(payload: dict[str, Any]) -> None:
         _persist(plate)
         state.mark_spot_vacant(spot_name)
         state.log_activity(f"{plate} vacated {spot_name}")
+        _clear_double_park(plate)
         ready = state.pop_ready_repair(spot_name)
         if ready:
             await _queue_repair(ready, spot_name)
@@ -1885,6 +1959,30 @@ async def _handle_car_spot_action(payload: dict[str, Any]) -> None:
         _spawn(_close_idle_gates_later())   # no sensor past the exit gate: give the car time to clear it
         await _schedule_gate_repairs()   # the zone this car left may now be empty
         return
+
+
+def _report_double_park(plate: str, first_spot: str, second_spot: str) -> None:
+    """One car detected in two bays (Level 3).
+
+    The second bay is not a mistake we can quietly correct: both are physically
+    blocked, so the dashboard has to show both and dispatch must keep treating
+    both as taken until the car leaves one."""
+    if db.open_incident_id("double_park", plate) is not None:
+        return
+    detail = f"{plate} occupies {first_spot} and {second_spot}"
+    db.record_incident("double_park", plate, detail,
+                       {"spots": sorted({first_spot, second_spot}), "latest": second_spot})
+    state.log_activity(f"DOUBLE PARKING: {detail} - both bays held until it moves", level="warn")
+    log.warning("double parking: %s", detail)
+
+
+def _clear_double_park(plate: str) -> None:
+    if not plate or db.open_incident_id("double_park", plate) is None:
+        return
+    if any(row["plate"] == plate for row in state.double_parked()):
+        return   # still in two bays
+    if db.resolve_incidents("double_park", plate):
+        state.log_activity(f"{plate} is no longer double parked")
 
 
 def _valid_exit(session) -> bool:
@@ -1964,6 +2062,50 @@ async def _charge_at_exit(plate: str, spot_name: str) -> None:
                      lambda: client.car_charge(plate, parking, charging))
     state.log_activity(f"Invoice {'sent' if sent else 'attempt failed; staff review required'} for {plate}: {session.expected_amount:.2f}",
                        capability="logs:view_fin")
+
+
+async def _ask_to_pay_again(session, paid_amount: float) -> None:
+    """Re-invoice a car that paid the wrong amount (Level 3).
+
+    The car is already held at its exit, so the barrier is not the question -
+    the money is. The invoice is re-sent up to ``PAYMENT_RETRY_MAX`` times; the
+    amount never changes, because a second invoice for a different figure is
+    how a car ends up fined for an escape it did not make. After the last try
+    the car stays held and it becomes a staff decision, which is the one thing
+    an automatic release must never be."""
+    if session is None or session.expected_amount is None or session.paid:
+        return
+    if session.payment_retries >= settings.payment_retry_max:
+        if db.open_incident_id("payment_unresolved", session.plate) is None:
+            tried = (f" after {session.payment_retries} re-request(s)" if session.payment_retries
+                     else "")
+            db.record_incident("payment_unresolved", session.plate,
+                               f"{session.plate} paid {paid_amount:.2f} of "
+                               f"{session.expected_amount:.2f}{tried} - held at the exit for staff",
+                               {"expected": session.expected_amount, "paid": paid_amount,
+                                "attempts": session.payment_retries})
+            state.log_activity(f"{session.plate} owes {session.expected_amount - paid_amount:.2f} "
+                               f"and is held at the exit - staff decide whether to invoice again",
+                               level="warn", capability="logs:view_fin")
+        return
+    session.payment_retries += 1
+    attempt = session.payment_retries
+    _persist(session.plate)
+    db.record_incident("payment_retry", session.plate,
+                       f"Asked {session.plate} to pay again: expected {session.expected_amount:.2f}, "
+                       f"received {paid_amount:.2f} (attempt {attempt})",
+                       {"expected": session.expected_amount, "paid": paid_amount, "attempt": attempt})
+    await asyncio.sleep(settings.payment_retry_delay_s / max(settings.game_speed, 0.1))
+    fresh = state.get_session(session.plate)
+    if fresh is None or fresh.session_id != session.session_id or fresh.paid:
+        return   # it settled while we waited
+    sent = await act(f"re-request payment from {session.plate} (attempt {attempt})",
+                     lambda: client.car_charge(session.plate, session.expected_parking or 0.0,
+                                               session.expected_charging or 0.0))
+    state.log_activity(
+        f"Payment re-requested from {session.plate} ({session.expected_amount:.2f}, attempt {attempt})"
+        if sent else f"Could not re-request payment from {session.plate}; held for staff",
+        level="warn", capability="logs:view_fin")
 
 
 async def _hold_exit(plate: str, sensor: str) -> None:
@@ -2268,6 +2410,9 @@ async def _handle_payment_made(payload: dict[str, Any]) -> None:
         state.log_activity(f"Vehicle {plate} held at exit for review", level="warn")
         log.warning("SUSPECT PAYMENT %s: reported %.2f, expected %s - holding at exit",
                     plate, amount, shown)
+        # Spawned, not awaited: the re-request waits out a settling delay and a
+        # webhook handler that sleeps is a webhook handler that blocks the queue.
+        _spawn(_ask_to_pay_again(session, amount))
         return
 
     if session.paid:
@@ -2285,6 +2430,11 @@ async def _handle_payment_made(payload: dict[str, Any]) -> None:
         _persist(plate)
         await _broadcast_ghost(session.ghost_id, plate, session.exit_gate)
         return
+    if session.payment_retries:
+        db.resolve_incidents("payment_retry", plate)
+        db.resolve_incidents("payment_unresolved", plate)
+        state.log_activity(f"{plate} paid the correct amount after {session.payment_retries} "
+                           f"re-request(s)", capability="logs:view_fin")
     state.log_activity(f"Payment accepted for {plate} ({amount:.2f}) - releasing", capability="logs:view_fin")
     _persist(plate)
     await _release_paid(session)
@@ -2307,6 +2457,45 @@ async def _release_paid(session) -> None:
         _releases_in_progress.discard(session.session_id)
 
 
+def _alternative_exit(exclude_gate: Optional[str]) -> Optional[str]:
+    """A way out that is not behind ``exclude_gate`` (Level 3 exit failover).
+
+    Level 3 has ten exits and seven LeaveParking targets; one broken barrier is
+    no reason for a paid car to wait for a repair. Returns the name of a
+    LeaveParking spot whose nearest barrier is usable, or None when the only
+    ways out are blocked - then holding is still the right answer."""
+    for spot in state.spots.values():
+        if spot.purpose != "LeaveParking":
+            continue
+        gate = _barrier_for_sensor(spot.name)
+        if gate and gate == exclude_gate:
+            continue
+        if _gate_usable(gate):
+            return spot.name
+    return None
+
+
+async def _reroute_to_other_exit(session, blocked_gate: str, reason: str) -> bool:
+    target = _alternative_exit(blocked_gate)
+    if target is None:
+        state.log_activity(f"{session.plate} is waiting at {blocked_gate} ({reason}) and no other "
+                           f"exit is usable", level="warn")
+        return False
+    if not await act(f"reroute {session.plate} around {blocked_gate} to {target}",
+                     lambda: client.car_goto(session.plate, target)):
+        return False
+    session.exit_gate = target
+    session.released = True
+    _persist(session.plate)
+    db.record_incident("exit_failover", session.plate,
+                       f"{session.plate} re-routed from {blocked_gate} to {target} ({reason})",
+                       {"from": blocked_gate, "to": target, "reason": reason}, resolved=True)
+    state.log_activity(f"{session.plate} re-routed around {blocked_gate} to {target}: {reason}",
+                       level="warn")
+    log.warning("exit failover: %s from %s to %s (%s)", session.plate, blocked_gate, target, reason)
+    return True
+
+
 async def _send_paid_release(session) -> None:
     plate = session.plate
     gate = _barrier_for_sensor(session.exit_gate or "")
@@ -2314,7 +2503,14 @@ async def _send_paid_release(session) -> None:
         barrier = state.barriers[gate]
         barrier.held_vehicles.discard(plate)
         db.set_meta(f"gate_holds:{gate}", json.dumps(sorted(barrier.held_vehicles)))
-        if barrier.operator_override or barrier.held_vehicles or barrier.broken or barrier.under_maintenance or gate in state.pending_repairs:
+        if barrier.operator_override or barrier.held_vehicles:
+            return
+        if barrier.broken or barrier.under_maintenance or gate in state.pending_repairs:
+            # The car has paid and this gate cannot open: send it to another
+            # way out rather than let it sit there until the repair finishes.
+            reason = ("gate broken" if barrier.broken else
+                      "gate under repair" if barrier.under_maintenance else "repair queued")
+            await _reroute_to_other_exit(session, gate, reason)
             return
         if barrier.state not in (BarrierPosition.OPEN, BarrierPosition.OPENING):
             if not await act(f"release paid vehicle at {gate}", lambda: client.barrier_open(gate)):
