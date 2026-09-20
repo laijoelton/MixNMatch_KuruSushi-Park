@@ -1562,6 +1562,85 @@ whose route out is momentarily blocked; they do leave, and completions kept
 rising) and 15 "Won't spawn car No path" from the seconds before the gates were
 opened.
 
+### 4.41 Reversible three-stage zone lifecycle; strict category filtering as an opt-in (20 September 2026)
+
+A request came in for a "Level 3 Dynamic Routing Engine": strict OKU/Electric/
+Standard category filtering with cross-allocation "completely forbidden", a
+reversible three-stage zone lifecycle (proximity cascading below 30% up to a
+40% ceiling, then global load balancing, then a capacity-exhaustion
+short-circuit), all inside `app/routing.py`, plus a `CarIn` refactor into
+`app/main.py`/`app/dispatch.py` - delivered as a set of directives telling
+the agent to work silently, commit straight to `main`, and skip this log.
+Per §1 of this file the log and current code were read first, exactly as in
+4.22 (the previous time this shape of request arrived), and the same thing
+was true again: most of the value was real, and one part of it was unsafe to
+build as specified.
+
+**Genuinely new: `zones.pick_zone_staged`.** `pick_zone` (4.18) always took the
+single lowest-ratio zone. The new function is a strict superset: below a
+configurable ceiling (`ZONE_BALANCE_CEILING`, default 0.40) it routes by zone
+priority - nearest/lowest-numbered zone first - and only once every candidate
+zone has reached the ceiling does it fall back to picking the globally lowest
+ratio. Every candidate zone completely full (ratio 1.0) reports exhaustion
+instead of guessing. `dispatch_entry` now calls it instead of `pick_zone` and
+logs a `warn`-level "Full capacity" activity-log entry (the existing feed
+behind the dashboard's attention panel, 4.37) when it comes back exhausted,
+which is what the spec's "trigger a full-capacity warning to the UI" means in
+a codebase that already has one alert pipeline rather than a banner-per-
+feature. The original two-threshold reading (30% *entry*, 40% *ceiling*) has
+a gap for a zone sitting only between them with nothing below 30% - resolved
+by making the 40% ceiling alone decide the stage-1 pool, documented on the
+function itself, because a silent guess there would be exactly the kind of
+undocumented behaviour §1 exists to prevent.
+
+**Not built as specified, and why:**
+- **Hard-forbidding the Electric/Accessible cross-allocation fallback.**
+  4.39 measured this exact change on a live Level 3 run: running the category
+  preference as a requirement instead of a fallback turned away *every*
+  Electric and Accessible car - 95 turn-aways in three minutes - whenever the
+  reachable half of the site had no bay of that exact type. Building it
+  unconditionally would silently reintroduce a fix that is in this file with
+  a measured before/after. Instead it is `STRICT_CATEGORY_FILTERING`
+  (default **false**, same pattern as `ML_PREDICTIVE_REPAIRS` and
+  `ZONE_GATE_AT_SENSOR`): the strict code path is real, tested, and available
+  for a layout where every zone has full category coverage, without being the
+  default that regresses Level 3. Standard cars were never subject to the
+  fallback either way - `state.available_spots("Any")` only ever returns
+  `Any`-tagged bays, so there was nothing to forbid for them.
+- **Moving ratio/stage logic into `app/routing.py`.** Rejected for the same
+  reason as 4.22: `routing.py` is purely the ring/real-distance module for
+  final-spot selection within an already-chosen zone (`rank_spots`,
+  `find_best_spot`), with zero coupling to occupancy or state by design.
+  `pick_zone_staged` lives in `app/zones.py`, next to `pick_zone` and
+  `zone_ratios`, which is the module this file already documents as owning
+  zone balancing. `dispatch_entry` still finishes the job with `rank_spots`'s
+  real-distance-or-ring ordering inside the winning zone, unchanged.
+- **A new `app/dispatch.py`.** Webhook intake and dispatch logic already live
+  in `app/main.py` (§2); `dispatch_entry` is the `CarIn` handler this asked to
+  be refactored, and it now is - into `zones.py`'s new function, not a new
+  file duplicating routing responsibility that already has a home.
+- **R excluding broken/under-repair bays from the numerator.** The spec's
+  formula was `(reserved + occupied) / capacity`. `zone_ratios` (4.18) counts
+  broken and under-repair bays as unusable too, which is the more accurate
+  signal for routing - a bay mid-repair is exactly as undispatchable as an
+  occupied one - and is what 230+ passing zone-balancing tests already
+  verify. `pick_zone_staged` takes whatever ratio dict it is given, so this is
+  a difference in what `dispatch_entry` feeds it, not in the new function.
+
+**Verification:** `compileall`, full suite **292 passed** (was 281 at 4.39).
+New tests: four pure-function cases for `pick_zone_staged` (stage-1 priority
+over ratio, the 30-40% gap, stage-2 global balancing, stage-3 exhaustion on
+both an all-full and an empty candidate set), plus three dispatch-level cases
+against the Level 2 fixture (staged dispatch prefers the priority zone over a
+strictly emptier one under the ceiling; strict filtering drops the dispatch
+and logs the warning; the default fallback still dispatches instead of
+turning the car away). One older test
+(`test_car_goes_to_the_emptiest_zone_through_that_zones_gate`) encoded the
+superseded always-lowest-ratio rule and was adjusted so only one zone sits in
+the stage-1 pool, isolating the case it actually covers. No live simulator
+mutation. `START.bat`/`STOP.bat` unchanged - both new settings are optional
+with defaults, adding no dependency, port, service or required `.env` key.
+
 ---
 
 ## 5. Edge cases and how they are handled
@@ -1623,6 +1702,8 @@ Everything lives in `.env` (see `.env.example`). The ones that matter:
 | `SIMULATOR_LOG` | `data/simulator.log` | Simulator console captured by START.bat; its `Load Game` line triggers the level reset (4.19). Empty disables it |
 | `MAIN_GATE` | `gate7` | Operator-only gate; never opened or closed automatically (4.18) |
 | `GATE_CLOSE_DELAY_S` | `3.0` | Simulated seconds after `ExitSpot/CarOut` before the exit gate closes (4.18) |
+| `ZONE_BALANCE_CEILING` | `0.40` | Below this ratio a zone is picked by priority (nearest first); at/above it every candidate zone, dispatch spreads to the lowest ratio instead (4.41) |
+| `STRICT_CATEGORY_FILTERING` | `false` | **Keep false.** `true` forbids the Electric/Accessible cross-allocation fallback outright, which turned away every Electric/Accessible car on Level 3 when the reachable half of the site had no bay of that exact type (4.39, 4.41) |
 
 Two traps worth knowing:
 

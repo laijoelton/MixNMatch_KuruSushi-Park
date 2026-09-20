@@ -1061,13 +1061,16 @@ async def dispatch_entry(plate: str, gate_name: str, car_type: str = "Normal",
         candidates = connected
     if kind == "accessible":
         accessible = [n for n in candidates if state.spots[n].is_accessible]
-        candidates = accessible or candidates
+        # STRICT_CATEGORY_FILTERING forbids the cross-allocation fallback -
+        # an OKU car waits rather than take a standard bay. Off by default;
+        # see the setting's docstring for why (4.39, 4.41).
+        candidates = accessible if settings.strict_category_filtering else (accessible or candidates)
     if kind == "ev":
         # An EV in an ordinary bay cannot charge, and charging is billed at the
         # electric multiplier: give it a charging bay whenever one is free.
         electric = [n for n in candidates
                     if state.spots[n].parking_for_car_type == "Electric"]
-        candidates = electric or candidates
+        candidates = electric if settings.strict_category_filtering else (electric or candidates)
     # A zone closed for gate maintenance takes no new cars (4.26); the car
     # waits rather than being turned away if every suitable zone is closed.
     open_candidates = [n for n in candidates
@@ -1084,10 +1087,19 @@ async def dispatch_entry(plate: str, gate_name: str, car_type: str = "Normal",
         held = any(state.barriers[g].operator_override for g in zone_gate.values() if g in state.barriers)
         return {"plate": plate, "gate": gate_name, "target": None, "dispatched": False,
                 "reason": "Held closed by operator" if held else "Barrier unavailable"}
-    # Balance load: the zone with the lowest (occupied + reserved + broken +
-    # under repair) / bays ratio, then the nearest suitable bay inside it.
+    # Reversible three-stage lifecycle (4.41) over the reachable,
+    # category-compatible, gate-usable, non-maintenance candidates: cascade to
+    # the highest-priority zone under ZONE_BALANCE_CEILING, spread load once
+    # every zone has reached it, or report exhaustion once every one of them
+    # is completely full.
     ratios = zones.zone_ratios(state.spots.values(), state.pending_repairs)
-    zone = zones.pick_zone({state.spots[n].zone_parent for n in reachable}, ratios)
+    zone, stage = zones.pick_zone_staged(
+        {state.spots[n].zone_parent for n in reachable}, ratios,
+        balance_ceiling=settings.zone_balance_ceiling)
+    if zone is None and stage == "stage3":
+        state.log_activity(
+            f"Full capacity: no compatible bay reachable for {plate} "
+            f"({candidate_type}) - entry dispatch dropped", level="warn")
     in_zone = [n for n in reachable if state.spots[n].zone_parent == zone]
     # Real driving distance when we have the road graph; the name-ordered ring
     # in app/routing.py is only a fallback for a level we cannot parse.

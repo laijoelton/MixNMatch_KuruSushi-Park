@@ -169,6 +169,16 @@ class Settings:
     min_dwell_time_s: float
     orphan_timeout_s: float
     entry_max_attempts: int
+    # Zone lifecycle (4.41): cascade to the highest-priority zone under this
+    # ratio, spread load once every zone reaches it.
+    zone_balance_ceiling: float
+    # Forbid the cross-allocation fallback for Electric/Accessible cars.
+    # Keep false: measured on Level 3, every Electric/Accessible car was
+    # turned away this way when the reachable half of the site had no bay of
+    # its exact type at all (4.39). Standard cars never get an Electric or
+    # Accessible bay either way - `available_spots("Any")` only returns
+    # Any-tagged bays, so there is no fallback to forbid for them.
+    strict_category_filtering: bool
     dashboard_admin_password: str
     dashboard_operator_password: str
     dashboard_auditor_password: str
@@ -299,6 +309,8 @@ class Settings:
             min_dwell_time_s=_env_float("MIN_DWELL_TIME_S", 5.0),
             orphan_timeout_s=_env_float("ORPHAN_TIMEOUT_S", 300.0),
             entry_max_attempts=_env_int("ENTRY_MAX_ATTEMPTS", 12),
+            zone_balance_ceiling=_env_float("ZONE_BALANCE_CEILING", 0.40),
+            strict_category_filtering=_env_bool("STRICT_CATEGORY_FILTERING", False),
             dashboard_admin_password=os.environ.get("DASHBOARD_ADMIN_PASSWORD", "admin123"),
             dashboard_operator_password=os.environ.get("DASHBOARD_OPERATOR_PASSWORD", "operator123"),
             dashboard_auditor_password=os.environ.get("DASHBOARD_AUDITOR_PASSWORD", "auditor123"),

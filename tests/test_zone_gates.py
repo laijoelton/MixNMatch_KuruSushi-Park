@@ -45,6 +45,31 @@ def test_lowest_ratio_wins_and_ties_go_to_the_nearer_zone():
     assert zones.pick_zone(set(), ratios) is None
 
 
+def test_stage1_cascades_by_priority_under_the_ceiling():
+    ratios = {"ZONE1": 0.35, "ZONE2": 0.10, "ZONE3": 0.05}
+    # ZONE3 has the lowest ratio, but stage 1 ignores that below the ceiling
+    # and takes the highest-priority (lowest-numbered) zone instead.
+    assert zones.pick_zone_staged({"ZONE1", "ZONE2", "ZONE3"}, ratios) == ("ZONE1", "stage1")
+
+
+def test_stage1_covers_the_gap_between_the_two_original_thresholds():
+    # No zone is below 30%, but ZONE1 sits between 30% and the 40% ceiling.
+    # It is still routed by priority rather than left undefined.
+    ratios = {"ZONE1": 0.38, "ZONE2": 0.50}
+    assert zones.pick_zone_staged({"ZONE1", "ZONE2"}, ratios) == ("ZONE1", "stage1")
+
+
+def test_stage2_balances_globally_once_every_zone_is_at_the_ceiling():
+    ratios = {"ZONE1": 0.90, "ZONE2": 0.41, "ZONE3": 0.55}
+    # Priority order (ZONE1 first) is broken here: ZONE2 has the lowest ratio.
+    assert zones.pick_zone_staged({"ZONE1", "ZONE2", "ZONE3"}, ratios) == ("ZONE2", "stage2")
+
+
+def test_stage3_reports_exhaustion_without_guessing():
+    assert zones.pick_zone_staged({"ZONE1", "ZONE2"}, {"ZONE1": 1.0, "ZONE2": 1.0}) == (None, "stage3")
+    assert zones.pick_zone_staged(set(), {}) == (None, "stage3")
+
+
 def test_entry_gate_is_the_zone_gate_nearest_an_entry_sensor():
     barriers = [Barrier("gate3", zone_parent="ZONE2"), Barrier("gate4", zone_parent="ZONE2"),
                 Barrier("gate7", zone_parent="ZONE2")]
@@ -117,8 +142,12 @@ def _fill(zone, names, occupied=0):
 
 
 def test_car_goes_to_the_emptiest_zone_through_that_zones_gate(lvl2):
-    _fill("ZONE1", ["S1", "S3", "S4"], occupied=2)       # 2/3 full
-    _fill("ZONE2", ["bay36", "bay37", "bay39"], occupied=1)  # 1/3
+    # ZONE1 and ZONE2 are pinned at/above ZONE_BALANCE_CEILING (40%, default)
+    # so ZONE3 is the only zone in the stage-1 cascading pool: since 4.41,
+    # two zones both under the ceiling are ranked by priority, not by ratio -
+    # see test_staged_dispatch_prefers_priority_zone_under_the_ceiling for that.
+    _fill("ZONE1", ["S1", "S3", "S4"], occupied=3)       # full
+    _fill("ZONE2", ["bay36", "bay37", "bay39"], occupied=2)  # 2/3, at the ceiling
     _fill("ZONE3", ["P69", "P70", "P71"], occupied=0)    # empty
 
     async def scenario():
@@ -150,6 +179,36 @@ def test_every_zone_gate_held_keeps_the_car_waiting_not_turned_away(lvl2):
     result = asyncio.run(main.dispatch_entry("ZON 003", "ENTRY1", "Normal"))
     assert not result["dispatched"] and not result.get("turned_away")
     assert result["reason"] == "Held closed by operator"
+
+
+def test_staged_dispatch_prefers_priority_zone_under_the_ceiling(lvl2):
+    # ZONE3 has the lowest ratio (0%), but stage 1 caps at ZONE_BALANCE_CEILING
+    # (40%) and both zones qualify, so priority (ZONE1 first) wins - unlike the
+    # old always-lowest-ratio pick_zone, which would have sent this to ZONE3.
+    _fill("ZONE1", ["S1", "S3", "S4", "S5", "S6"], occupied=1)   # 20%
+    _fill("ZONE3", ["P69", "P70"], occupied=0)                  # 0%
+
+    result = asyncio.run(main.dispatch_entry("ZON 010", "ENTRY1", "Normal"))
+    assert result["dispatched"] and result["target"] in {"S1", "S3", "S4", "S5", "S6"}
+
+
+def test_strict_category_filtering_drops_the_dispatch_and_warns(lvl2, monkeypatch):
+    monkeypatch.setattr(main, "settings",
+                        dataclasses.replace(main.settings, strict_category_filtering=True))
+    _fill("ZONE1", ["S1"], occupied=0)   # only a plain "Any" bay, no accessible bay anywhere
+
+    result = asyncio.run(main.dispatch_entry("ZON 011", "ENTRY1", "Disabled"))
+    assert not result["dispatched"]
+    assert result["target"] is None
+    assert any("Full capacity" in row["message"] and row["level"] == "warn"
+               for row in state.activity_log)
+
+
+def test_category_filtering_falls_back_by_default_no_cars_turned_away(lvl2):
+    _fill("ZONE1", ["S1"], occupied=0)   # only a plain "Any" bay, no accessible bay anywhere
+
+    result = asyncio.run(main.dispatch_entry("ZON 012", "ENTRY1", "Disabled"))
+    assert result["dispatched"] and result["target"] == "S1"
 
 
 def _sensor(plate, sensor, direction):
