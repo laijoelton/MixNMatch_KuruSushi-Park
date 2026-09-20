@@ -263,6 +263,9 @@ class ParkingState:
         self.penalty_count: int = 0
         self.total_fines: float = 0.0
         self.crowded_spots: set[str] = set()   # bays holding more than one car at the last sync
+        # gate name -> the states of the several gates sharing it. The REST API
+        # is name-addressed, so only one of them can ever be commanded.
+        self.duplicate_gates: dict[str, list[str]] = {}
         self.penalty_log: deque = deque(maxlen=200)
         self.activity_log: deque = deque(maxlen=200)
         self.started_at: float = time.time()
@@ -853,10 +856,24 @@ class ParkingState:
             session.payment_suspect = False
             return True
 
-    def complete_session(self, plate: str) -> Optional[VehicleSession]:
-        """Remove the session and hand it back so it can be archived to SQLite."""
+    def complete_session(self, plate: str, *, release_bays: bool = False) -> Optional[VehicleSession]:
+        """Remove the session and hand it back so it can be archived to SQLite.
+
+        ``release_bays`` frees any bay still holding this plate, and is for the
+        one case where that is provably right: the car was seen leaving through
+        an exit, so what is left is our bookkeeping, not a car. A double-parked
+        car holds two bays and only ever sends one `Park/CarOut` (4.39); without
+        this the second is held for the rest of the run - measured on Level 3 as
+        ZONE2 and ZONE3 reporting FULL with 10 bays physically empty.
+
+        It is *not* right when a plate simply comes back: plates are recycled
+        (4.19), so the car still in that bay may be a different one."""
         with self._lock:
             self.active_dispatches.pop(plate, None)
+            if release_bays:
+                for spot in list(self.spots.values()):
+                    if spot.occupant_plate == plate:
+                        self.mark_spot_vacant(spot.name)
             return self.sessions.pop(plate, None)
 
     # ------------------------------------------------------------------ #
@@ -998,6 +1015,8 @@ class ParkingState:
                 "activity": list(self.activity_log)[:30],
                 "neglected_vehicles": list(self.neglected_vehicles),
                 "double_parked": self.double_parked(),
+                "duplicate_gates": [{"name": name, "states": states}
+                                    for name, states in sorted(self.duplicate_gates.items())],
                 "zone_maintenance": {zone: {"entry": info["entry"], "exit": info["exit"],
                                             "trigger": info["trigger"], "todo": sorted(info["todo"]),
                                             "reopened": bool(info.get("reopened"))}

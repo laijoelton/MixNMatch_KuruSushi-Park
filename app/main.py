@@ -434,8 +434,9 @@ async def _schedule_gate_repairs() -> None:
                    and b.opens_since_repair >= settings.gate_repair_min_opens),
                   key=lambda b: (-b.opens_since_repair, b.name))
     if worn:
-        state.log_activity(f"Preventive maintenance: {worn[0].name} ({worn[0].opens_since_repair} opens "
-                           f"since repair)", capability="logs:view_maint")
+        state.log_activity(f"Preventive maintenance queued for {worn[0].name}: "
+                           f"{worn[0].opens_since_repair} opens since its last repair (planned, "
+                           f"not a fault)", capability="logs:view_maint")
         await _queue_repair("BarrierGate", worn[0].name)
 
 
@@ -571,7 +572,11 @@ async def _resend_if_still_at_entry(plate: str, spot: str, *, initial: bool = Fa
     hop = bool(settings.zone_gate_at_sensor and via and via != here and _barrier_for_sensor(here) != gate_name)
     plan = ["hop"] * HOP_ATTEMPTS + ["direct"] * settings.entry_max_attempts if hop \
         else ["direct"] * settings.entry_max_attempts
-    delay_s = max(0.4, 1.0 / max(settings.game_speed, 1.0))
+    # The common case is that the first goto worked and the car is pulling away;
+    # the resend exists for the one that did not get it. Resending 0.4 s later
+    # mostly produces "Car is not waiting at the entrance or exit" - 86 of them
+    # in a three-minute 3x run - so the gap has a 1 s floor.
+    delay_s = max(1.0, 1.0 / max(settings.game_speed, 1.0))
     for attempt, how in enumerate(plan):
         if attempt or not initial:
             await asyncio.sleep(delay_s)
@@ -740,6 +745,24 @@ async def sync_from_simulator() -> dict[str, int]:
     global _live_bays_synced
     if any(s.get("purpose") == "Park" for s in spots):
         _live_bays_synced = True
+    # Level 3 ships two gates called gate7 (one at the perimeter, one in ZONE4).
+    # The REST API addresses barriers by name, so only one of them can ever be
+    # commanded - the other sits wherever the level left it and our own view,
+    # keyed by name, cannot even show it. Say so rather than letting an operator
+    # wonder why "open all gates" left a gate shut.
+    seen: set[str] = set()
+    duplicates = sorted({b["name"] for b in barriers if b["name"] in seen or seen.add(b["name"])})
+    state.duplicate_gates = {name: [b["state"] for b in barriers if b["name"] == name]
+                             for name in duplicates}
+    for name in duplicates:
+        states = state.duplicate_gates[name]
+        detail = (f"The simulator has {len(states)} gates named {name} ({', '.join(states)}). "
+                  f"Commands address one of them; the other cannot be opened or closed by name")
+        if not db.query("SELECT 1 FROM incidents WHERE kind = 'duplicate_gate' AND detail = ? "
+                        "AND resolved_at IS NULL", (detail,)):
+            db.record_incident("duplicate_gate", None, detail, {"gate": name, "states": states})
+            state.log_activity(detail, level="warn", capability="logs:view_maint")
+
     # A bay reporting two cars is double parking the other way round, and the
     # only kind a list-* sync can see: the live `detectedCars` count carries no
     # plates, so the webhook path above cannot notice it.
@@ -2065,7 +2088,7 @@ async def _handle_car_spot_action(payload: dict[str, Any]) -> None:
         session = state.get_session(plate)
         if session is None or not session.exit_confirmed or not _valid_exit(session):
             return
-        _archive(plate)
+        _archive(plate, left_site=True)
         state.log_activity(f"{plate} left the facility via {spot_name}")
         log.info("%s left the facility via %s", plate, spot_name)
         _spawn(_close_idle_gates_later())   # no sensor past the exit gate: give the car time to clear it
@@ -2103,8 +2126,11 @@ def _valid_exit(session) -> bool:
             and time.monotonic() - session.created_at >= settings.min_dwell_time_s / max(settings.game_speed, 0.1))
 
 
-def _archive(plate: str) -> None:
-    """Move a finished session out of memory and into SQLite for the dashboard."""
+def _archive(plate: str, *, left_site: bool = False) -> None:
+    """Move a finished session out of memory and into SQLite for the dashboard.
+
+    ``left_site`` is set by the one caller that saw the car drive out, and frees
+    any bay still recorded against its plate (see ``complete_session``)."""
     session = state.get_session(plate)
     if session is None:
         return
@@ -2126,7 +2152,8 @@ def _archive(plate: str) -> None:
         "paid_amount": session.expected_amount if session.paid else None,
         "payment_ok": 1 if session.paid else 0 if session.payment_suspect else None,
     })
-    state.complete_session(plate)
+    state.complete_session(plate, release_bays=left_site)
+    db.resolve_incidents("double_park", plate)
     _left_entry.discard(plate)
     _waiting_at.pop(plate, None)
     _holding_gate.pop(plate, None)

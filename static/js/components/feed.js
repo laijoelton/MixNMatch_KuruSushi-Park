@@ -8,7 +8,11 @@ const RULES = [
   { test: /^PENALTY/i, category: "faults", icon: "!", tone: "fault" },
   { test: /suspect|mismatch|never paid|refused/i, category: "money", icon: "?", tone: "warn" },
   { test: /charged|payment accepted|\bpaid\b|releasing/i, category: "money", icon: "$", tone: "money" },
-  { test: /broken|fixed|repair|maintenance/i, category: "faults", icon: "⚙", tone: "fault" },
+  // Something actually failed.
+  { test: /broken|stuck|failed|cannot|unable/i, category: "faults", icon: "⚙", tone: "fault" },
+  // Planned work is not a fault: preventive maintenance in red reads as an
+  // error to an operator, and it is the system working as intended.
+  { test: /preventive|queued|scheduled|repair|maintenance|fixed/i, category: "faults", icon: "⚙", tone: "warn" },
   { test: /\bCO\b|fan/i, category: "faults", icon: "≋", tone: "warn" },
   { test: /dispatch|parked|vacated|left the|arriv|check-in|entry|exit|lot full|no available/i, category: "cars", icon: "▸", tone: "car" },
 ];

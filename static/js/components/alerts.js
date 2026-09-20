@@ -54,6 +54,13 @@ export function deriveAlerts(snapshot, stats, { isAdmin } = {}) {
                     : `${info.trigger}. New cars go to other zones until the second gate's repair starts`,
       { kind: "zone", name: zone });
   }
+  // A gate name the simulator uses twice: one of them is unreachable by the API.
+  for (const row of snapshot.duplicate_gates || []) {
+    add(`dupgate-${row.name}`, "warn", `Two gates are named ${row.name}`,
+      `${row.states.join(" and ")} — commands reach only one of them; the other cannot be opened or closed`,
+      { kind: "gate", name: row.name });
+  }
+
   // Double parking: both bays are physically blocked, so both are named and
   // the row stays until the car moves out of one of them.
   for (const row of snapshot.double_parked || []) {

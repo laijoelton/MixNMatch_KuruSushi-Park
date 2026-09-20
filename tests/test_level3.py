@@ -298,3 +298,29 @@ def test_a_car_that_already_paid_is_never_re_invoiced_by_a_correction(site):
     asyncio.run(main._apply_charge_correction({"ComponentName": "COR002"}, 3.0, 0.0))
 
     main.client.car_charge.assert_not_awaited()
+
+
+def test_a_car_that_left_the_site_frees_every_bay_it_held(site):
+    """A double-parked car sends one CarOut, not two. Without this the second
+    bay is held for the rest of the run and the zone reads FULL while empty."""
+    state.spots["S1"] = Spot("S1", zone_parent="ZONE1")
+    state.spots["S2"] = Spot("S2", zone_parent="ZONE1")
+    state.start_session("GON 001", gate="ENTRY1", car_type="Normal")
+    state.mark_spot_occupied("S1", "GON 001")
+    state.mark_spot_occupied("S2", "GON 001")
+
+    state.complete_session("GON 001", release_bays=True)
+
+    assert state.spots["S1"].status == SpotStatus.AVAILABLE
+    assert state.spots["S2"].status == SpotStatus.AVAILABLE
+
+
+def test_a_returning_plate_does_not_free_the_bay_of_the_car_still_in_it(site):
+    """Plates are recycled (4.19): the car in that bay may be a different one."""
+    state.spots["S1"] = Spot("S1", zone_parent="ZONE1")
+    state.start_session("OLD 001", gate="ENTRY1", car_type="Normal")
+    state.mark_spot_occupied("S1", "OLD 001")
+
+    state.complete_session("OLD 001")
+
+    assert state.spots["S1"].status == SpotStatus.OCCUPIED

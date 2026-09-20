@@ -1513,6 +1513,57 @@ stay at 0.
 
 ---
 
+### 4.40 Level 3 follow-up: phantom-full zones, the second gate7, and a red toast that was not a fault (20 September 2026)
+
+Four things a long Level 3 run surfaced, three of them ours.
+
+**1. Zones reported FULL with bays physically empty.** Measured against the
+simulator: ZONE2 30 bays taken by our count and 26 by the simulator's sensors,
+ZONE3 29 against 23. Ten bays were being held by nobody. Cause: a double-parked
+car holds two bays (4.39) but only ever sends one `Park/CarOut`, so the other
+was held until the next full sync - and a sync only happens at startup, a level
+change or an operator's request. `complete_session(release_bays=True)`, called
+from the one place that saw the car drive out (`ExitSpot/CarOut`), now frees any
+bay still recorded against that plate, and the double-park incident closes with
+it. It is deliberately *not* done when a plate simply returns: plates are
+recycled (4.19), so the car in that bay may be a different one - a test covers
+exactly that.
+
+**2. "Open all gates" left a gate shut, and it was not our command that failed.**
+`list-barriers` returns **twenty** gates for Level 3 and **nineteen distinct
+names**: there are two called `gate7`, one at the perimeter (x=165) and one in
+ZONE4 (x=6520). The REST API addresses barriers by name, so a command reaches
+one of them and the other cannot be opened, closed or repaired at all; our own
+state, keyed by name, could not even show it. The sync now detects duplicate
+names, records a `duplicate_gate` incident and raises a dashboard alert naming
+both states, so an operator sees why a gate stays shut instead of doubting the
+button. There is no way to control the second one - that is a property of the
+level and the API, and the alert says so.
+
+**3. "Preventive maintenance: gate8" was shown in fault red.** The event feed
+classified anything matching `maintenance|repair` as a fault. Planned work that
+the system scheduled itself is the opposite of a fault, and an operator reading
+red at a glance will start looking for a problem that is not there. Breakages
+(`broken|stuck|failed|cannot`) keep the fault tone; preventive and queued work
+now reads amber, and the message says "planned, not a fault" in so many words.
+
+**4. ZONE4 showing two INs is the level, not the map.** `Entry104` is declared
+`Purpose: EntrySpot` in `lvl3.json`, sitting opposite `Exit103`, so the twin
+draws it as an entrance. No car has ever arrived through it in our runs - every
+arrival comes through ENTRY1-3 and OENTRY1-4 - so it appears to be an entrance
+the level declares but never uses.
+
+**Run at 3x game speed** (the simulator is steadier below 5x), Level 3, all
+gates open: 25 completed stays in the first 90 seconds, **0 penalties, 0
+neglected cars, 0 double parks**. The simulator's own error lines were 86 "not
+waiting at the entrance or exit" (our second goto landing after the car has
+already pulled away - noise, not a fault), 21 "No valid escape spot" (a paid car
+whose route out is momentarily blocked; they do leave, and completions kept
+rising) and 15 "Won't spawn car No path" from the seconds before the gates were
+opened.
+
+---
+
 ## 5. Edge cases and how they are handled
 
 | Edge case | Handling |

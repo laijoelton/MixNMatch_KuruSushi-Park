@@ -7,7 +7,7 @@
   "MaxParkingTime": 5,
   "Name": "admin",
   "Password": "admin",
-  "GameSpeedMultiplier": 1.0,
+  "GameSpeedMultiplier": 3.0,
   "lvl2Password": "",
   "lvl3Password": ""
 }
