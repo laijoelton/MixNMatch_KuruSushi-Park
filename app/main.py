@@ -36,7 +36,7 @@ from app import auth, dashboard_api, db, ml_agent, reachability, simlog, tariffs
 from app.client import client
 from app.config import settings
 from app.layout import announce_level, load_layout, running_level
-from app.queue_worker import maintenance_queue, schedule_lights
+from app.queue_worker import maintenance_queue, schedule_lights, webhook_queue
 from app.routing import load_distance_table, rank_spots, ring
 from app.seed import load_level
 from app.signature import verify as verify_signature_recipes
@@ -966,18 +966,21 @@ async def _broadcast_loop() -> None:
             snapshot["server_time"] = time.time()
             snapshot["ws_clients"] = manager.count
             snapshot["maintenance_queue"] = maintenance_queue.stats
+            snapshot["webhook_queue"] = webhook_queue.stats
             snapshot["ml_insights"] = ml_agent.latest_insights()
             _annotate_gate_predictions(snapshot)
             await manager.broadcast(snapshot)
         except Exception:  # noqa: BLE001 - the broadcaster must never die
             log.exception("broadcast tick failed")
-        await asyncio.sleep(settings.broadcast_interval_s)
+        await asyncio.sleep(max(0.1, settings.broadcast_interval_s))
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     restore_operational_observability()
     restore_sessions()
+    db.start_writer()
+    webhook_queue.start(_process_simulator_event, db.known_event_ids())
     client.on_reconnect = sync_from_simulator
     try:
         await client.login()
@@ -1034,11 +1037,13 @@ async def lifespan(app: FastAPI):
                 await task
             except asyncio.CancelledError:
                 pass
+        await webhook_queue.stop()
         for task in list(_entry_watchers):
             task.cancel()
         await asyncio.gather(*list(_entry_watchers), return_exceptions=True)
         client.on_reconnect = None
         await maintenance_queue.stop()
+        await db.stop_writer()
         await client.aclose()
 
 
@@ -1110,9 +1115,10 @@ async def dispatch_entry(plate: str, gate_name: str, car_type: str = "Normal",
         candidates = connected
     if kind == "accessible":
         accessible = [n for n in candidates if state.spots[n].is_accessible]
-        # STRICT_CATEGORY_FILTERING forbids the cross-allocation fallback -
-        # an OKU car waits rather than take a standard bay. Off by default;
-        # see the setting's docstring for why (4.39, 4.41).
+        # STRICT_CATEGORY_FILTERING (on by default) forbids the
+        # cross-allocation fallback - an OKU car waits rather than take a
+        # standard bay. See the setting's docstring for the known trade-off
+        # (4.39, 4.41, 4.42).
         candidates = accessible if settings.strict_category_filtering else (accessible or candidates)
     if kind == "ev":
         # An EV in an ordinary bay cannot charge, and charging is billed at the
@@ -1241,6 +1247,7 @@ async def healthz() -> dict[str, Any]:
         "active_sessions": len(state.sessions),
         "last_sequence_id": state.last_sequence_id,
         "maintenance_queue": maintenance_queue.stats,
+        "webhook_queue": webhook_queue.stats,
         "ws_clients": manager.count,
         "events": counters["events"],
         "unprocessed_events": counters["unprocessed_events"],
@@ -1824,7 +1831,8 @@ async def api_dispatch(body: DispatchIn) -> dict[str, Any]:
 async def ws_live(ws: WebSocket):
     await manager.connect(ws)
     try:
-        await ws.send_json(project_snapshot({"type": "hello", "server_time": time.time(), **state.snapshot()}, ws.state.user))
+        await ws.send_json(project_snapshot(
+            {"type": "hello", "server_time": time.time(), **state.snapshot()}, ws.state.user))
         while True:
             await ws.receive_text()
     except WebSocketDisconnect:
@@ -1840,7 +1848,8 @@ async def ws_telemetry(ws: WebSocket):
     and with the main HUD - they all share one ConnectionManager broadcast."""
     await manager.connect(ws)
     try:
-        await ws.send_json(project_snapshot({"type": "hello", "server_time": time.time(), **state.snapshot()}, ws.state.user))
+        await ws.send_json(project_snapshot(
+            {"type": "hello", "server_time": time.time(), **state.snapshot()}, ws.state.user))
         while True:
             await ws.receive_text()
     except WebSocketDisconnect:
@@ -1852,6 +1861,61 @@ async def ws_telemetry(ws: WebSocket):
 # --------------------------------------------------------------------------- #
 # Inbound simulator webhook
 # --------------------------------------------------------------------------- #
+async def _process_simulator_event(payload: dict[str, Any]) -> bool:
+    """Persist and dispatch one already authenticated queued webhook."""
+    event_id = payload.get("EventId")
+    event_class = payload.get("EventClass", "")
+    if not db.record_event(payload, True):
+        return True
+    if event_id:
+        state.is_duplicate(event_id)
+
+    sequence_id = payload.get("SequenceId")
+    try:
+        sequence_id = int(sequence_id) if sequence_id is not None else None
+    except (TypeError, ValueError):
+        sequence_id = None
+    gap = state.observe_sequence(sequence_id)
+    if gap:
+        log.warning("webhook sequence gap detected: %d missing event(s) before SequenceId=%s",
+                    gap, sequence_id)
+        try:
+            db.record_sequence_gap(int(sequence_id) - gap, int(sequence_id), gap)
+        except (TypeError, ValueError):
+            pass
+
+    if settings.webhook_debug:
+        log.info("RAW WEBHOOK PAYLOAD: %s", payload)
+
+    handler = _HANDLERS.get(event_class)
+    if event_id:
+        _webhook_events_in_progress.add(event_id)
+    try:
+        if handler is None:
+            log.info("unhandled EventClass=%s (EventId=%s)", event_class, event_id)
+            db.record_security_event("unknown_event_class", event_id=event_id,
+                                     event_class=event_class, detail="no handler for this EventClass")
+            db.mark_processed(event_id, "unhandled event class")
+            return True
+        await handler(payload)
+        db.mark_processed(event_id)
+        if event_class == "car_spot_action":
+            try:
+                await _refresh_lights(payload.get("ServerDateTime"))
+            except Exception:  # noqa: BLE001 - lighting must never fail event dispatch
+                log.exception("light refresh failed")
+        return True
+    except Exception as exc:  # noqa: BLE001 - release the ID for simulator redelivery
+        db.record_security_event("handler_failure", event_id=event_id, event_class=event_class,
+                                 detail=f"{type(exc).__name__}: {exc}"[:300])
+        log.exception("handler failed for EventClass=%s EventId=%s", event_class, event_id)
+        db.mark_failed(event_id, str(exc))
+        return False
+    finally:
+        if event_id:
+            _webhook_events_in_progress.discard(event_id)
+
+
 @app.post("/webhooks/simulator")
 async def simulator_webhook(request: Request) -> JSONResponse:
     try:
@@ -1878,70 +1942,16 @@ async def simulator_webhook(request: Request) -> JSONResponse:
             _spawn(_recover_tampered_payment(payload))
         raise HTTPException(status_code=401, detail="invalid webhook signature")
 
-    # Persist first: EventId is the table's primary key, so a redelivery is
-    # rejected by the database rather than by a bounded in-memory cache that
-    # can age out. A crash mid-handler cannot lose the event.
-    sig = verify_signature_recipes(payload)
-    is_new = db.record_event(payload, sig.ok)
     event_id = payload.get("EventId")
-    if not is_new:
-        status = db.event_status(event_id) if event_id else None
-        if not status or status["processed"] or event_id in _webhook_events_in_progress:
-            # Counted, not just refused: a redelivery storm is a network fault
-            # the operator has to be able to see (Level 3).
-            db.record_security_event("duplicate_event", event_id=event_id,
-                                     event_class=payload.get("EventClass"),
-                                     detail="EventId already accepted")
-            return JSONResponse({"status": "duplicate", "event_id": event_id})
-
-    if event_id:
-        state.is_duplicate(event_id)  # keep the hot-path cache aligned
-
-    sequence_id = payload.get("SequenceId")
-    try:
-        sequence_id = int(sequence_id) if sequence_id is not None else None
-    except (TypeError, ValueError):
-        sequence_id = None
-    gap = state.observe_sequence(sequence_id)
-    if gap:
-        log.warning("webhook sequence gap detected: %d missing event(s) before SequenceId=%s", gap, sequence_id)
-        try:
-            db.record_sequence_gap(int(sequence_id) - gap, int(sequence_id), gap)
-        except (TypeError, ValueError):
-            pass
-
-    if settings.webhook_debug:
-        log.info("RAW WEBHOOK PAYLOAD: %s", payload)
-
-    event_class = payload.get("EventClass", "")
-    handler = _HANDLERS.get(event_class)
-    if event_id:
-        _webhook_events_in_progress.add(event_id)
-    try:
-        if handler is None:
-            log.info("unhandled EventClass=%s (EventId=%s)", event_class, event_id)
-            db.record_security_event("unknown_event_class", event_id=event_id,
-                                     event_class=event_class, detail="no handler for this EventClass")
-            db.mark_processed(event_id, "unhandled event class")
-            return JSONResponse({"status": "ignored", "event_class": event_class})
-        try:
-            await handler(payload)
-            db.mark_processed(event_id)
-            if event_class == "car_spot_action":
-                try:   # a car moved: relight at once rather than at the next environment tick
-                    await _refresh_lights(payload.get("ServerDateTime"))
-                except Exception:  # noqa: BLE001 - lighting must never fail a webhook
-                    log.exception("light refresh failed")
-        except Exception as exc:  # noqa: BLE001 - retain failed events for redelivery
-            db.record_security_event("handler_failure", event_id=event_id, event_class=event_class,
-                                     detail=f"{type(exc).__name__}: {exc}"[:300])
-            log.exception("handler failed for EventClass=%s EventId=%s", event_class, event_id)
-            db.mark_failed(event_id, str(exc))
-            return JSONResponse({"status": "error", "event_class": event_class}, status_code=500)
-        return JSONResponse({"status": "processed", "event_class": event_class})
-    finally:
-        if event_id:
-            _webhook_events_in_progress.discard(event_id)
+    result = webhook_queue.enqueue(payload)
+    if result == "duplicate":
+        _spawn(asyncio.to_thread(
+            db.record_security_event, "duplicate_event", event_id=event_id,
+            event_class=payload.get("EventClass"), detail="EventId already accepted"))
+        return JSONResponse({"status": "duplicate", "event_id": event_id})
+    if result == "full":
+        raise HTTPException(status_code=503, detail="webhook queue capacity exhausted")
+    return JSONResponse({"status": "enqueued"})
 
 
 # --------------------------------------------------------------------------- #

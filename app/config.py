@@ -181,12 +181,15 @@ class Settings:
     # Zone lifecycle (4.41): cascade to the highest-priority zone under this
     # ratio, spread load once every zone reaches it.
     zone_balance_ceiling: float
-    # Forbid the cross-allocation fallback for Electric/Accessible cars.
-    # Keep false: measured on Level 3, every Electric/Accessible car was
-    # turned away this way when the reachable half of the site had no bay of
-    # its exact type at all (4.39). Standard cars never get an Electric or
-    # Accessible bay either way - `available_spots("Any")` only returns
-    # Any-tagged bays, so there is no fallback to forbid for them.
+    # Cross-allocation is forbidden by default (4.42): an Electric/Accessible
+    # car only ever gets its own category of bay, never falls back to "Any".
+    # Standard cars never got an Electric or Accessible bay either way -
+    # `available_spots("Any")` only returns Any-tagged bays.
+    # Known trade-off, not a hidden one: 4.39 measured this exact rule turning
+    # away every Electric/Accessible car on Level 3 when the reachable half of
+    # the site had no bay of its type at all. Stage 3 (4.41) makes that a
+    # clean, logged turn-away rather than silent chaos, but it is still a
+    # turn-away. Set to false as an escape hatch if that shows up live.
     strict_category_filtering: bool
     dashboard_admin_password: str
     dashboard_operator_password: str
@@ -321,7 +324,7 @@ class Settings:
             orphan_timeout_s=_env_float("ORPHAN_TIMEOUT_S", 300.0),
             entry_max_attempts=_env_int("ENTRY_MAX_ATTEMPTS", 12),
             zone_balance_ceiling=_env_float("ZONE_BALANCE_CEILING", 0.40),
-            strict_category_filtering=_env_bool("STRICT_CATEGORY_FILTERING", False),
+            strict_category_filtering=_env_bool("STRICT_CATEGORY_FILTERING", True),
             dashboard_admin_password=os.environ.get("DASHBOARD_ADMIN_PASSWORD", "admin123"),
             dashboard_operator_password=os.environ.get("DASHBOARD_OPERATOR_PASSWORD", "operator123"),
             dashboard_auditor_password=os.environ.get("DASHBOARD_AUDITOR_PASSWORD", "auditor123"),

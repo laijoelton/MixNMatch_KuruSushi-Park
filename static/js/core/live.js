@@ -1,11 +1,12 @@
 // One WebSocket to /ws/live for the whole page. The server pushes a full
-// snapshot every second; widgets subscribe and render from it.
+// snapshot at up to ten ticks per second; widgets subscribe and render from it.
 //
 // Degrades instead of breaking: on disconnect the last snapshot stays on
 // screen (dimmed, with its age) and the socket retries with backoff.
 
 const subscribers = new Set();
 const connectionListeners = new Set();
+const textDecoder = new TextDecoder();
 let socket = null;
 let attempts = 0;
 let lastSnapshot = null;
@@ -49,6 +50,7 @@ export function connect() {
   if (socket) return;
   const protocol = location.protocol === "https:" ? "wss" : "ws";
   socket = new WebSocket(`${protocol}://${location.host}/ws/live`);
+  socket.binaryType = "arraybuffer";
 
   socket.addEventListener("open", () => {
     attempts = 0;
@@ -58,7 +60,10 @@ export function connect() {
   socket.addEventListener("message", (event) => {
     let data;
     try {
-      data = JSON.parse(event.data);
+      const body = typeof event.data === "string"
+        ? event.data
+        : textDecoder.decode(event.data);
+      data = JSON.parse(body);
     } catch {
       return;
     }

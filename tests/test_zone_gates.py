@@ -192,9 +192,7 @@ def test_staged_dispatch_prefers_priority_zone_under_the_ceiling(lvl2):
     assert result["dispatched"] and result["target"] in {"S1", "S3", "S4", "S5", "S6"}
 
 
-def test_strict_category_filtering_drops_the_dispatch_and_warns(lvl2, monkeypatch):
-    monkeypatch.setattr(main, "settings",
-                        dataclasses.replace(main.settings, strict_category_filtering=True))
+def test_strict_category_filtering_is_the_default_and_drops_the_dispatch(lvl2):
     _fill("ZONE1", ["S1"], occupied=0)   # only a plain "Any" bay, no accessible bay anywhere
 
     result = asyncio.run(main.dispatch_entry("ZON 011", "ENTRY1", "Disabled"))
@@ -204,7 +202,9 @@ def test_strict_category_filtering_drops_the_dispatch_and_warns(lvl2, monkeypatc
                for row in state.activity_log)
 
 
-def test_category_filtering_falls_back_by_default_no_cars_turned_away(lvl2):
+def test_strict_category_filtering_can_be_disabled_as_an_escape_hatch(lvl2, monkeypatch):
+    monkeypatch.setattr(main, "settings",
+                        dataclasses.replace(main.settings, strict_category_filtering=False))
     _fill("ZONE1", ["S1"], occupied=0)   # only a plain "Any" bay, no accessible bay anywhere
 
     result = asyncio.run(main.dispatch_entry("ZON 012", "ENTRY1", "Disabled"))
