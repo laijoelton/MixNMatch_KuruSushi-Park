@@ -32,7 +32,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
-from app import auth, dashboard_api, db, ml_agent, simlog, tariffs, zones
+from app import auth, dashboard_api, db, ml_agent, reachability, simlog, tariffs, zones
 from app.client import client
 from app.config import settings
 from app.layout import announce_level, load_layout, running_level
@@ -322,6 +322,19 @@ def _zone_inbound_clear(zone: str, entry: Optional[str]) -> bool:
 async def _advance_zone_maintenance() -> None:
     for zone, info in list(state.zone_maintenance.items()):
         entry, exit_gate = info["entry"], info["exit"]
+        # Staff control beats the rotation (4.33), which means a gate they hold
+        # will never be repaired - and a zone waiting for that repair would stay
+        # shut to new cars for the rest of the run. Observed on Level 3: ZONE1
+        # closed while an operator held gate2 open. Abandon the maintenance
+        # instead; the rotation picks the zone up again once staff let go.
+        held = [g for g in (entry, exit_gate)
+                if g and (state.barriers.get(g) and (state.barriers[g].operator_open
+                                                     or state.barriers[g].operator_override))]
+        if held:
+            state.zone_maintenance.pop(zone, None)
+            state.log_activity(f"{zone} reopened: {', '.join(held)} is under staff control, so its "
+                               f"repair cannot start", level="warn", capability="logs:view_maint")
+            continue
         if entry in info["todo"] and _zone_inbound_clear(zone, entry):
             await _queue_repair("BarrierGate", entry, via_zone=True)
         # 4.32: the exit gate follows the entry gate straight away rather than
@@ -643,6 +656,18 @@ def restore_operational_observability() -> None:
     state.total_fines = float(counters["total_fines"] or 0.0)
 
 
+def _arrival_grace_s(session) -> float:
+    """How long to hold a bay for a car that has not reached it yet.
+
+    A car still at the entrance is either coming through in seconds or not at
+    all. A car that has already passed the entrance is *driving*, and on a
+    Level 3 site that drive crosses 250 bays and several zones - reaping its
+    reservation at the same 120 s hands its bay to another car and both end up
+    fined for "attempted to park in an occupied spot"."""
+    base = settings.reservation_ttl_s / max(settings.game_speed, 0.1)
+    return base * (settings.en_route_grace_factor if session.entry_departed else 1.0)
+
+
 async def reap_orphans() -> None:
     now = time.monotonic()
     expired = False
@@ -651,7 +676,7 @@ async def reap_orphans() -> None:
                 and now - session.left_spot_at > settings.orphan_timeout_s / settings.game_speed):
             state.log_activity(f"Orphan session archived: {plate} left a bay but no final exit was observed", level="warn")
             _archive(plate)
-        elif session.parked_at is None and not session.exit_confirmed and now - session.created_at > settings.reservation_ttl_s / settings.game_speed:
+        elif session.parked_at is None and not session.exit_confirmed and now - session.created_at > _arrival_grace_s(session):
             reason = "Left entrance without reaching a bay" if session.entry_departed else "No bay arrival before reservation expired"
             db.record_neglect(session, reason)
             state.neglected_vehicles.appendleft({"plate": plate, "gate": session.entry_gate, "reason": reason})
@@ -978,9 +1003,26 @@ async def dispatch_entry(plate: str, gate_name: str, car_type: str = "Normal",
     kind = normalize_car_type(car_type)
     candidate_type = "Electric" if kind == "ev" else "Accessible" if kind == "accessible" else "Any"
     candidates = state.available_spots(candidate_type)
+    # Reachability first, preferences second. A preference narrowed down to bays
+    # on the other side of the site leaves nothing to dispatch, and the car is
+    # turned away from a half-empty car park: measured on Level 3, every
+    # Electric and Accessible car was refused this way.
+    reach = reachability.reachable_from(running_level(), gate_name)
+    if reach:
+        connected = [n for n in candidates if n in reach]
+        if not connected and candidates:
+            state.log_activity(f"No bay reachable from {gate_name} for {plate} "
+                               f"({len(candidates)} free elsewhere on site)", level="warn")
+        candidates = connected
     if kind == "accessible":
         accessible = [n for n in candidates if state.spots[n].is_accessible]
         candidates = accessible or candidates
+    if kind == "ev":
+        # An EV in an ordinary bay cannot charge, and charging is billed at the
+        # electric multiplier: give it a charging bay whenever one is free.
+        electric = [n for n in candidates
+                    if state.spots[n].parking_for_car_type == "Electric"]
+        candidates = electric or candidates
     # A zone closed for gate maintenance takes no new cars (4.26); the car
     # waits rather than being turned away if every suitable zone is closed.
     open_candidates = [n for n in candidates
@@ -1001,7 +1043,13 @@ async def dispatch_entry(plate: str, gate_name: str, car_type: str = "Normal",
     # under repair) / bays ratio, then the nearest suitable bay inside it.
     ratios = zones.zone_ratios(state.spots.values(), state.pending_repairs)
     zone = zones.pick_zone({state.spots[n].zone_parent for n in reachable}, ratios)
-    ranked = rank_spots(gate_name, [n for n in reachable if state.spots[n].zone_parent == zone])
+    in_zone = [n for n in reachable if state.spots[n].zone_parent == zone]
+    # Real driving distance when we have the road graph; the name-ordered ring
+    # in app/routing.py is only a fallback for a level we cannot parse.
+    ranked = (sorted(((n, reach[n]) for n in in_zone if n in reach), key=lambda item: (item[1], item[0]))
+              if reach else rank_spots(gate_name, in_zone))
+    if not ranked:
+        ranked = rank_spots(gate_name, in_zone)
     target = target_spot if target_spot in reachable else (ranked[0][0] if ranked and not target_spot else None)
     result = {"plate": plate, "gate": gate_name, "target": target, "dispatched": False}
     if dry_run:
@@ -1264,6 +1312,48 @@ async def manual_barrier_close(name: str, user: dict = Depends(auth.require_capa
     auth.record_audit(user["username"], "POST", f"/api/barriers/{name}/close", 200, name,
                       {"before": before, "after": {"operator_override": True}})
     return {"ok": True, "name": name, "sent": sent, "operator_override": True}
+
+
+@app.post("/api/gates/open-all")
+async def open_all_gates(user: dict = Depends(auth.require_capability("ops:control_gates"))) -> dict[str, Any]:
+    """Free flow: hold every healthy gate open at once.
+
+    Level 3 has 19 gates. When the site is congested - cars queueing at the
+    entrances, paid cars unable to find a route out ("No valid escape spot") -
+    the fastest way to clear it is to stop gating the traffic at all, and doing
+    that one gate at a time is not an option a human has time for. Broken gates
+    and gates under repair are skipped: operating those is penalised."""
+    opened, skipped = [], []
+    for name, barrier in list(state.barriers.items()):
+        if barrier.broken or barrier.under_maintenance:
+            skipped.append(name)
+            continue
+        try:
+            await manual_barrier_open(name, user)
+            opened.append(name)
+        except HTTPException:
+            skipped.append(name)
+    state.log_activity(f"{user['username']} opened all gates ({len(opened)} open, {len(skipped)} skipped)",
+                       level="warn")
+    auth.record_audit(user["username"], "POST", "/api/gates/open-all", 200, "all",
+                      {"after": {"opened": opened, "skipped": skipped}})
+    return {"ok": True, "opened": opened, "skipped": skipped}
+
+
+@app.post("/api/gates/auto-all")
+async def auto_all_gates(user: dict = Depends(auth.require_capability("ops:control_gates"))) -> dict[str, Any]:
+    """Hand every gate back to the automation."""
+    names = list(state.barriers)
+    for name in names:
+        barrier = state.barriers[name]
+        _set_staff_mode(barrier, held_open=False, held_closed=False)
+    state.log_activity(f"{user['username']} handed all {len(names)} gates back to automatic")
+    auth.record_audit(user["username"], "POST", "/api/gates/auto-all", 200, "all",
+                      {"after": {"automatic": names}})
+    await _close_idle_gates()
+    await _ensure_barriers_open()
+    await _schedule_gate_repairs()
+    return {"ok": True, "automatic": names}
 
 
 @app.post("/api/barriers/{name}/auto")
@@ -1939,6 +2029,28 @@ async def _handle_car_spot_action(payload: dict[str, Any]) -> None:
             log.info("ignored route-crossing exit sensor for %s at %s", plate, spot_name)
             return
         if session.charged:
+            # Charged, unpaid, and now at a *different* exit: the first invoice
+            # went to a car that was only driving past a sensor, and the
+            # simulator refused it ("not waiting at the exit"). Level 3 has ten
+            # exits, so this is routine, and leaving it is how a car sits
+            # invoiced forever and then escapes without paying. Re-invoice here.
+            if (not session.paid and session.exit_gate != spot_name
+                    and session.charged_at is not None
+                    and time.monotonic() - session.charged_at
+                    > settings.payment_wait_s / max(settings.game_speed, 0.1)):
+                state.log_activity(f"{plate} is at {spot_name} still unpaid - the invoice sent at "
+                                   f"{session.exit_gate} was never accepted; invoicing again",
+                                   level="warn", capability="logs:view_fin")
+                db.record_incident("exit_recharge", plate,
+                                   f"{plate} re-invoiced at {spot_name}; the invoice at "
+                                   f"{session.exit_gate} was refused (car was passing, not waiting)",
+                                   {"from": session.exit_gate, "to": spot_name}, resolved=True)
+                session.charge_attempted = False
+                session.charged = False
+                session.exit_gate = spot_name
+                db.clear_charge_claim(session)
+                _persist(plate)
+                _spawn(_charge_at_exit(plate, spot_name))
             return
         session.exit_confirmed = True
         state.mark_at_exit(plate)
@@ -2349,6 +2461,14 @@ async def _handle_gate_action(payload: dict[str, Any]) -> None:
 
 # "Car is being charged wrongly with amount: (2.00). Car type is (Normal) so
 # charge should be: (4.00)"  -- the simulator hands us the correct figure.
+# "Car:(VXL 198) attempted to park in an occupied spot:(P236)." - the bay we
+# sent the car to already had someone in it. The car keeps trying and every
+# attempt is another fine, so this is a correction we have to act on.
+_OCCUPIED_SPOT_RE = re.compile(
+    r"Car:\s*\(?([A-Z0-9 ]{4,10})\)?\s*attempted to park in an occupied spot:\s*\(?([A-Za-z0-9_]+)\)?",
+    re.IGNORECASE,
+)
+
 _WRONG_CHARGE_RE = re.compile(
     r"charged wrongly with amount:\s*\(?([\d.]+)\)?.*?"
     r"should be:\s*\(?([\d.]+)\)?",
@@ -2549,6 +2669,10 @@ async def _handle_penalty(payload: dict[str, Any]) -> None:
             _archive(plate)
     log.error("PENALTY: %s - fine %s (%s %s)", reason, fine, component_type, component_name)
 
+    occupied = _OCCUPIED_SPOT_RE.search(reason or "")
+    if occupied:
+        await _handle_occupied_bay(occupied.group(1).strip(), occupied.group(2).strip())
+
     # Keep simulator corrections as evidence; never resend a charge.
     match = _WRONG_CHARGE_RE.search(reason or "")
     if match:
@@ -2558,6 +2682,43 @@ async def _handle_penalty(payload: dict[str, Any]) -> None:
             return
         db.set_meta("last_charge_delta", round(should_be - sent, 2))
         await _apply_charge_correction(payload, sent, should_be)
+
+
+async def _handle_occupied_bay(raw_plate: str, spot_name: str) -> None:
+    """The simulator says the bay we picked already has a car in it.
+
+    Our occupancy view is wrong about that bay, and every further attempt by
+    this car is another fine - 12 of them in one observed Level 3 run, because
+    the resend loop only checks our own (wrong) reservation. So: believe the
+    simulator, take the bay out of the pool, stop the retry, and give the car a
+    different bay."""
+    plate, session = _find_session_by_loose_plate(raw_plate)
+    task = _dispatch_tasks.pop(plate or "", None)
+    if task and not task.done():
+        task.cancel()
+    if session is not None and session.assigned_spot == spot_name and session.parked_at is None:
+        state.release_reservation(spot_name, plate)
+        session.assigned_spot = None
+        state.active_dispatches.pop(plate, None)
+        session.phase = SessionPhase.ARRIVED
+        _persist(plate)
+    # Whoever is in there, it is not the car we sent: hold the bay out of
+    # dispatch until a CarOut or a sync proves otherwise. Believing our own
+    # record here is what produced 12 fines for one car in a Level 3 run.
+    if spot_name in state.spots and state.spots[spot_name].purpose == "Park":
+        state.mark_spot_occupied(spot_name, state.spots[spot_name].occupant_plate or "(unknown)")
+        state.log_activity(f"Bay {spot_name} already has a car in it - taken out of dispatch",
+                           level="warn")
+    if session is None or session.parked_at is not None:
+        return
+    db.record_incident("bay_collision", plate,
+                       f"{plate} was sent to {spot_name}, which already had a car in it - "
+                       f"re-dispatching", {"spot": spot_name}, resolved=True)
+    sensor = _waiting_at.get(plate, session.entry_gate)
+    result = await dispatch_entry(plate, sensor, session.car_type,
+                                  planned_minutes=session.planned_minutes)
+    state.log_activity(f"{plate} re-dispatched to {result.get('target') or 'nowhere yet'} "
+                       f"after {spot_name} turned out to be taken", level="warn")
 
 
 async def _handle_test_webhook(payload: dict[str, Any]) -> None:

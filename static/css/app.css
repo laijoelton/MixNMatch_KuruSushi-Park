@@ -721,4 +721,5 @@ dialog.confirm .d-actions { display: flex; justify-content: flex-end; gap: var(-
 .summary-figure { font-size: 22px; margin: 4px 0 2px; }
 .summary-figure .muted { font-size: 12px; font-weight: 400; }
 .summary-detail { font-size: 12px; }
+.head-actions { display: flex; gap: var(--s2); margin-left: auto; }
 .filters .btn.is-active { background: var(--surface-3); color: var(--text); border-color: var(--line-strong); }

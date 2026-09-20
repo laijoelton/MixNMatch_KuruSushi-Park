@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi.testclient import TestClient
 
-from app import db, main
+from app import db, main, reachability
 from app.state import Barrier, SpotStatus, Spot, state
 
 
@@ -181,3 +181,90 @@ def test_component_summary_counts_each_family(site):
 
 def test_wear_left_the_live_frame(site):
     assert "wear" not in state.snapshot(), "wear is fetched from /api/wear, not pushed every second"
+
+
+# ------------------------------------------------------- reachability (4.39)
+def test_level3_road_network_is_two_disconnected_halves():
+    """The fault behind "cars stop getting in": ENTRY1-3 and the outdoor
+    entrances serve different halves of the site, and nothing in the REST API
+    says so."""
+    table = reachability.table_for("lvl3")
+    indoor = set(table["ENTRY1"])
+    outdoor = set(table["OENTRY1"])
+    assert len(indoor) == 90 and len(outdoor) == 160
+    assert not indoor & outdoor, "an indoor car can never reach an outdoor bay"
+    assert set(table["ENTRY2"]) == indoor and set(table["Entry104"]) == outdoor
+
+
+def test_level1_and_2_are_one_network():
+    assert len(reachability.table_for("lvl1")["ENTRY1"]) == 30
+    assert {len(v) for v in reachability.table_for("lvl2").values()} == {90}
+
+
+def test_dispatch_never_sends_a_car_to_an_unreachable_bay(site, monkeypatch):
+    monkeypatch.setattr(main, "running_level", lambda: "lvl3")
+    monkeypatch.setattr(main, "_live_bays_synced", True)
+    table = reachability.table_for("lvl3")
+    indoor, outdoor = set(table["ENTRY1"]), set(table["OENTRY1"])
+    # One free bay on each side; the outdoor half is emptier, so the old
+    # zone-ratio rule would have picked the outdoor one every time.
+    inside, outside = sorted(indoor)[0], sorted(outdoor)[0]
+    state.spots[inside] = Spot(inside, zone_parent="ZONE1")
+    state.spots[outside] = Spot(outside, zone_parent="ZONE5")
+
+    result = asyncio.run(main.dispatch_entry("RCH 001", "ENTRY1", "Normal"))
+
+    assert result["target"] == inside
+
+
+def test_an_ev_is_given_a_charging_bay(site):
+    state.spots["ANY1"] = Spot("ANY1", parking_for_car_type="Any")
+    state.spots["EV1"] = Spot("EV1", parking_for_car_type="Electric")
+
+    result = asyncio.run(main.dispatch_entry("EVC 001", "ENTRY1", "Electric"))
+
+    assert result["target"] == "EV1"
+
+
+# ------------------------------------------------- occupied bay and reaping
+def test_an_occupied_bay_penalty_re_dispatches_instead_of_retrying(site):
+    state.spots["S1"] = Spot("S1", zone_parent="ZONE1")
+    state.spots["S2"] = Spot("S2", zone_parent="ZONE1")
+    session = state.start_session("COL 001", gate="ENTRY1", car_type="Normal")
+    state.reserve_spot("S1", "COL 001")
+    state.assign_spot("COL 001", "S1")
+
+    asyncio.run(main._handle_penalty({
+        "Reason": "Car:(COL 001) attempted to park in an occupied spot:(S1).",
+        "FineAmount": 50.0, "Type": "Car", "ComponentName": "COL001"}))
+
+    assert state.spots["S1"].status == SpotStatus.OCCUPIED, "believe the simulator, not our view"
+    assert session.assigned_spot == "S2", "the car gets a different bay instead of retrying"
+
+
+def test_a_car_still_driving_keeps_its_bay_longer(site, monkeypatch):
+    monkeypatch.setattr(main, "settings", dataclasses.replace(
+        main.settings, reservation_ttl_s=100, game_speed=1, en_route_grace_factor=3))
+    waiting = state.start_session("WAI 001", gate="ENTRY1", car_type="Normal")
+    driving = state.start_session("DRV 001", gate="ENTRY1", car_type="Normal")
+    driving.entry_departed = True
+
+    assert main._arrival_grace_s(waiting) == 100
+    assert main._arrival_grace_s(driving) == 300
+
+
+def test_a_special_car_is_not_turned_away_when_its_preferred_bay_is_unreachable(site, monkeypatch):
+    """Reachability must be applied before the car-type preference. Narrowing to
+    charging bays on the far side of the site leaves nothing to dispatch, and
+    the car is refused from a half-empty car park."""
+    monkeypatch.setattr(main, "running_level", lambda: "lvl3")
+    monkeypatch.setattr(main, "_live_bays_synced", True)
+    table = reachability.table_for("lvl3")
+    here = sorted(table["ENTRY1"])[0]          # reachable, ordinary bay
+    far = sorted(table["OENTRY1"])[0]          # unreachable from ENTRY1
+    state.spots[here] = Spot(here, zone_parent="ZONE1", parking_for_car_type="Any")
+    state.spots[far] = Spot(far, zone_parent="ZONE5", parking_for_car_type="Electric")
+
+    result = asyncio.run(main.dispatch_entry("EVR 001", "ENTRY1", "Electric"))
+
+    assert result["target"] == here, "an ordinary bay it can reach beats a charging bay it cannot"

@@ -5,7 +5,7 @@ import { GATE_STATE_LABEL, PHASE_LABEL, SPOT_STATE_LABEL, TYPE_GLYPH, gateState,
 import { connect, onConnection, snapshot as currentSnapshot, subscribe } from "../core/live.js";
 import { configurePalette } from "../core/palette.js";
 import { initShell, setBanner, setLevelPill } from "../core/shell.js";
-import { toast } from "../core/toast.js";
+import { confirmAction, toast } from "../core/toast.js";
 import { createAlerts, deriveAlerts } from "../components/alerts.js";
 import { createFeed } from "../components/feed.js";
 import { createKpis } from "../components/kpis.js";
@@ -122,6 +122,31 @@ function updateFullBanner(snap) {
   const park = (snap.spots || []).filter((x) => x.purpose === "Park");
   const full = park.length > 0 && park.every((x) => spotState(x) !== "free");
   setBanner("full", full ? { kind: "bad", text: [h("b", { text: "Car park full. " }), "No free bays — arriving cars must be turned away."] } : null);
+}
+
+// Free flow. Level 3 congestion (cars queueing at 8 entrances, paid cars with
+// no route out) clears fastest by not gating traffic at all; one gate at a time
+// is not a speed a human can work at with 19 of them.
+const openAllBtn = document.getElementById("gates-open-all");
+if (openAllBtn) {
+  openAllBtn.onclick = async () => {
+    if (!(await confirmAction({
+      title: "Open every gate?",
+      message: "All healthy gates are held open until you press All automatic. Cars enter and leave freely; broken gates and gates under repair are skipped.",
+      confirmLabel: "Open all gates",
+    }))) return;
+    runAction(openAllBtn, async () => {
+      const r = await api("/api/gates/open-all", { method: "POST" });
+      toast(`${r.opened.length} gate(s) held open${r.skipped.length ? `, ${r.skipped.length} skipped` : ""}`);
+    }, "Opening every gate");
+  };
+}
+const autoAllBtn = document.getElementById("gates-auto-all");
+if (autoAllBtn) {
+  autoAllBtn.onclick = () => runAction(autoAllBtn, async () => {
+    const r = await api("/api/gates/auto-all", { method: "POST" });
+    toast(`${r.automatic.length} gate(s) back on automatic`);
+  }, "Handing the gates back");
 }
 
 await loadStats();

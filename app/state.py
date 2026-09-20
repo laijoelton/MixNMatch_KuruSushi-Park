@@ -170,6 +170,10 @@ class VehicleSession:
     exit_confirmed: bool = False
     released: bool = False
     payment_suspect: bool = False
+    # When the invoice went out, so an invoice the simulator refused (the car
+    # was driving past an exit sensor, not waiting at it) can be re-sent at the
+    # exit the car actually stops at.
+    charged_at: Optional[float] = None
     # How many times we have asked this car to pay again after a wrong amount
     # (Level 3: "be careful about suspicious payments and ask for payment again")
     payment_retries: int = 0
@@ -833,6 +837,7 @@ class ParkingState:
             session = self.sessions.get(plate)
             if session is not None:
                 session.charged = True
+                session.charged_at = time.monotonic()
                 session.phase = SessionPhase.CHARGED
 
     def mark_paid(self, plate: str, amount: float) -> bool:

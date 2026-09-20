@@ -721,6 +721,17 @@ def claim_charge(session) -> bool:
         return cur.rowcount == 1
 
 
+def clear_charge_claim(session) -> None:
+    """Release the once-only charge claim so the car can be invoiced again.
+
+    Used only when the simulator refused the first invoice - a car passing an
+    exit sensor rather than waiting at one. A car that has *paid* is never
+    re-invoiced: that is fined."""
+    with _lock, _conn:
+        _conn.execute("UPDATE active_sessions SET charge_attempted = 0 WHERE session_id = ?",
+                      (session.session_id,))
+
+
 def record_neglect(session, reason: str) -> None:
     with _lock, _conn:
         _conn.execute("INSERT OR IGNORE INTO neglected_vehicles (session_id, plate, gate, reason, occurred_at) VALUES (?, ?, ?, ?, ?)",

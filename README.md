@@ -35,6 +35,19 @@ all features. Cookie sessions use PBKDF2-SHA256 passwords and SQLite-backed
 `SessionStore` lookups, so role changes apply on the next HTTP request or WebSocket
 frame. Financial fields are omitted from operator/technician payloads.
 
+**Bays are offered only where the car can actually drive.** Level 3's road
+network is two disconnected halves - ENTRY1-3 reach 90 indoor bays, the outdoor
+entrances reach 160 others, and no route joins them. `app/reachability.py`
+derives that from the level file (Dijkstra over the simulator's own road graph,
+computed once per level, no API calls) and dispatch offers each car only bays
+reachable from the entrance it arrived at, ranked by real driving distance.
+Without it an indoor car is sent to an outdoor bay, gives up at the entrance,
+and its bay is handed to someone else.
+
+**Open all gates** (Live page, staff only) holds every healthy gate open at once
+and **All automatic** hands them back — 19 gates is not a number an operator can
+work through one at a time when the site is congested.
+
 **Double parking** (Level 3) is detected rather than hidden: a car reported in a
 second bay keeps the first one — freeing it hands a bay with a car still in it
 to the next arrival, which the simulator fines. Both bays stay blocked, the

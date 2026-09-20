@@ -93,6 +93,7 @@ class Settings:
     entry_gate: str
     co_fan_on_threshold: float
     reservation_ttl_s: float
+    en_route_grace_factor: float
     seed_from_level: str
     unknown_car_minutes: float
     game_speed: float
@@ -209,6 +210,9 @@ class Settings:
             # Cars that are neglected at the entry drive off, and their
             # reservation must not hold the spot forever.
             reservation_ttl_s=_env_float("RESERVATION_TTL_S", 120.0),
+            # A car that has left the entrance is on its way; on a Level 3 site
+            # that drive is long. Its bay is held this many times longer.
+            en_route_grace_factor=_env_float("EN_ROUTE_GRACE_FACTOR", 3.0),
 
             # Offline dev only: load the park from settings/<level>.json when
             # the simulator is not running. Empty disables it.

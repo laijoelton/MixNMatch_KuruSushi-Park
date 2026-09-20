@@ -9,7 +9,13 @@
     <section class="panel twin-panel" id="twin-panel" aria-label="Car park map"></section>
 
     <section aria-labelledby="zones-h">
-      <div class="panel-head" style="border:0;padding:0 0 var(--s3)"><h2 id="zones-h">Zones &amp; gates</h2></div>
+      <div class="panel-head" style="border:0;padding:0 0 var(--s3)">
+        <h2 id="zones-h">Zones &amp; gates</h2>
+        <div class="head-actions" data-cap="ops:control_gates" hidden>
+          <button class="btn" id="gates-open-all" type="button">Open all gates</button>
+          <button class="btn ghost" id="gates-auto-all" type="button">All automatic</button>
+        </div>
+      </div>
       <div class="zones" id="zones"></div>
     </section>
 

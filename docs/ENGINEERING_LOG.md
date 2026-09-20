@@ -1414,6 +1414,93 @@ physical barrier may not be individually addressable.
 
 ---
 
+### 4.39 Level 3 degrades over time: the site is two car parks, not one (20 September 2026)
+
+**Symptom** (reported after a long run, reproduced on a live Level 3): traffic
+is fine for a few minutes, then cars stop getting in, park in odd places, sit at
+exits without leaving, and penalties climb. A snapshot of the degraded run: 81
+live sessions but only 22 cars parked, 207 of 250 bays free, 14 cars waiting at
+entrances, 21 bays reserved for cars that never arrive, 62 penalties / RM1,580.
+
+**Root cause: Level 3's road network is two disconnected halves.**
+
+    ENTRY1, ENTRY2, ENTRY3   ->  90 bays  (ZONE1-3, indoor)
+    Entry104, OENTRY1..4     -> 160 bays  (ZONE4-7, outdoor)
+
+Measured from the level file: `ENTRY1 -> S1` is 1146 units, `ENTRY1 -> P106`
+does not exist at all. Nothing in the REST API says so. Dispatch picked the zone
+with the lowest occupancy ratio, which is *always* the outdoor half for an
+indoor car (160 of the 250 bays, and they stay emptier precisely because nobody
+can get to them). So indoor cars were sent to bays they could never reach, and
+the failure compounds:
+
+1. the car circles and gives up - "Car left from entry because driver felt
+   neglected" (33 in that run);
+2. its reservation expires and the bay is handed to another car, while the
+   first car is still driving - "attempted to park in an occupied spot"
+   (24 fines, 12 per car, one per retry);
+3. the resend loop retries the same bay up to 12 times, each one another fine;
+4. cars that did park left through an exit sensor they were only passing, were
+   invoiced there, the simulator refused the invoice ("not waiting at the
+   exit"), and they sat CHARGED forever - 20 of 21 stuck at one sensor -
+   then escaped unpaid.
+
+**Fixes.**
+- **`app/reachability.py`** (new): builds the level's road graph from the file
+  we already read for the map, attaches every bay and entry sensor to the
+  nearest node, and runs Dijkstra from each entrance. That gives both the
+  reachable set and the real driving distance, per level, computed once - no
+  `list-*` calls. `dispatch_entry` now offers a car only bays reachable from
+  the entrance it arrived at, and ranks them by real distance instead of
+  `app/routing.py`'s name-ordered synthetic ring (the ring is kept as the
+  fallback for a level we cannot parse). Level 1 and 2 are single networks, so
+  nothing changes there.
+- **Occupied-bay penalties are acted on** (`_handle_occupied_bay`): the
+  simulator's "attempted to park in an occupied spot:(P236)" is believed over
+  our own view. The bay is taken out of dispatch, the retry loop is cancelled,
+  and the car is re-dispatched to a different bay. One fine instead of twelve.
+- **A car that is still driving keeps its bay** (`_arrival_grace_s`): the
+  reservation TTL applies to a car waiting at an entrance; one that has passed
+  the entrance is *en route* and gets `EN_ROUTE_GRACE_FACTOR` (default 3x) as
+  long, because on a Level 3 site that drive is long.
+- **A refused invoice is re-sent at the exit the car actually stops at.** If a
+  charged, unpaid car appears at a *different* exit sensor more than
+  `PAYMENT_WAIT_S` later, the first invoice was refused (the car was passing,
+  not waiting): the claim is cleared and it is invoiced here. A car that has
+  *paid* is still never re-invoiced - that is the RM50 fine in 4.38.
+- **Zone maintenance no longer deadlocks on a staff-held gate.** Staff control
+  beats the rotation (4.33), so a gate an operator holds is never repaired -
+  and the zone waiting for that repair stayed shut to new cars for the rest of
+  the run (observed: ZONE1 closed while gate2 was held open). The maintenance
+  is abandoned and the zone reopens; the rotation picks it up when staff let go.
+- **EV cars are given charging bays** when one is free, instead of any bay.
+
+**One more, found by the live run itself:** the car-type preference (accessible
+bays for accessible cars, charging bays for EVs) ran *before* the reachability
+filter, so a preference narrowed to bays on the far side of the site left
+nothing to dispatch and the car was turned away from a half-empty car park -
+**every** Electric and Accessible car, 95 turn-aways in three minutes. The order
+is now reachability first, preference second, and the preference stays a
+fallback rather than a requirement.
+
+**Also added:** `POST /api/gates/open-all` and `/api/gates/auto-all` with
+"Open all gates" / "All automatic" on the Live page - 19 gates is not a number
+an operator can work through one at a time when the site is congested. Broken
+gates and gates under repair are skipped (operating those is penalised).
+
+**Verification:** 278 tests, including the two halves of Level 3, dispatch
+refusing an unreachable bay, the re-dispatch after an occupied-bay penalty and
+the en-route grace. Live on a fresh Level 3 with the fixes: **18 cars parked in
+under two minutes, 0 penalties, no cars accumulating at the entrances** - the
+same first two minutes that previously ended with cars stuck and fines climbing.
+
+**Note for the map:** the number the simulator draws next to a zone name -
+`ZONE1 [07.69]` - is that zone's carbon-monoxide level in ppm. Only the three
+indoor (`ZoneType: Closed`) zones ever rise above zero; the four outdoor ones
+stay at 0.
+
+---
+
 ## 5. Edge cases and how they are handled
 
 | Edge case | Handling |
