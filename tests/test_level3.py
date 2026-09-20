@@ -268,3 +268,33 @@ def test_a_special_car_is_not_turned_away_when_its_preferred_bay_is_unreachable(
     result = asyncio.run(main.dispatch_entry("EVR 001", "ENTRY1", "Electric"))
 
     assert result["target"] == here, "an ordinary bay it can reach beats a charging bay it cannot"
+
+
+def test_a_refused_invoice_is_re_sent_with_the_simulator_s_figure(site):
+    """The simulator names the correct amount in the penalty. Not using it left
+    the car with an invoice it would not pay, and it drove off unpaid."""
+    session = state.start_session("COR 001", gate="ENTRY1", car_type="Electric")
+    session.expected_amount, session.expected_parking, session.expected_charging = 6.6, 3.3, 3.3
+    session.charged = True
+
+    asyncio.run(main._handle_penalty({
+        "Reason": "Car is being charged wrongly with amount: (6.60). Car type is (Electric) "
+                  "so charge should be: (2.00)",
+        "FineAmount": 10.0, "Type": "Car", "ComponentName": "COR001"}))
+
+    main.client.car_charge.assert_awaited_once_with("COR 001", 2.0, 0.0)
+    assert session.expected_amount == 2.0, "the payment check must expect the corrected figure"
+
+    # Once only: a second correction must not start a charging loop.
+    main.client.car_charge.reset_mock()
+    asyncio.run(main._apply_charge_correction({"ComponentName": "COR001"}, 2.0, 3.0))
+    main.client.car_charge.assert_not_awaited()
+
+
+def test_a_car_that_already_paid_is_never_re_invoiced_by_a_correction(site):
+    session = state.start_session("COR 002", gate="ENTRY1", car_type="Normal")
+    session.expected_amount, session.paid = 3.0, True
+
+    asyncio.run(main._apply_charge_correction({"ComponentName": "COR002"}, 3.0, 0.0))
+
+    main.client.car_charge.assert_not_awaited()

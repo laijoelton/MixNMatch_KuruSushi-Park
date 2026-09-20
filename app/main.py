@@ -2492,9 +2492,31 @@ def _find_session_by_loose_plate(raw: str):
 
 
 async def _apply_charge_correction(payload: dict[str, Any], sent: float, should_be: float) -> None:
-    # Corrections are evidence for review, never a second charge or a changed invoice.
-    state.log_activity(f"Charge discrepancy for {payload.get('ComponentName')}: sent {sent:.2f}, expected {should_be:.2f}; review required",
+    """Re-invoice with the figure the simulator just told us is correct.
+
+    We used to only log this. That left the car holding an invoice it would not
+    pay, and it eventually drove off - "Car escaped without paying", the biggest
+    remaining fine in a clean Level 3 run (6 of 16). Re-invoicing is safe here
+    precisely because the car has *not* paid: the RM50 "Car has already paid for
+    parking." fine (4.38) applies to the opposite case, and `session.paid`
+    guards it. Once per session, so a correction loop cannot form."""
+    raw_plate = payload.get("ComponentName") or ""
+    plate, session = _find_session_by_loose_plate(raw_plate)
+    state.log_activity(f"Charge discrepancy for {raw_plate}: sent {sent:.2f}, "
+                       f"simulator says {should_be:.2f}",
                        level="warn", capability="logs:view_fin")
+    if session is None or session.paid or session.correction_applied or not settings.autopilot:
+        return
+    session.correction_applied = True
+    session.expected_parking, session.expected_charging = should_be, 0.0
+    session.expected_amount = should_be
+    _persist(plate)
+    db.record_incident("charge_corrected", plate,
+                       f"{plate} re-invoiced at {should_be:.2f} after the simulator refused "
+                       f"{sent:.2f}", {"sent": sent, "corrected": should_be}, resolved=True)
+    if await act(f"re-invoice {plate} at the corrected {should_be:.2f}",
+                 lambda: client.car_charge(plate, should_be, 0.0)):
+        state.log_activity(f"{plate} re-invoiced at {should_be:.2f}", capability="logs:view_fin")
 
 
 async def _handle_payment_made(payload: dict[str, Any]) -> None:

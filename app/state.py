@@ -174,6 +174,9 @@ class VehicleSession:
     # was driving past an exit sensor, not waiting at it) can be re-sent at the
     # exit the car actually stops at.
     charged_at: Optional[float] = None
+    # A simulator correction ("charge should be: (2.00)") has been applied and
+    # re-invoiced. Once only: a second correction is a sign of something else.
+    correction_applied: bool = False
     # How many times we have asked this car to pay again after a wrong amount
     # (Level 3: "be careful about suspicious payments and ask for payment again")
     payment_retries: int = 0

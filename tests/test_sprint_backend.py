@@ -92,6 +92,12 @@ def test_physical_dwell_guard(park):
 
 
 def test_charge_exactly_once_concurrently_and_after_restore(park):
+    """One invoice per car, whatever happens - concurrently, and after a restart.
+
+    The one thing that may invoice a second time is the simulator telling us the
+    figure was wrong (4.39): leaving that car with an invoice it will not pay is
+    how it ends up driving off unpaid. That correction applies once, and never
+    to a car that has already paid."""
     s = state.start_session("PAY", "ENTRY1", planned_minutes=3)
     s.created_at -= 20
     state.mark_parked("PAY", "S1")
@@ -100,12 +106,14 @@ def test_charge_exactly_once_concurrently_and_after_restore(park):
         await asyncio.gather(main._charge_at_exit("PAY", "EXIT"), main._charge_at_exit("PAY", "EXIT"))
         assert main.client.car_charge.await_count == 1
         await main._apply_charge_correction({"ComponentName": "PAY"}, 3, 4)
-        assert main.client.car_charge.await_count == 1
+        assert main.client.car_charge.await_count == 2, "the corrected figure is re-invoiced"
+        await main._apply_charge_correction({"ComponentName": "PAY"}, 4, 5)
+        assert main.client.car_charge.await_count == 2, "once only - no correction loop"
         state.sessions.clear()
         main.restore_sessions()
         assert state.sessions["PAY"].charge_attempted
         await main._charge_at_exit("PAY", "EXIT")
-        assert main.client.car_charge.await_count == 1
+        assert main.client.car_charge.await_count == 2
     asyncio.run(scenario())
 
 
