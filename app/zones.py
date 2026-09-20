@@ -46,17 +46,18 @@ def pick_zone_staged(candidates: Collection[str], ratios: dict[str, float],
     those cuts happen in ``dispatch_entry`` and are load-bearing: 4.39 found
     that a car sent to an unreachable-but-empty zone just circles and leaves).
 
-    Stage 1, cascading: any candidate zone still under ``balance_ceiling`` -
-    route by priority (nearest/lowest zone number first), ignoring the exact
-    ratio. This also resolves the 30%-40% gap in the original two-threshold
-    reading of the spec (enter cascading below 30%, stay in it up to 40%): a
-    zone sitting only in that gap, with nothing below 30%, is still routed by
-    priority rather than left undefined - the threshold that actually decides
-    the outcome is the 40% ceiling, so a separate 30% "entry" check would be
-    dead code once that gap is handled at all.
-    Stage 2, load balancing: every candidate is at or above the ceiling -
-    route to whichever has the lowest ratio, breaking priority order to
-    spread load.
+    Stage 1, priority cascading: target the highest-priority zone (lowest
+    ``priority_rank`` - in this codebase that is zone number order, ZONE1
+    before ZONE2, the same "nearer zone" ordering ``pick_zone`` already used)
+    that still has a compatible vacant spot, and keep sending cars there until
+    its ratio reaches ``balance_ceiling`` (default 0.40). Once it does,
+    spill over to the next-highest-priority zone still under the ceiling.
+    Reversible: a zone that drains back under the ceiling starts taking cars
+    again on the very next dispatch, since this is recomputed from scratch
+    every time - there is no separate "spilled over" flag to unwind.
+    Stage 2, load balancing: once every candidate zone is at or above the
+    ceiling, stop sorting by priority and route to whichever has the lowest
+    ratio, to spread load evenly.
     Stage 3, exhaustion: every candidate is completely full (ratio == 1.0), or
     there are no candidates at all - no zone is returned, so the caller drops
     the dispatch and raises a full-capacity warning instead of guessing.
