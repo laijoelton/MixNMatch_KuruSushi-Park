@@ -10,19 +10,25 @@ gives us the things memory cannot:
 * a payment and penalty audit trail,
 * the signature-calibration tally (see ``app/signature.py``).
 
-Writes are small and synchronous. SQLite in WAL mode handles this comfortably
-at the event rate the simulator produces.
+Burst-sensitive writes are committed by one background batch worker while
+SQLite remains in WAL mode for concurrent dashboard reads.
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
+import queue
 import sqlite3
 import threading
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
 from app.config import settings
+
+log = logging.getLogger("dispatcher.db")
 
 _DB_PATH = Path(settings.database_path)
 _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -209,6 +215,7 @@ CREATE INDEX IF NOT EXISTS idx_security_seen ON security_events(last_seen);
 with _lock:
     _conn.execute("PRAGMA journal_mode=WAL")
     _conn.execute("PRAGMA synchronous=NORMAL")
+    _conn.execute("PRAGMA busy_timeout=5000")
     _conn.executescript(_SCHEMA)
     columns = {r[1] for r in _conn.execute("PRAGMA table_info(sessions)")}
     for name in ("zone", "session_id"):
@@ -227,6 +234,152 @@ with _lock:
     _conn.execute("INSERT OR IGNORE INTO meta (key, value) VALUES ('run_started_at', ?)",
                   (datetime.now(timezone.utc).isoformat(),))
     _conn.commit()
+
+
+@dataclass(frozen=True)
+class _BufferedWrite:
+    sql: str
+    params: Any
+    many: bool = False
+
+
+class SQLiteWriteBuffer:
+    """Single-writer channel for bursty persistence operations.
+
+    Producers only append immutable SQL operations.  The asyncio worker moves
+    commits to a thread and combines up to 100 operations into one WAL
+    transaction every 50 ms, eliminating event-loop stalls and competing
+    SQLite writers.
+    """
+
+    def __init__(self, flush_interval: float = 0.05, batch_size: int = 100) -> None:
+        self._queue: queue.Queue[_BufferedWrite] = queue.Queue()
+        self._flush_interval = flush_interval
+        self._batch_size = batch_size
+        self._task: Optional[asyncio.Task] = None
+        self._wake: Optional[asyncio.Event] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+
+    @property
+    def running(self) -> bool:
+        return self._task is not None
+
+    def start(self) -> None:
+        if self._task is not None:
+            return
+        self._loop = asyncio.get_running_loop()
+        self._wake = asyncio.Event()
+        self._task = asyncio.create_task(self._run(), name="sqlite-batch-writer")
+
+    def submit(self, sql: str, params: Any, *, many: bool = False) -> None:
+        if not self.running:
+            self._execute_now((_BufferedWrite(sql, params, many),), queued=False)
+            return
+        self._queue.put_nowait(_BufferedWrite(sql, params, many))
+        if self._queue.qsize() >= self._batch_size and self._loop and self._wake:
+            self._loop.call_soon_threadsafe(self._wake.set)
+
+    def _take_batch(self) -> list[_BufferedWrite]:
+        batch: list[_BufferedWrite] = []
+        while len(batch) < self._batch_size:
+            try:
+                batch.append(self._queue.get_nowait())
+            except queue.Empty:
+                break
+        return batch
+
+    def _execute_now(self, batch: tuple[_BufferedWrite, ...] | list[_BufferedWrite],
+                     *, queued: bool = True) -> None:
+        if not batch:
+            return
+        try:
+            with _lock, _conn:
+                index = 0
+                while index < len(batch):
+                    operation = batch[index]
+                    if operation.many:
+                        _conn.executemany(operation.sql, operation.params)
+                        index += 1
+                    else:
+                        end = index + 1
+                        while (end < len(batch) and not batch[end].many
+                               and batch[end].sql == operation.sql):
+                            end += 1
+                        _conn.executemany(operation.sql, [item.params for item in batch[index:end]])
+                        index = end
+        except sqlite3.Error:
+            if not queued:
+                raise
+            log.exception("SQLite batch failed; retrying %d operation(s) individually", len(batch))
+            for operation in batch:
+                try:
+                    with _lock, _conn:
+                        if operation.many:
+                            _conn.executemany(operation.sql, operation.params)
+                        else:
+                            _conn.execute(operation.sql, operation.params)
+                except sqlite3.Error:
+                    log.exception("SQLite buffered write failed")
+        finally:
+            if queued:
+                for _ in batch:
+                    self._queue.task_done()
+
+    async def _flush_once(self) -> None:
+        batch = self._take_batch()
+        if batch:
+            await asyncio.to_thread(self._execute_now, batch)
+
+    async def _run(self) -> None:
+        while True:
+            wake = self._wake
+            if wake is None:
+                return
+            try:
+                await asyncio.wait_for(wake.wait(), timeout=self._flush_interval)
+            except asyncio.TimeoutError:
+                pass
+            wake.clear()
+            await self._flush_once()
+
+    async def flush(self) -> None:
+        while not self._queue.empty():
+            await self._flush_once()
+        await asyncio.to_thread(self._queue.join)
+
+    async def stop(self) -> None:
+        task = self._task
+        if task is None:
+            return
+        await self.flush()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        self._task = None
+        self._wake = None
+        self._loop = None
+
+
+write_buffer = SQLiteWriteBuffer()
+
+
+def start_writer() -> None:
+    write_buffer.start()
+
+
+async def flush_writer() -> None:
+    await write_buffer.flush()
+
+
+async def stop_writer() -> None:
+    await write_buffer.stop()
+
+
+def known_event_ids() -> tuple[str, ...]:
+    with _lock:
+        return tuple(row[0] for row in _conn.execute("SELECT event_id FROM events WHERE processed = 1"))
+
+
+_accepted_event_ids = set(known_event_ids())
 
 
 def _utcnow() -> str:
@@ -251,36 +404,29 @@ def record_event(payload: dict[str, Any], signature_ok: Optional[bool]) -> bool:
         sequence_id = None
 
     with _lock:
-        cur = _conn.execute(
-            """INSERT OR IGNORE INTO events
-               (event_id, sequence_id, event_class, server_datetime, real_datetime,
-                received_at, signature, signature_ok, payload)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                event_id,
-                sequence_id,
-                payload.get("EventClass"),
-                payload.get("ServerDateTime"),
-                payload.get("RealDateTime"),
-                _utcnow(),
-                payload.get("Signature"),
-                None if signature_ok is None else int(signature_ok),
-                json.dumps(payload, separators=(",", ":")),
-            ),
-        )
-        _conn.commit()
-        return cur.rowcount > 0
+        if event_id in _accepted_event_ids:
+            return False
+        _accepted_event_ids.add(event_id)
+    write_buffer.submit(
+        """INSERT OR IGNORE INTO events
+           (event_id, sequence_id, event_class, server_datetime, real_datetime,
+            received_at, signature, signature_ok, payload)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (event_id, sequence_id, payload.get("EventClass"), payload.get("ServerDateTime"),
+         payload.get("RealDateTime"), _utcnow(), payload.get("Signature"),
+         None if signature_ok is None else int(signature_ok),
+         json.dumps(payload, separators=(",", ":"))),
+    )
+    return True
 
 
 def mark_processed(event_id: Optional[str], error: Optional[str] = None) -> None:
     if not event_id:
         return
-    with _lock:
-        _conn.execute(
-            "UPDATE events SET processed = 1, process_error = ? WHERE event_id = ?",
-            (error, event_id),
-        )
-        _conn.commit()
+    write_buffer.submit(
+        "UPDATE events SET processed = 1, process_error = ? WHERE event_id = ?",
+        (error, event_id),
+    )
 
 
 def mark_failed(event_id: Optional[str], error: str) -> None:
@@ -288,11 +434,11 @@ def mark_failed(event_id: Optional[str], error: str) -> None:
     if not event_id:
         return
     with _lock:
-        _conn.execute(
-            "UPDATE events SET processed = 0, process_error = ? WHERE event_id = ?",
-            (error, event_id),
-        )
-        _conn.commit()
+        _accepted_event_ids.discard(event_id)
+    write_buffer.submit(
+        "UPDATE events SET processed = 0, process_error = ? WHERE event_id = ?",
+        (error, event_id),
+    )
 
 
 def event_status(event_id: str) -> Optional[dict[str, Any]]:
@@ -361,20 +507,18 @@ def record_component_event(
 
 def record_session(row: dict[str, Any]) -> None:
     """Append a finished parking session for dashboard history."""
-    with _lock:
-        _conn.execute(
-            """INSERT OR IGNORE INTO sessions
-               (plate, car_type, spot, entry_gate, exit_gate, arrived_at, parked_at,
-                left_spot_at, minutes, planned_minutes, parking_cost, charging_cost,
-                paid_amount, payment_ok, completed_at, zone, session_id)
-               VALUES (:plate, :car_type, :spot, :entry_gate, :exit_gate, :arrived_at,
-                       :parked_at, :left_spot_at, :minutes, :planned_minutes, :parking_cost,
-                       :charging_cost, :paid_amount, :payment_ok, :completed_at, :zone, :session_id)""",
-            {"completed_at": _utcnow(), "zone": None, "session_id": None, **row},
-        )
-        if row.get("session_id"):
-            _conn.execute("DELETE FROM active_sessions WHERE session_id = ?", (row["session_id"],))
-        _conn.commit()
+    write_buffer.submit(
+        """INSERT OR IGNORE INTO sessions
+           (plate, car_type, spot, entry_gate, exit_gate, arrived_at, parked_at,
+            left_spot_at, minutes, planned_minutes, parking_cost, charging_cost,
+            paid_amount, payment_ok, completed_at, zone, session_id)
+           VALUES (:plate, :car_type, :spot, :entry_gate, :exit_gate, :arrived_at,
+                   :parked_at, :left_spot_at, :minutes, :planned_minutes, :parking_cost,
+                   :charging_cost, :paid_amount, :payment_ok, :completed_at, :zone, :session_id)""",
+        {"completed_at": _utcnow(), "zone": None, "session_id": None, **row},
+    )
+    if row.get("session_id"):
+        write_buffer.submit("DELETE FROM active_sessions WHERE session_id = ?", (row["session_id"],))
 
 
 def bump_signature_trial(recipe: str, matched: bool) -> None:
@@ -562,13 +706,11 @@ def record_unsigned_webhook(event_id: Optional[str], reason: str, payload: dict[
 def record_audit_log(actor_username: Optional[str], actor_role: Optional[str],
                       action: str, detail: Optional[str] = None) -> None:
     """Append-only trail of every staff-triggered mutation."""
-    with _lock:
-        _conn.execute(
-            """INSERT INTO audit_logs (actor_username, actor_role, action, detail, occurred_at)
-               VALUES (?, ?, ?, ?, ?)""",
-            (actor_username, actor_role, action, detail, _utcnow()),
-        )
-        _conn.commit()
+    write_buffer.submit(
+        """INSERT INTO audit_logs (actor_username, actor_role, action, detail, occurred_at)
+           VALUES (?, ?, ?, ?, ?)""",
+        (actor_username, actor_role, action, detail, _utcnow()),
+    )
 
 
 def record_login_attempt(username: str, ip: Optional[str], success: bool) -> None:
@@ -615,17 +757,15 @@ def sync_component_wear(name: str, type_: str, cycle_count: int, runtime_seconds
     ``app.state`` (the in-memory counters are the source of truth; this just
     makes them durable across restarts). Safer than accumulating deltas here,
     since the caller may resync the same reading more than once."""
-    with _lock:
-        _conn.execute(
-            """INSERT INTO component_wear (name, type, cycle_count, runtime_seconds)
-               VALUES (?, ?, ?, ?)
-               ON CONFLICT(name) DO UPDATE SET
-                 cycle_count     = excluded.cycle_count,
-                 runtime_seconds = excluded.runtime_seconds,
-                 type            = excluded.type""",
-            (name, type_, cycle_count, runtime_seconds),
-        )
-        _conn.commit()
+    write_buffer.submit(
+        """INSERT INTO component_wear (name, type, cycle_count, runtime_seconds)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(name) DO UPDATE SET
+             cycle_count     = excluded.cycle_count,
+             runtime_seconds = excluded.runtime_seconds,
+             type            = excluded.type""",
+        (name, type_, cycle_count, runtime_seconds),
+    )
 
 
 def mark_component_repaired(name: str) -> None:
