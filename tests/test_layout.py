@@ -25,9 +25,21 @@ def test_geometry_shape():
     assert lv2["bounds"]["max_x"] > lv2["bounds"]["min_x"]
 
 
-def test_duplicate_gate_names_survive():
-    names = [g["name"] for g in layout.load_geometry("lvl3")["gates"]]
-    assert names.count("gate7") == 2
+def test_level3_gate_names_are_unique_so_every_gate_is_controllable():
+    gates = layout.load_geometry("lvl3")["gates"]
+    names = [gate["name"] for gate in gates]
+
+    assert len(gates) == 20
+    assert len(set(names)) == 20
+    assert {"gate7", "gate20"} <= set(names)
+
+
+def test_zone4_right_edge_has_two_exit_sensors():
+    spots = {spot["name"]: spot for spot in layout.load_geometry("lvl3")["spots"]}
+
+    assert spots["Exit103"]["purpose"] == "ExitSpot"
+    assert spots["Exit104"]["purpose"] == "ExitSpot"
+    assert "Entry104" not in spots
 
 
 def test_missing_level_is_empty_not_an_error():

@@ -99,9 +99,9 @@ def load_layout(level: str = "lvl1") -> dict[str, Any]:
 # List-based geometry + level auto-detection (operator console twin)
 #
 # ``load_layout`` above keeps its name-keyed dict shape for the split
-# dashboard. The console needs lists instead - level 3 has two gates both
-# named "gate7", which a dict silently collapses - plus fans, lights and zone
-# types, and it must work out *which* level is running without being told.
+# dashboard. The console uses lists so every physical component remains
+# representable, plus fans, lights and zone types, and it must work out
+# *which* level is running without being told.
 # --------------------------------------------------------------------------- #
 LEVELS = ("lvl1", "lvl2", "lvl3")
 MATCH_THRESHOLD = 0.8

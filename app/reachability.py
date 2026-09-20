@@ -3,7 +3,7 @@
 Level 3 is not one car park. Its road network is two disconnected halves:
 
     ENTRY1, ENTRY2, ENTRY3   ->  90 bays  (ZONE1-3, indoor)
-    Entry104, OENTRY1..4     -> 160 bays  (ZONE4-7, outdoor)
+    OENTRY1..4               -> 160 bays  (ZONE4-7, outdoor)
 
 Nothing in the simulator's REST API says so, and a dispatcher that does not
 know it sends an indoor car to an outdoor bay - where it cannot go. The car

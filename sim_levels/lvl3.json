@@ -9553,14 +9553,14 @@
       "lastCarPlate": null
     },
     {
-      "Name": "Entry104",
+      "Name": "Exit104",
       "ZoneParent": "ZONE4",
       "Rotation": 0,
       "X": 6434,
       "Y": 853,
       "Width": 80,
       "Height": 170,
-      "Purpose": "EntrySpot",
+      "Purpose": "ExitSpot",
       "UsageCounter": 0,
       "CarType": "Any",
       "IsRepairRequested": false,
@@ -12212,7 +12212,7 @@
       "RepairProgress": 0
     },
     {
-      "Name": "gate7",
+      "Name": "gate20",
       "ZoneParent": "ZONE4",
       "State": "Closed",
       "Rotation": 0,

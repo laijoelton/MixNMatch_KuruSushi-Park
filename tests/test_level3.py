@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi.testclient import TestClient
 
-from app import db, main, reachability
+from app import db, layout, main, reachability
 from app.state import Barrier, SpotStatus, Spot, state
 
 
@@ -193,7 +193,20 @@ def test_level3_road_network_is_two_disconnected_halves():
     outdoor = set(table["OENTRY1"])
     assert len(indoor) == 90 and len(outdoor) == 160
     assert not indoor & outdoor, "an indoor car can never reach an outdoor bay"
-    assert set(table["ENTRY2"]) == indoor and set(table["Entry104"]) == outdoor
+    assert set(table["ENTRY2"]) == indoor
+    assert all(set(table[name]) == outdoor for name in ("OENTRY1", "OENTRY2", "OENTRY3", "OENTRY4"))
+    assert "Entry104" not in table, "ZONE4's right edge is exit-only"
+
+
+def test_open_all_commands_all_twenty_level3_gates(site):
+    for gate in layout.load_geometry("lvl3")["gates"]:
+        state.barriers[gate["name"]] = Barrier(gate["name"], zone_parent=gate["zone"])
+
+    result = asyncio.run(main.open_all_gates({"username": "admin", "role": "admin"}))
+
+    assert len(result["opened"]) == 20
+    assert set(result["opened"]) == {f"gate{i}" for i in range(1, 21)}
+    assert main.client.barrier_open.await_count == 20
 
 
 def test_level1_and_2_are_one_network():

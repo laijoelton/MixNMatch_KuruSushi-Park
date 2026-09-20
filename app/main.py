@@ -745,11 +745,9 @@ async def sync_from_simulator() -> dict[str, int]:
     global _live_bays_synced
     if any(s.get("purpose") == "Park" for s in spots):
         _live_bays_synced = True
-    # Level 3 ships two gates called gate7 (one at the perimeter, one in ZONE4).
-    # The REST API addresses barriers by name, so only one of them can ever be
-    # commanded - the other sits wherever the level left it and our own view,
-    # keyed by name, cannot even show it. Say so rather than letting an operator
-    # wonder why "open all gates" left a gate shut.
+    # A level with duplicate gate names cannot expose both physical barriers
+    # through the name-addressed REST API. Keep detecting malformed/custom
+    # levels so operators see why open-all skipped a physical gate.
     seen: set[str] = set()
     duplicates = sorted({b["name"] for b in barriers if b["name"] in seen or seen.add(b["name"])})
     state.duplicate_gates = {name: [b["state"] for b in barriers if b["name"] == name]
